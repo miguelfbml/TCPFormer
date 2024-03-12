@@ -2,10 +2,7 @@ from torch import nn
 
 
 class Sum_Attention(nn.Module):
-    """
-    A simplified version of attention from DSTFormer that also considers x tensor to be (B, T, J, C) instead of
-    (B * T, J, C)
-    """
+
 
     def __init__(self, dim_in, dim_out, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
                  mode='spatial'):

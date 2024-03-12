@@ -23,7 +23,7 @@ class TransBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.mixer_type = mixer_type
-        if mixer_type == 'crossattention': #we need three crossattention 
+        if mixer_type == 'crossattention': 
             self.local_attention_list = nn.ModuleList([
                 Attention(dim,dim,num_heads,qkv_bias,qk_scale,attn_drop,proj_drop=drop,mode=mode) for i in range(3)
             ])

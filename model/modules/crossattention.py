@@ -10,11 +10,11 @@ def save_atten_vis(attn,base_filename):
     filename = f"{base_filename}_{count}"       
     plt.figure(figsize=(15, 12))
     plt.imshow(attn, cmap='viridis', interpolation='nearest')
-# 添加颜色条
+
     plt.colorbar()
-# 设置坐标轴标签等
+
     plt.title(f'Attention Matrix Visualization')
-# 显示可视化结果
+
     while os.path.exists(filename+".png"):
         count += 1
         filename = f"{base_filename}_{count}"
