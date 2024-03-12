@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 from utils.learning import AverageMeter, decay_lr_exponentially,load_model_MIT
 from utils.tools import count_param_numbers
 from utils.data import Augmenter2D
-os.environ['CUDA_VISIBLE_DEVICES'] = '2' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 
 def parse_args():
     parser = argparse.ArgumentParser()
