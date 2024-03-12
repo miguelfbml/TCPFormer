@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument('-c', '--checkpoint', type=str, metavar='PATH',
                         help='checkpoint directory')
     parser.add_argument('--checkpoint-file', type=str, help="checkpoint file name")
-    parser.add_argument('--new-checkpoint', type=str, metavar='PATH', default='mpi-checkpoint-81',
+    parser.add_argument('--new-checkpoint', type=str, metavar='PATH', default='checkpoint_mpi',
                         help='new checkpoint directory')
     parser.add_argument('-sd', '--seed', default=1, type=int, help='random seed')
     parser.add_argument('--num-cpus', default=16, type=int, help='Number of CPU cores')
