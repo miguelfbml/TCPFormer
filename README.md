@@ -59,8 +59,6 @@ python train_3dhp.py --config configs/mpi/MIT_mpi_81.yaml
 |----------|--------|-----------|
 |Human3.6M|81|[download](https://drive.google.com/file/d/14D_gfCflgl67-nl0L2MJijbARizbphnP/view?usp=drive_link)|
 |Human3.6M|243|[download](https://drive.google.com/file/d/1xiCQaYOWlNBR4uZVGmFJ644mB4tPH-Gq/view?usp=drive_link)|
-|Human3.6M(GT)|81|[download](https://drive.google.com/file/d/1OgLEwoaq4D5ho04rwHLsg2T48jlHuren/view?usp=drive_link)|
-|Human3.6M(GT)|243|[download](https://drive.google.com/file/d/1qZVnj05f09MOemFQBge04YBnMjt7Nc2o/view?usp=drive_link)|
 |MPI-INF-3DHP|9|[download](https://drive.google.com/file/d/1z_foxtKFxz1_g8jOfP-_cqv7ciptpJNo/view?usp=drive_link)|
 |MPI-INF-3DHP|27|[download](https://drive.google.com/file/d/1EHl7IFud3JkDmDsDK6vad7O4STAMp9T_/view?usp=drive_link)|
 |MPI-INF-3DHP|81|[download](https://drive.google.com/file/d/1rydmQ_9S1B5xFa0OmB6rl59qPGQiqv2g/view?usp=drive_link)|
