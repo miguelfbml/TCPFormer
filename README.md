@@ -14,7 +14,6 @@ This is the official implementation of the approach described in the paper of TC
 
 > <sup>1</sup>State Key Laboratory of General Artificial Intelligence, Peking University, Shenzhen Graduate School, <sup>2</sup>Nanyang Technological University
 
----
 
 ## 💡 Environment
 The project is developed under the following environment:
