@@ -1,21 +1,30 @@
 
-# AAAI 2025
-# TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation
+<h1 align="center"> <a href="https://arxiv.org/abs/2501.01770"> TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation [AAAI 2025 ]</a></h1>
+
+| ![skating](figure/video2.gif)  | ![anime](figure/video3.gif) |
+| ------------- | ------------- |
 
 
+
+This is the official implementation of the approach described in the paper of TCPFormer:
+
+> [**TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation**](https://arxiv.org/abs/2501.01770),            
+> Jiajie Liu, Mengyuan Liu, Hong Liu, Wenhao Li
+> *Accpeted by the 39th Annual AAAl Conference on Artificial Intelligence (AAAl), 2025*
 ---
 
-## Environment
+## 💡 Environment
 The project is developed under the following environment:
 - Python 3.10.x
 - PyTorch 2.2.1
 - CUDA 12.1
+
 For installation of the project dependencies, please run:
 ```
 pip install -r requirements.txt
 ``` 
 
-## Dataset
+## 🐳 Dataset
 ### Human3.6M
 #### Preprocessing
 1. We follow the previous state-of-the-art method [MotionBERT](https://github.com/Walter0807/MotionBERT/blob/main/docs/pose3d.md) for dataset setup. Download the [MotionBERT](https://github.com/Walter0807/MotionBERT/blob/main/docs/pose3d.md)'s preprocessed H3.6M data [here](https://1drv.ms/u/s!AvAdh0LSjEOlgU7BuUZcyafu8kzc?e=vobkjZ) and unzip it to 'data/motion3d'.
@@ -39,7 +48,7 @@ python h36m.py  --n-frames 81
 #### Preprocessing
 Please refer to [P-STMO](https://github.com/paTRICK-swk/P-STMO#mpi-inf-3dhp) for dataset setup. After preprocessing, the generated .npz files (`data_train_3dhp.npz` and `data_test_3dhp.npz`) should be located at `data/motion3d` directory.
 
-## Training
+## ✨ Training
 After dataset preparation, you can train the model as follows:
 ### Human3.6M
 You can train Human3.6M with the following command:
@@ -61,7 +70,7 @@ python train_3dhp.py --config configs/mpi/TCPFormer_mpi_81.yaml
 ```
 
 
-## Evaluation
+## 🚅 Evaluation
 | Dataset  | frames | Checkpoint|
 |----------|--------|-----------|
 |Human3.6M|81|[download](https://drive.google.com/file/d/14D_gfCflgl67-nl0L2MJijbARizbphnP/view?usp=drive_link)|
@@ -93,3 +102,16 @@ For MPI-INF-3DHP dataset, you can download the checkpoint with T = 81 and put in
 ```
 python train_3dhp.py --eval-only  --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_81.pth.tr --config configs/mpi/TCPFormer_mpi_81.yaml
 ```
+
+## 👍 Acknowledgement
+
+Our code is extended from the following repositories. We thank the authors for releasing the codes. 
+
+- [MixSTE](https://github.com/JinluZhang1126/MixSTE)
+- [MHFormer](https://github.com/Vegetebird/MHFormer)
+- [StridedTransformer-Pose3D](https://github.com/Vegetebird/StridedTransformer-Pose3D)
+- [MotionBERT](https://github.com/Walter0807/MotionBERT)
+
+## 🔒 Licence
+
+This project is licensed under the terms of the MIT license.
