@@ -9,7 +9,7 @@
 This is the official implementation of the approach described in the paper of TCPFormer:
 
 > [**TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation**](https://arxiv.org/abs/2501.01770),            
-> Jiajie Liu, Mengyuan Liu, Hong Liu, Wenhao Li
+> Jiajie Liu, Mengyuan Liu, Hong Liu, Wenhao Li,
 > *Accpeted by the 39th Annual AAAl Conference on Artificial Intelligence (AAAI), 2025*
 ---
 
