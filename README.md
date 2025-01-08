@@ -6,10 +6,14 @@
 
 
 
-This is the official implementation of the approach described in the paper of TCPFormer:
+This is the official implementation of the approach described in the paper of TCPFormer :
 
-> [**TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation**](https://arxiv.org/abs/2501.01770),            
-> Jiajie Liu, Mengyuan Liu, Hong Liu, Wenhao Li 
+> [**TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation**](https://arxiv.org/abs/2501.01770) 
+            
+> Jiajie Liu<sup>1</sup>, Mengyuan Liu<sup>1</sup>, Hong Liu<sup>1</sup>, Wenhao Li<sup>2</sup>
+
+> <sup>1</sup>State Key Laboratory of General Artificial Intelligence, Peking University, Shenzhen Graduate School, <sup>2</sup>Nanyang Technological University
+
 ---
 
 ## 💡 Environment
@@ -110,6 +114,7 @@ Our code is extended from the following repositories. We thank the authors for r
 - [MHFormer](https://github.com/Vegetebird/MHFormer)
 - [StridedTransformer-Pose3D](https://github.com/Vegetebird/StridedTransformer-Pose3D)
 - [MotionBERT](https://github.com/Walter0807/MotionBERT)
+- [MotionAGFormer](https://github.com/TaatiTeam/MotionAGFormer)
 
 ## 🔒 Licence
 
