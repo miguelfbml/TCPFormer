@@ -105,6 +105,20 @@ For MPI-INF-3DHP dataset, you can download the checkpoint with T = 81 and put in
 python train_3dhp.py --eval-only  --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_81.pth.tr --config configs/mpi/TCPFormer_mpi_81.yaml
 ```
 
+
+## ✏️ Citation
+
+If you find our work useful in your research, please consider citing:
+
+    @article{liu2025tcpformer,
+        title={TCPFormer: Learning Temporal Correlation with Implicit Pose Proxy for 3D Human Pose Estimation},
+        author={Liu, Jiajie and Liu, Mengyuan and Liu, Hong and Li, Wenhao},
+        journal={arXiv preprint arXiv:2501.01770},
+        year={2025}
+    }
+
+
+
 ## 👍 Acknowledgement
 
 Our code is extended from the following repositories. We thank the authors for releasing the codes. 
@@ -118,3 +132,6 @@ Our code is extended from the following repositories. We thank the authors for r
 ## 🔒 Licence
 
 This project is licensed under the terms of the MIT license.
+
+
+
