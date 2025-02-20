@@ -108,6 +108,7 @@ python train_3dhp.py --eval-only  --checkpoint checkpoint_mpi --checkpoint-file 
 ## 👀 Visualization
 
 For the 3D human pose estimation visualization, please refer to [MHFormer](https://github.com/Vegetebird/MHFormer).
+
 For the attention matrix visualization, this is just a 243x243 matrix, and you can easily visualize it. Let GPT/DeepSeek help you!
 
 
