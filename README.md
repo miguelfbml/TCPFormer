@@ -70,7 +70,9 @@ where config files are located at `configs/mpi`.
 ```
 python train_3dhp.py --config configs/mpi/TCPFormer_mpi_81.yaml 
 ```
+### Human3.6M (GT)
 
+Please refer to [MotionBERT](https://github.com/Walter0807/MotionBERT/blob/main/docs/pose3d.md).
 
 ## 🚅 Evaluation
 | Dataset  | frames | Checkpoint|
