@@ -164,7 +164,10 @@ def evaluate(model, test_loader, n_frames):
 
     data_inference = {}
     error_sum_test = AccumLoss()
-    pck_results = {'PCK@90%': 0.0, 'PCK@80%': 0.0, 'PCK@70%': 0.0}
+    pck_results = {
+        'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
+        'PCK@90%_150mm': 0.0, 'PCK@80%_150mm': 0.0, 'PCK@70%_150mm': 0.0
+    }
     auc_sum = 0.0
     valid_samples = 0
 
@@ -198,10 +201,10 @@ def evaluate(model, test_loader, n_frames):
         # Calculate torso diameters
         torso_diameters = calculate_torso_diameter(gt_3D)
 
-        # Compute PCK for valid samples
+        # Compute PCK for torso-based and 150 mm thresholds
         pred_frame = pred_out[:, 0]  # Shape: (N, 17, 3)
         gt_frame = out_target[:, 0]  # Shape: (N, 17, 3)
-        batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters)
+        batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
         for key in pck_results:
             pck_results[key] += batch_pck[key] * N
 
@@ -237,13 +240,12 @@ def evaluate(model, test_loader, n_frames):
 
     # Update wandb logging if enabled
     if opts.use_wandb:
-        wandb.log({
+        wandb_log = {
             'eval/mpjpe': mpjpe_avg,
-            'eval/PCK@90%': pck_results['PCK@90%'],
-            'eval/PCK@80%': pck_results['PCK@80%'],
-            'eval/PCK@70%': pck_results['PCK@70%'],
             'eval/AUC': auc_avg,
-        })
+        }
+        wandb_log.update({f'eval/{key}': value for key, value in pck_results.items()})
+        wandb.log(wandb_log)
 
     return mpjpe_avg, data_inference
 
