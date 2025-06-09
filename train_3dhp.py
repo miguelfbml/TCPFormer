@@ -101,6 +101,7 @@ def input_augmentation(input_2D, model, joints_left, joints_right):
 
     return input_2D, output_3D
 
+'''
 def evaluate(model, test_loader, n_frames):
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
@@ -153,6 +154,98 @@ def evaluate(model, test_loader, n_frames):
     print(f'Protocol #1 Error (MPJPE): {error_sum_test.avg:.2f} mm')
 
     return error_sum_test.avg, data_inference
+'''
+
+#new evaluate function with PCK and AUC calculations
+def evaluate(model, test_loader, n_frames):
+    model.eval()
+    joints_left = [5, 6, 7, 11, 12, 13]
+    joints_right = [2, 3, 4, 8, 9, 10]
+
+    data_inference = {}
+    error_sum_test = AccumLoss()
+    pck_results = {'PCK@90%': 0.0, 'PCK@80%': 0.0, 'PCK@70%': 0.0}
+    auc_sum = 0.0
+    valid_samples = 0
+
+    for data in tqdm(test_loader, 0):
+        batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
+
+        [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
+        N = input_2D.size(0)
+
+        out_target = gt_3D.clone().view(N, -1, 17, 3)
+        out_target[:, :, 14] = 0
+        gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
+
+        input_2D, output_3D = input_augmentation(input_2D, model, joints_left, joints_right)
+
+        output_3D = output_3D * scale.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
+        pad = (n_frames - 1) // 2
+        pred_out = output_3D[:, pad].unsqueeze(1)
+
+        pred_out[..., 14, :] = 0
+        pred_out = denormalize(pred_out, seq)
+
+        pred_out = pred_out - pred_out[..., 14:15, :]  # Root-relative prediction
+        inference_out = pred_out + out_target[..., 14:15, :]  # Final inference (not root-relative for PCK/AUC)
+        out_target = out_target - out_target[..., 14:15, :]  # Root-relative ground truth
+
+        # Calculate MPJPE
+        joint_error_test = mpjpe_cal(pred_out, out_target).item()
+        error_sum_test.update(joint_error_test * N, N)
+
+        # Calculate torso diameters
+        torso_diameters = calculate_torso_diameter(gt_3D)
+
+        # Compute PCK for valid samples
+        pred_frame = pred_out[:, 0]  # Shape: (N, 17, 3)
+        gt_frame = out_target[:, 0]  # Shape: (N, 17, 3)
+        batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters)
+        for key in pck_results:
+            pck_results[key] += batch_pck[key] * N
+
+        # Compute AUC
+        auc = compute_auc(pred_frame, gt_frame)
+        auc_sum += auc * N
+
+        valid_samples += N
+
+        # Store inference data
+        for seq_cnt in range(len(seq)):
+            seq_name = seq[seq_cnt]
+            if seq_name in data_inference:
+                data_inference[seq_name] = np.concatenate(
+                    (data_inference[seq_name], inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()), axis=2)
+            else:
+                data_inference[seq_name] = inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
+
+    for seq_name in data_inference.keys():
+        data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
+
+    # Average metrics
+    mpjpe_avg = error_sum_test.avg
+    for key in pck_results:
+        pck_results[key] /= valid_samples
+    auc_avg = auc_sum / valid_samples
+
+    # Print results
+    print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
+    for key, value in pck_results.items():
+        print(f'{key}: {value*100:.2f}%')
+    print(f'AUC: {auc_avg:.4f}')
+
+    # Update wandb logging if enabled
+    if opts.use_wandb:
+        wandb.log({
+            'eval/mpjpe': mpjpe_avg,
+            'eval/PCK@90%': pck_results['PCK@90%'],
+            'eval/PCK@80%': pck_results['PCK@80%'],
+            'eval/PCK@70%': pck_results['PCK@70%'],
+            'eval/AUC': auc_avg,
+        })
+
+    return mpjpe_avg, data_inference
 
 
 def save_checkpoint(checkpoint_path, epoch, lr, optimizer, model, min_mpjpe, wandb_id):
