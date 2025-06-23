@@ -5,7 +5,8 @@ import h5py
 
 import scipy.io as scio
 
-data_path = '../mpi_inf_3dhp/test_data'
+# data_path = '../mpi_inf_3dhp/test_data'
+data_path = '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set'
 cam_set = [0, 1, 2, 4, 5, 6, 7, 8]
 # joint_set = [8, 6, 15, 16, 17, 10, 11, 12, 24, 25, 26, 19, 20, 21, 5, 4, 7]
 joint_set = [7, 5, 14, 15, 16, 9, 10, 11, 23, 24, 25, 18, 19, 20, 4, 3, 6]
