@@ -27,7 +27,7 @@ def mpii_get_sequence_info(subject_id, sequence):
     return switcher.get(subject_id+" "+sequence)
 
 
-data_path = '../mpi_inf_3dhp/train_data'
+data_path = '/nas-ctm01/datasets/public/mpi_inf_3dhp'
 cam_set = [0, 1, 2, 4, 5, 6, 7, 8]
 # joint_set = [8, 6, 15, 16, 17, 10, 11, 12, 24, 25, 26, 19, 20, 21, 5, 4, 7]
 joint_set = [7, 5, 14, 15, 16, 9, 10, 11, 23, 24, 25, 18, 19, 20, 4, 3, 6]
