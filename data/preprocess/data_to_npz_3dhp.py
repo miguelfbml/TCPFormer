@@ -34,19 +34,20 @@ joint_set = [7, 5, 14, 15, 16, 9, 10, 11, 23, 24, 25, 18, 19, 20, 4, 3, 6]
 dic_seq={}
 
 for root, dirs, files in os.walk(data_path):
+    # Skip the test data directory
+    if 'mpi_inf_3dhp_test_set' in root:
+        continue
+        
     for file in files:
         if file.endswith("mat"):
             path = root.split("/")
             
-            # Debug: Print the path structure
-            print(f"Full path: {root}")
-            print(f"Path components: {path}")
-            print(f"Last folder: '{path[-1]}' (length: {len(path[-1])})")
-            print(f"Second to last folder: '{path[-2]}' (length: {len(path[-2])})")
-            
-            # Check if folders have expected format
+            # Check if folders have expected format for training data
             if len(path[-2]) < 2 or len(path[-1]) < 4:
-                print(f"Skipping due to unexpected folder format")
+                continue
+                
+            # Only process training data (S1-S8, Seq1-Seq2)
+            if not (path[-2].startswith('S') and path[-1].startswith('Seq')):
                 continue
                 
             subject = path[-2][1]
