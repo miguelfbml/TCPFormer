@@ -238,14 +238,6 @@ def evaluate(model, test_loader, n_frames):
         print(f'{key}: {value*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
 
-    # Update wandb logging if enabled
-    if opts.use_wandb:
-        wandb_log = {
-            'eval/mpjpe': mpjpe_avg,
-            'eval/AUC': auc_avg,
-        }
-        wandb_log.update({f'eval/{key}': value for key, value in pck_results.items()})
-        wandb.log(wandb_log)
 
     return mpjpe_avg, data_inference
 
