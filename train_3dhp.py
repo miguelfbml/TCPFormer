@@ -277,7 +277,7 @@ def train(args, opts):
     test_dataset = Fusion(args, train=False)
 
     common_loader_params = {
-        'num_workers': 8,
+        'num_workers': 4,
         'pin_memory': True,
         'prefetch_factor': (opts.num_cpus - 1) // 3,
         'persistent_workers': True
