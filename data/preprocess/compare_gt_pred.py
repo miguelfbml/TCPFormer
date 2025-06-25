@@ -110,12 +110,16 @@ def read_mpi_gt(args):
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
 
-    # DO NOT set joint 14 to zero here! Keep the absolute positions
-    # The model predictions are already root-relative, but GT should keep absolute positions
+    # MAKE GROUND TRUTH ROOT-RELATIVE (like predictions)
+    # This centers the pose at joint 14 for each frame
+    print("Making ground truth root-relative...")
+    for t in range(sequence_3d.shape[1]):  # For each frame
+        root_position = sequence_3d[14, t, :].copy()  # Get root position
+        sequence_3d[:, t, :] = sequence_3d[:, t, :] - root_position  # Subtract from all joints
     
-    print(f"GT statistics after transformations:")
+    print(f"GT statistics after making root-relative:")
     print(f"  Min: {np.min(sequence_3d):.3f}, Max: {np.max(sequence_3d):.3f}")
-    print(f"  Root joint 14 (first frame): {sequence_3d[14, 0, :]}")
+    print(f"  Root joint 14 (first frame): {sequence_3d[14, 0, :]}")  # Should be [0, 0, 0]
     print(f"  Hip joint 8 (first frame): {sequence_3d[8, 0, :]}")
 
     convert_h36m_to_mpi_connection()
@@ -156,17 +160,20 @@ def load_predictions(args):
                              [0, -1, 0]], dtype=np.float32)
         pred_3d = pred_3d @ cam2real
         
-        # The predictions from inference_data.mat are already in absolute coordinates (not root-relative)
-        # This is because in train_3dhp.py, inference_out = pred_out + out_target[..., 14:15, :]
+        # MAKE PREDICTIONS ROOT-RELATIVE (they should already be, but ensure consistency)
+        print("Making predictions root-relative...")
+        for t in range(pred_3d.shape[1]):  # For each frame
+            root_position = pred_3d[14, t, :].copy()  # Get root position
+            pred_3d[:, t, :] = pred_3d[:, t, :] - root_position  # Subtract from all joints
         
-        print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")
+        print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")  # Should be [0, 0, 0]
         print(f"Prediction keypoint 8 (first frame): {pred_3d[8, 0, :]}")
         print(f"Prediction min/max values after transform: {np.min(pred_3d)}, {np.max(pred_3d)}")
         
         return pred_3d
     else:
         raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}. Available sequences: {available_seqs}")
-
+    
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
