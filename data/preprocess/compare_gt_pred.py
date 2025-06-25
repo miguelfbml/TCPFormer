@@ -40,6 +40,8 @@ def read_h36m_gt(args):
     convert_h36m_to_mpi_connection()
     return sample_joint_seq
 
+
+    '''
 def read_mpi_gt(args):
     @dataclass
     class DatasetArgs:
@@ -49,7 +51,7 @@ def read_mpi_gt(args):
         flip: bool
 
     dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
-    dataset = MPI3DHP(dataset_args, train=True)
+    dataset = MPI3DHP(dataset_args, train=False)  # Change to train=False for test data
 
     _, sequence_3d = dataset[args.sequence_number]
     sequence_3d = sequence_3d.cpu().numpy()
@@ -58,17 +60,61 @@ def read_mpi_gt(args):
                          [0, 0, -1],
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    # Debug GT data
-    print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[14, 0, :]}")
-    print(f"GT min/max values (before cam2real): {np.min(sequence_3d)}, {np.max(sequence_3d)}")
-    if np.any(np.isnan(sequence_3d)):
-        print("Warning: GT contains NaNs")
-    if np.all(sequence_3d == 0):
-        print("Warning: GT is all zeros")
+    
+    # Debug GT data BEFORE any transformations
+    print(f"GT original shape: {sequence_3d.shape}")
+    print(f"GT sample joints (first frame):")
+    for i in range(17):
+        print(f"  Joint {i}: {sequence_3d[i, 0, :]}")
+    
+    # Check for problematic values
+    print(f"GT has NaNs: {np.any(np.isnan(sequence_3d))}")
+    print(f"GT has Infs: {np.any(np.isinf(sequence_3d))}")
+    print(f"GT is all zeros: {np.allclose(sequence_3d, 0)}")
+    print(f"GT min/max: {np.min(sequence_3d):.3f}, {np.max(sequence_3d):.3f}")
+    
+    # Apply camera transformation
     sequence_3d = sequence_3d @ cam2real
-    print(f"GT keypoint 14 (first frame, after cam2real): {sequence_3d[14, 0, :]}")
+    
+    # Set joint 14 to zero (like visualize.py does)
+    sequence_3d[14, :, :] = 0
+    print(f"After setting joint 14 to zero and cam transform:")
+    print(f"GT joint 14 (first frame): {sequence_3d[14, 0, :]}")
+    print(f"GT joint 0 (first frame): {sequence_3d[0, 0, :]}")
+    print(f"GT joint 8 (first frame): {sequence_3d[8, 0, :]}")
+    
     convert_h36m_to_mpi_connection()
     return sequence_3d
+    '''
+
+
+    def read_mpi_gt(args):
+        @dataclass
+        class DatasetArgs:
+            data_root: str
+            n_frames: int
+            stride: int
+            flip: bool
+
+        dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
+        dataset = MPI3DHP(dataset_args, train=False)  # Use test data
+
+        # Get the exact same data format as visualize.py
+        _, sequence_3d = dataset[args.sequence_number]
+        sequence_3d = sequence_3d.cpu().numpy()
+        
+        # Apply the exact same transformations as visualize.py
+        sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
+        sequence_3d[14, ...] = 0  # Set root joint to 0 FIRST
+        
+        cam2real = np.array([[1, 0, 0],
+                            [0, 0, -1],
+                            [0, -1, 0]], dtype=np.float32)
+        sequence_3d = sequence_3d @ cam2real
+        
+        convert_h36m_to_mpi_connection()
+        return sequence_3d
+
 
 def load_predictions(args):
     data = scio.loadmat(args.inference_file)
@@ -173,34 +219,48 @@ def main():
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
-        # Ground truth connections
+        
+        # Debug ground truth for this frame
+        print(f"Frame {frame} GT joints range: X[{np.min(x_gt):.3f}, {np.max(x_gt):.3f}], Y[{np.min(y_gt):.3f}, {np.max(y_gt):.3f}], Z[{np.min(z_gt):.3f}, {np.max(z_gt):.3f}]")
+        
+        # Ground truth connections - simplified validation
+        connections_drawn = 0
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
-            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
+            
+            # More lenient validation - just check if values are finite
+            if np.all(np.isfinite(start)) and np.all(np.isfinite(end)):
                 ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2)
-        valid_points = ~(np.isnan(x_gt) | np.isnan(y_gt) | np.isnan(z_gt) | np.isinf(x_gt) | np.isinf(y_gt) | np.isinf(z_gt))
-        ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
-        # Highlight keypoint 14 if valid
-        if valid_points[14]:
-            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Root Joint')
-            ax1.legend()
+                connections_drawn += 1
+            else:
+                print(f"Skipping GT connection {connection}: start={start}, end={end}")
+        
+        print(f"Drew {connections_drawn} GT connections out of {len(connections)}")
+        
+        # Plot all GT joints (even if some connections are invalid)
+        valid_gt_mask = np.isfinite(x_gt) & np.isfinite(y_gt) & np.isfinite(z_gt)
+        if np.any(valid_gt_mask):
+            ax1.scatter(x_gt[valid_gt_mask], y_gt[valid_gt_mask], z_gt[valid_gt_mask], c='blue', s=50)
+            print(f"Plotted {np.sum(valid_gt_mask)} GT joints out of 17")
+        else:
+            print("No valid GT joints to plot!")
 
         # Plot prediction
         ax2.set_title('Prediction')
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
-        # Prediction connections - FIX: use ax2 instead of ax1
+        
+        # Prediction connections
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)  # Changed to ax2
+            if np.all(np.isfinite(start)) and np.all(np.isfinite(end)):
+                ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)
+        
         ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
-        # Highlight keypoint 14
-        ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Root Joint')
-        ax2.legend()
-
+        
         return ax1, ax2
 
     # Create animation
