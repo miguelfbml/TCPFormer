@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from utils.data import read_pkl
 from data.const import H36M_TO_MPI
-from data.reader.motion_dataset import MPI3DHP
+from data.reader.motion_dataset import MPI3DHP, Fusion
 
 # MPI-INF-3DHP skeleton connections
 connections = [
