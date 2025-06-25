@@ -58,8 +58,15 @@ def read_mpi_gt(args):
                          [0, 0, -1],
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    # Do not zero keypoint 14 to preserve original coordinates
+    # Debug GT data
+    print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[14, 0, :]}")
+    print(f"GT min/max values (before cam2real): {np.min(sequence_3d)}, {np.max(sequence_3d)}")
+    if np.any(np.isnan(sequence_3d)):
+        print("Warning: GT contains NaNs")
+    if np.all(sequence_3d == 0):
+        print("Warning: GT is all zeros")
     sequence_3d = sequence_3d @ cam2real
+    print(f"GT keypoint 14 (first frame, after cam2real): {sequence_3d[14, 0, :]}")
     convert_h36m_to_mpi_connection()
     return sequence_3d
 
@@ -81,6 +88,7 @@ def load_predictions(args):
     
     if seq_name in data:
         pred_3d = data[seq_name]  # Shape: (3, 17, 1, T)
+        print(f"Prediction raw shape: {pred_3d.shape}")
         if pred_3d.ndim == 4:  # (3, 17, 1, T)
             pred_3d = pred_3d[:, :, 0, :]  # (3, 17, T)
             pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
@@ -88,7 +96,9 @@ def load_predictions(args):
             pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
         elif pred_3d.ndim == 2:  # (17, 3)
             pred_3d = pred_3d[:, np.newaxis, :]  # (17, 1, 3)
-
+        # Debug prediction data
+        print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")
+        print(f"Prediction min/max values: {np.min(pred_3d)}, {np.max(pred_3d)}")
         # Apply same camera transformation as GT
         cam2real = np.array([[1, 0, 0],
                              [0, 0, -1],
@@ -125,9 +135,16 @@ def main():
     num_frames = min(gt_joint_seq.shape[1], pred_joint_seq.shape[1])
     gt_joint_seq = gt_joint_seq[:, :num_frames, :]
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
+    print(f"Number of frames for visualization: {num_frames}")
 
-    # Compute global min/max for consistent scaling
-    all_poses = np.vstack([gt_joint_seq.reshape(-1, 3), pred_joint_seq.reshape(-1, 3)])
+    # Compute global min/max for consistent scaling, excluding invalid GT values
+    valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
+    valid_pred = pred_joint_seq[~np.isnan(pred_joint_seq) & ~np.isinf(pred_joint_seq)]
+    if valid_gt.size == 0:
+        print("Warning: No valid GT data for scaling; using prediction data only")
+        all_poses = valid_pred
+    else:
+        all_poses = np.vstack([valid_gt.reshape(-1, 3), valid_pred.reshape(-1, 3)])
     min_value = np.min(all_poses, axis=0)
     max_value = np.max(all_poses, axis=0)
     padding = (max_value - min_value) * 0.1
@@ -156,14 +173,18 @@ def main():
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
+        # Skip invalid connections
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
-            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
-        ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=50)
-        # Highlight keypoint 14
-        ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Keypoint 14')
-        ax1.legend()
+            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
+                ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
+        valid_points = ~(np.isnan(x_gt) | np.isnan(y_gt) | np.isnan(z_gt) | np.isinf(x_gt) | np.isinf(y_gt) | np.isinf(z_gt))
+        ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
+        # Highlight keypoint 14 if valid
+        if valid_points[14]:
+            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Keypoint 14')
+            ax1.legend()
 
         # Plot prediction
         ax2.set_title('Prediction')
@@ -173,7 +194,7 @@ def main():
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
+            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
         ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
         # Highlight keypoint 14
         ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Keypoint 14')
