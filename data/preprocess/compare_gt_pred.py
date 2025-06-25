@@ -62,21 +62,20 @@ def read_mpi_gt(args):
     data_tuple = dataset[args.sequence_number]
     print(f"Dataset returned {len(data_tuple)} items")
     
-    # Handle 5-item tuple (missing one element compared to expected 6)
+    # Handle different tuple lengths
     if len(data_tuple) == 5:
-        # Likely: (gt_3D, input_2D, seq_name, scale, bb_box) - missing batch_cam
-        gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
-        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")  # Pay attention to this!
-        print(f"GT_3D type: {type(gt_3D)}")
-        print(f"GT_3D shape: {gt_3D.shape}")
-        sequence_3d = gt_3D
+        # Get the raw 3D data (before normalization)
+        _, _, raw_gt_3D, seq_name, _ = data_tuple  # Use the raw ground truth
+        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")
+        sequence_3d = raw_gt_3D
     elif len(data_tuple) == 6:
-        batch_cam, gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
-        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")  # Pay attention to this!
-        sequence_3d = gt_3D
+        _, _, _, raw_gt_3D, seq_name, _ = data_tuple  # Use the raw ground truth
+        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")
+        sequence_3d = raw_gt_3D
     else:
         print(f"Unexpected data tuple length: {len(data_tuple)}")
-        sequence_3d = data_tuple[1]  # Try the second element
+        # Try to get raw data - this should be the non-normalized version
+        sequence_3d = data_tuple[-3]  # Usually the raw GT is the third from last
 
     # Convert to numpy if needed
     if hasattr(sequence_3d, 'cpu'):
@@ -85,13 +84,6 @@ def read_mpi_gt(args):
         sequence_3d = sequence_3d.numpy()
 
     print(f"GT raw shape after conversion: {sequence_3d.shape}")
-    print(f"GT raw data sample (first few joints, first frame):")
-    if sequence_3d.ndim >= 2:
-        for i in range(min(5, sequence_3d.shape[0] if sequence_3d.ndim == 3 else sequence_3d.shape[1])):
-            if sequence_3d.ndim == 3:
-                print(f"  Joint {i}: {sequence_3d[i, 0, :] if sequence_3d.shape[1] > 0 else 'No frames'}")
-            else:
-                print(f"  Joint {i}: {sequence_3d[0, i, :] if sequence_3d.shape[0] > 0 else 'No data'}")
 
     # Handle different possible shapes
     if sequence_3d.ndim == 3:
@@ -109,11 +101,8 @@ def read_mpi_gt(args):
     # Check for problematic values BEFORE transformations
     print(f"GT statistics before transformations:")
     print(f"  Min: {np.min(sequence_3d):.3f}, Max: {np.max(sequence_3d):.3f}")
-    print(f"  Has NaNs: {np.any(np.isnan(sequence_3d))}")
-    print(f"  Has Infs: {np.any(np.isinf(sequence_3d))}")
-    print(f"  All zeros: {np.allclose(sequence_3d, 0)}")
-    # Fix the problematic line:
-    print(f"  Non-zero joints: {np.sum(~np.all(np.isclose(sequence_3d, 0), axis=2))}")
+    print(f"  Root joint 14 (first frame): {sequence_3d[14, 0, :]}")
+    print(f"  Hip joint 8 (first frame): {sequence_3d[8, 0, :]}")
 
     # Apply camera transformation
     cam2real = np.array([[1, 0, 0],
@@ -121,14 +110,13 @@ def read_mpi_gt(args):
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
 
-    # Set joint 14 to zero (like visualize.py does)
-    sequence_3d[14, :, :] = 0
-
+    # DO NOT set joint 14 to zero here! Keep the absolute positions
+    # The model predictions are already root-relative, but GT should keep absolute positions
+    
     print(f"GT statistics after transformations:")
     print(f"  Min: {np.min(sequence_3d):.3f}, Max: {np.max(sequence_3d):.3f}")
-    print(f"  Joint 0 (first frame): {sequence_3d[0, 0, :]}")
-    print(f"  Joint 8 (first frame): {sequence_3d[8, 0, :]}")
-    print(f"  Joint 14 (first frame): {sequence_3d[14, 0, :]}")
+    print(f"  Root joint 14 (first frame): {sequence_3d[14, 0, :]}")
+    print(f"  Hip joint 8 (first frame): {sequence_3d[8, 0, :]}")
 
     convert_h36m_to_mpi_connection()
     return sequence_3d
@@ -159,14 +147,22 @@ def load_predictions(args):
             pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
         elif pred_3d.ndim == 2:  # (17, 3)
             pred_3d = pred_3d[:, np.newaxis, :]  # (17, 1, 3)
-        # Debug prediction data
-        print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")
-        print(f"Prediction min/max values: {np.min(pred_3d)}, {np.max(pred_3d)}")
+        
+        print(f"Prediction min/max values before transform: {np.min(pred_3d)}, {np.max(pred_3d)}")
+        
         # Apply same camera transformation as GT
         cam2real = np.array([[1, 0, 0],
                              [0, 0, -1],
                              [0, -1, 0]], dtype=np.float32)
         pred_3d = pred_3d @ cam2real
+        
+        # The predictions from inference_data.mat are already in absolute coordinates (not root-relative)
+        # This is because in train_3dhp.py, inference_out = pred_out + out_target[..., 14:15, :]
+        
+        print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")
+        print(f"Prediction keypoint 8 (first frame): {pred_3d[8, 0, :]}")
+        print(f"Prediction min/max values after transform: {np.min(pred_3d)}, {np.max(pred_3d)}")
+        
         return pred_3d
     else:
         raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}. Available sequences: {available_seqs}")
