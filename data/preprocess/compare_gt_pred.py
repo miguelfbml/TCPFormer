@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from data.reader.motion_dataset import Fusion
 from data.const import H36M_TO_MPI
-from data.reader.motion_dataset import MPI3DHP
 
 # MPI-INF-3DHP skeleton connections
 connections = [
@@ -29,40 +28,45 @@ def convert_h36m_to_mpi_connection():
     connections = new_connections
 
 def load_ground_truth(sequence_idx=0):
-    """Load ground truth from test dataset using MPI3DHP class like visualize.py"""
+    """Load ground truth from test dataset"""
     @dataclass
     class DatasetArgs:
         data_root: str
         n_frames: int
         stride: int
         flip: bool
+        test_augmentation: bool
+        data_augmentation: bool
+        reverse_augmentation: bool
+        out_all: int
+        test_batch_size: int
 
-    # Use the same configuration as visualize.py
-    dataset_args = DatasetArgs('../motion3d/', 27, 9, False)  # T=27, stride=9
+    # Configure for T=27 (adjust based on your model)
+    dataset_args = DatasetArgs(
+        data_root='../motion3d/', 
+        n_frames=27, 
+        stride=9, 
+        flip=False,
+        test_augmentation=False,
+        data_augmentation=False,
+        reverse_augmentation=False,
+        out_all=1,
+        test_batch_size=1
+    )
     
-    # Use MPI3DHP dataset class directly (same as visualize.py)
-    dataset = MPI3DHP(dataset_args, train=False)  # train=False for test data
+    dataset = Fusion(dataset_args, train=False)
     
     if sequence_idx < len(dataset):
-        # Get data from MPI3DHP dataset (same structure as visualize.py)
-        input_2d, gt_3D_normalized, gt_3D, valid_frames, seq_name = dataset[sequence_idx]
+        cam, gt_3D, input_2D, seq_name, scale, bb_box = dataset[sequence_idx]
         
-        # Use the non-normalized ground truth (gt_3D) 
-        gt_3D = gt_3D.cpu().numpy()  # Convert tensor to numpy
+        # Convert to numpy and get the center frame
+        gt_3D = gt_3D.numpy()  # Shape: (1, 17, 3)
+        gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
         
-        # Take the center frame (middle of the sequence)
-        center_frame = gt_3D.shape[0] // 2
-        gt_3D = gt_3D[center_frame]  # Shape: (17, 3)
-        
-        # Apply the same camera transformation as visualize.py
+        # Apply camera transformation for visualization
         cam2real = np.array([[1, 0, 0],
                             [0, 0, -1],
                             [0, -1, 0]], dtype=np.float32)
-        
-        # Set root joint to 0 (same as visualize.py)
-        gt_3D[14, :] = 0
-        
-        # Apply camera transformation
         gt_3D = gt_3D @ cam2real
         
         convert_h36m_to_mpi_connection()
