@@ -41,7 +41,7 @@ def read_h36m_gt(args):
     return sample_joint_seq
 
 
-    '''
+    
 def read_mpi_gt(args):
     @dataclass
     class DatasetArgs:
@@ -114,6 +114,7 @@ def read_mpi_gt(args):
     
     convert_h36m_to_mpi_connection()
     return sequence_3d
+    '''
 
 
 def load_predictions(args):
