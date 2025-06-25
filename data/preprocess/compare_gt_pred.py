@@ -27,6 +27,7 @@ def convert_h36m_to_mpi_connection():
         new_connection = (H36M_TO_MPI[connection[0]], H36M_TO_MPI[connection[1]])
         new_connections.append(new_connection)
     connections = new_connections
+    print(f"Updated connections after H36M_TO_MPI mapping: {connections}")
 
 def read_h36m_gt(args):
     cam2real = np.array([[1, 0, 0],
@@ -137,7 +138,7 @@ def main():
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
     print(f"Number of frames for visualization: {num_frames}")
 
-    # Compute global min/max for consistent scaling, excluding invalid GT values
+    # Compute global min/max for consistent scaling, excluding invalid values
     valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
     valid_pred = pred_joint_seq[~np.isnan(pred_joint_seq) & ~np.isinf(pred_joint_seq)]
     if valid_gt.size == 0:
@@ -173,12 +174,14 @@ def main():
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
-        # Skip invalid connections
+        # Plot all connections, debug skipped ones
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
-            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
-                ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
+            if np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end)):
+                print(f"Skipping GT connection {connection} due to invalid values: start={start}, end={end}")
+                continue
+            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
         valid_points = ~(np.isnan(x_gt) | np.isnan(y_gt) | np.isnan(z_gt) | np.isinf(x_gt) | np.isinf(y_gt) | np.isinf(z_gt))
         ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
         # Highlight keypoint 14 if valid
@@ -191,12 +194,14 @@ def main():
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
-        # Plot connections, ensuring valid points
+        # Plot all connections, debug skipped ones
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
-                ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
+            if np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end)):
+                print(f"Skipping prediction connection {connection} due to invalid values: start={start}, end={end}")
+                continue
+            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
         valid_points_pred = ~(np.isnan(x_pred) | np.isnan(y_pred) | np.isnan(z_pred) | np.isinf(x_pred) | np.isinf(y_pred) | np.isinf(z_pred))
         ax2.scatter(x_pred[valid_points_pred], y_pred[valid_points_pred], z_pred[valid_points_pred], c='red', s=50)
         # Highlight keypoint 14 if valid
