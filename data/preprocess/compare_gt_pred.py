@@ -59,9 +59,18 @@ def load_ground_truth(sequence_idx=0):
     if sequence_idx < len(dataset):
         cam, gt_3D, input_2D, seq_name, scale, bb_box = dataset[sequence_idx]
         
-        # Convert to numpy and get the center frame
-        gt_3D = gt_3D.numpy()  # Shape: (1, 17, 3)
-        gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
+        # Convert to numpy - check if it's already numpy or torch tensor
+        if hasattr(gt_3D, 'numpy'):
+            gt_3D = gt_3D.numpy()  # It's a torch tensor
+        # If it's already numpy, gt_3D stays as is
+        
+        # Get the center frame (shape should be (1, 17, 3) -> (17, 3))
+        if gt_3D.ndim == 3 and gt_3D.shape[0] == 1:
+            gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
+        elif gt_3D.ndim == 2:
+            pass  # Already (17, 3)
+        else:
+            print(f"Unexpected GT shape: {gt_3D.shape}")
         
         # Apply camera transformation for visualization
         cam2real = np.array([[1, 0, 0],
