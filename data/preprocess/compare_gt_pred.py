@@ -28,47 +28,46 @@ def convert_h36m_to_mpi_connection():
     connections = new_connections
 
 def load_ground_truth(sequence_idx=0):
-    """Load ground truth from test dataset"""
-    # Load the raw test data directly
-    data_path = '../motion3d/data_test_3dhp.npz'
+    """Load ground truth from test dataset using MPI3DHP class like visualize.py"""
+    @dataclass
+    class DatasetArgs:
+        data_root: str
+        n_frames: int
+        stride: int
+        flip: bool
+
+    # Use the same configuration as visualize.py
+    dataset_args = DatasetArgs('../motion3d/', 27, 9, False)  # T=27, stride=9
     
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Test data file not found: {data_path}")
+    # Use MPI3DHP dataset class directly (same as visualize.py)
+    dataset = MPI3DHP(dataset_args, train=False)  # train=False for test data
     
-    data = np.load(data_path, allow_pickle=True)['data'].item()
-    
-    # Get sequence names (TS1, TS2, etc.)
-    seq_names = list(data.keys())
-    seq_names.sort()  # Sort to have consistent ordering
-    
-    if sequence_idx >= len(seq_names):
-        raise ValueError(f"Sequence index {sequence_idx} out of range. Available sequences: {len(seq_names)}")
-    
-    seq_name = seq_names[sequence_idx]
-    print(f"Loading sequence: {seq_name}")
-    
-    # Get the sequence data
-    seq_data = data[seq_name]
-    cameras = list(seq_data[0].keys())  # Get available cameras
-    
-    # Use the first available camera
-    cam_data = seq_data[0][cameras[0]]
-    gt_3d = cam_data['data_3d']  # Shape: (T, 17, 3)
-    
-    # Take the first frame for visualization
-    gt_3d_frame = gt_3d[0]  # Shape: (17, 3)
-    
-    # Apply camera transformation for MPI-INF-3DHP
-    cam2real = np.array([[1, 0, 0],
-                        [0, 0, -1],
-                        [0, -1, 0]], dtype=np.float32)
-    gt_3d_frame = gt_3d_frame @ cam2real
-    
-    # Make root-relative (subtract root joint position)
-    gt_3d_frame = gt_3d_frame - gt_3d_frame[14:15, :]  # Joint 14 is the root in MPI-INF-3DHP
-    
-    convert_h36m_to_mpi_connection()
-    return gt_3d_frame, seq_name
+    if sequence_idx < len(dataset):
+        # Get data from MPI3DHP dataset (same structure as visualize.py)
+        input_2d, gt_3D_normalized, gt_3D, valid_frames, seq_name = dataset[sequence_idx]
+        
+        # Use the non-normalized ground truth (gt_3D) 
+        gt_3D = gt_3D.cpu().numpy()  # Convert tensor to numpy
+        
+        # Take the center frame (middle of the sequence)
+        center_frame = gt_3D.shape[0] // 2
+        gt_3D = gt_3D[center_frame]  # Shape: (17, 3)
+        
+        # Apply the same camera transformation as visualize.py
+        cam2real = np.array([[1, 0, 0],
+                            [0, 0, -1],
+                            [0, -1, 0]], dtype=np.float32)
+        
+        # Set root joint to 0 (same as visualize.py)
+        gt_3D[14, :] = 0
+        
+        # Apply camera transformation
+        gt_3D = gt_3D @ cam2real
+        
+        convert_h36m_to_mpi_connection()
+        return gt_3D, seq_name
+    else:
+        raise ValueError(f"Sequence index {sequence_idx} out of range")
 
 def load_predictions(inference_file, seq_name):
     """Load predictions from inference_data.mat"""
