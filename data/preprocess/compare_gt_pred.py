@@ -142,6 +142,8 @@ def main():
     parser.add_argument('--dataset', choices=['h36m', 'mpi'], default='mpi')
     parser.add_argument('--inference-file', type=str, default='../../checkpoint_mpi/inference_data.mat',
                         help='Path to inference_data.mat file')
+    parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
+    parser.add_argument('--num-frames', type=int, default=50, help='Number of frames to compare')
     args = parser.parse_args()
 
     print(f"Comparing sequence {args.sequence_number} of {args.dataset} dataset")
@@ -164,11 +166,42 @@ def main():
     pred_joint_seq = load_predictions(args)
     print(f"Prediction shape: {pred_joint_seq.shape}")
 
-    # Ensure same number of frames
+    # PROPER TEMPORAL ALIGNMENT
+    # Ground truth uses windowed sampling, predictions are full sequences
+    # We need to extract corresponding frames from predictions
+    
+    gt_frames = gt_joint_seq.shape[1]
+    pred_frames = pred_joint_seq.shape[1]
+    
+    print(f"GT frames: {gt_frames}, Pred frames: {pred_frames}")
+    
+    # Method 1: Sample predictions to match GT temporal sampling
+    if pred_frames > gt_frames:
+        # If we have more prediction frames, sample them to match GT
+        # Assuming GT represents center frames of a longer sequence
+        center_start = (pred_frames - gt_frames) // 2
+        pred_joint_seq = pred_joint_seq[:, center_start:center_start + gt_frames, :]
+        print(f"Sampled predictions from frame {center_start} to {center_start + gt_frames}")
+    elif gt_frames > pred_frames:
+        # If GT has more frames, truncate it
+        gt_joint_seq = gt_joint_seq[:, :pred_frames, :]
+        print(f"Truncated GT to {pred_frames} frames")
+    
+    # Ensure exact same number of frames
     num_frames = min(gt_joint_seq.shape[1], pred_joint_seq.shape[1])
     gt_joint_seq = gt_joint_seq[:, :num_frames, :]
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
-    print(f"Number of frames for visualization: {num_frames}")
+    
+    # Optional: Limit visualization to a reasonable number of frames
+    if num_frames > args.num_frames:
+        start_frame = args.frame_start
+        end_frame = min(start_frame + args.num_frames, num_frames)
+        gt_joint_seq = gt_joint_seq[:, start_frame:end_frame, :]
+        pred_joint_seq = pred_joint_seq[:, start_frame:end_frame, :]
+        num_frames = end_frame - start_frame
+        print(f"Limited visualization to frames {start_frame}-{end_frame} ({num_frames} frames)")
+    
+    print(f"Final number of frames for visualization: {num_frames}")
 
     # Compute global min/max for consistent scaling
     valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
@@ -185,7 +218,7 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': '3d'})
     seq_title = args.sequence_name if args.sequence_name else f"Sequence {args.sequence_number}"
-    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title}')
+    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title} (Frames: {num_frames})')
 
     def update(frame):
         ax1.clear()
@@ -201,7 +234,7 @@ def main():
             ax.set_zlabel('Z')
 
         # Plot ground truth
-        ax1.set_title('Ground Truth')
+        ax1.set_title(f'Ground Truth (Frame {frame + 1}/{num_frames})')
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
@@ -219,7 +252,7 @@ def main():
         ax1.legend()
 
         # Plot prediction
-        ax2.set_title('Prediction')
+        ax2.set_title(f'Prediction (Frame {frame + 1}/{num_frames})')
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
@@ -235,10 +268,10 @@ def main():
 
         return ax1, ax2
 
-    # Create animation
-    ani = FuncAnimation(fig, update, frames=num_frames, interval=50)
-    output_path = f'../{args.dataset}_comparison_{seq_title.replace(" ", "_").lower()}.gif'
-    ani.save(output_path, writer='pillow', fps=20)
+    # Create animation with slower speed
+    ani = FuncAnimation(fig, update, frames=num_frames, interval=100, repeat=True)  # Increased interval to 100ms
+    output_path = f'../{args.dataset}_comparison_{seq_title.replace(" ", "_").lower()}_frames_{args.frame_start}_{args.frame_start + num_frames}.gif'
+    ani.save(output_path, writer='pillow', fps=10)  # Reduced FPS to 10
     print(f"Comparison GIF saved to: {output_path}")
 
     # Save static image of first frame
