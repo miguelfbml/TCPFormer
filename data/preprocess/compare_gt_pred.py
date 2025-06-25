@@ -49,7 +49,7 @@ def read_mpi_gt(args):
         flip: bool
 
     dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
-    dataset = MPI3DHP(dataset_args, train=False)  # Use train=False for test data
+    dataset = MPI3DHP(dataset_args, train=False)
 
     print(f"Dataset length: {len(dataset)}")
     print(f"Requesting sequence: {args.sequence_number}")
@@ -62,12 +62,17 @@ def read_mpi_gt(args):
     data_tuple = dataset[args.sequence_number]
     print(f"Dataset returned {len(data_tuple)} items")
     
-    # MPI3DHP returns: (batch_cam, gt_3D, input_2D, seq_name, scale, bb_box)
-    if len(data_tuple) == 6:
-        batch_cam, gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
+    # Handle 5-item tuple (missing one element compared to expected 6)
+    if len(data_tuple) == 5:
+        # Likely: (gt_3D, input_2D, seq_name, scale, bb_box) - missing batch_cam
+        gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
         print(f"Sequence name: {seq_name}")
         print(f"GT_3D type: {type(gt_3D)}")
         print(f"GT_3D shape: {gt_3D.shape}")
+        sequence_3d = gt_3D
+    elif len(data_tuple) == 6:
+        batch_cam, gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
+        print(f"Sequence name: {seq_name}")
         sequence_3d = gt_3D
     else:
         print(f"Unexpected data tuple length: {len(data_tuple)}")
@@ -107,7 +112,8 @@ def read_mpi_gt(args):
     print(f"  Has NaNs: {np.any(np.isnan(sequence_3d))}")
     print(f"  Has Infs: {np.any(np.isinf(sequence_3d))}")
     print(f"  All zeros: {np.allclose(sequence_3d, 0)}")
-    print(f"  Non-zero joints: {np.sum(~np.allclose(sequence_3d, 0, axis=2))}")
+    # Fix the problematic line:
+    print(f"  Non-zero joints: {np.sum(~np.all(np.isclose(sequence_3d, 0), axis=2))}")
 
     # Apply camera transformation
     cam2real = np.array([[1, 0, 0],
