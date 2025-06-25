@@ -191,14 +191,18 @@ def main():
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
+        # Plot connections, ensuring valid points
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
-        ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
-        # Highlight keypoint 14
-        ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Keypoint 14')
-        ax2.legend()
+            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
+                ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
+        valid_points_pred = ~(np.isnan(x_pred) | np.isnan(y_pred) | np.isnan(z_pred) | np.isinf(x_pred) | np.isinf(y_pred) | np.isinf(z_pred))
+        ax2.scatter(x_pred[valid_points_pred], y_pred[valid_points_pred], z_pred[valid_points_pred], c='red', s=50)
+        # Highlight keypoint 14 if valid
+        if valid_points_pred[14]:
+            ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Keypoint 14')
+            ax2.legend()
 
         return ax1, ax2
 
