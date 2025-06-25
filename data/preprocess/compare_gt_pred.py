@@ -5,12 +5,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from dataclasses import dataclass
-from data.reader.motion_dataset import Fusion, MPI3DHP
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
-from data.reader.motion_dataset import Fusion
+from data.reader.motion_dataset import Fusion, MPI3DHP
 from data.const import H36M_TO_MPI
 
 # MPI-INF-3DHP skeleton connections
