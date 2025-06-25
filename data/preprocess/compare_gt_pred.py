@@ -55,17 +55,21 @@ def read_mpi_gt(args):
     _, sequence_3d = dataset[args.sequence_number]
     sequence_3d = sequence_3d.cpu().numpy()
 
-    cam2real = np.array([[1, 0, 0],
-                         [0, 0, -1],
-                         [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    # Debug GT data
+    # Debug raw GT data
+    print(f"Raw GT data (first frame, all keypoints):\n{sequence_3d[:, 0, :]}")
     print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[14, 0, :]}")
     print(f"GT min/max values (before cam2real): {np.min(sequence_3d)}, {np.max(sequence_3d)}")
     if np.any(np.isnan(sequence_3d)):
         print("Warning: GT contains NaNs")
     if np.all(sequence_3d == 0):
         print("Warning: GT is all zeros")
+    if np.any(np.isinf(sequence_3d)):
+        print("Warning: GT contains infinite values")
+
+    cam2real = np.array([[1, 0, 0],
+                         [0, 0, -1],
+                         [0, -1, 0]], dtype=np.float32)
+    sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
     sequence_3d = sequence_3d @ cam2real
     print(f"GT keypoint 14 (first frame, after cam2real): {sequence_3d[14, 0, :]}")
     convert_h36m_to_mpi_connection()
@@ -138,6 +142,11 @@ def main():
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
     print(f"Number of frames for visualization: {num_frames}")
 
+    # Check if GT is entirely invalid
+    if np.all(np.isnan(gt_joint_seq)) or np.all(np.isinf(gt_joint_seq)) or np.all(gt_joint_seq == 0):
+        print("Warning: GT data is entirely invalid; using predictions as GT for visualization")
+        gt_joint_seq = pred_joint_seq.copy()
+
     # Compute global min/max for consistent scaling, excluding invalid values
     valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
     valid_pred = pred_joint_seq[~np.isnan(pred_joint_seq) & ~np.isinf(pred_joint_seq)]
@@ -174,7 +183,7 @@ def main():
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
-        # Plot all connections, debug skipped ones
+        # Plot connections, allowing zeros
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
@@ -182,8 +191,12 @@ def main():
                 print(f"Skipping GT connection {connection} due to invalid values: start={start}, end={end}")
                 continue
             ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
+        # Plot keypoints, allowing zeros
         valid_points = ~(np.isnan(x_gt) | np.isnan(y_gt) | np.isnan(z_gt) | np.isinf(x_gt) | np.isinf(y_gt) | np.isinf(z_gt))
-        ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
+        if np.any(valid_points):
+            ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
+        else:
+            print(f"No valid GT keypoints to plot for frame {frame}")
         # Highlight keypoint 14 if valid
         if valid_points[14]:
             ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Keypoint 14')
@@ -194,7 +207,7 @@ def main():
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
-        # Plot all connections, debug skipped ones
+        # Plot connections, allowing zeros
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
@@ -202,8 +215,12 @@ def main():
                 print(f"Skipping prediction connection {connection} due to invalid values: start={start}, end={end}")
                 continue
             ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
+        # Plot keypoints, allowing zeros
         valid_points_pred = ~(np.isnan(x_pred) | np.isnan(y_pred) | np.isnan(z_pred) | np.isinf(x_pred) | np.isinf(y_pred) | np.isinf(z_pred))
-        ax2.scatter(x_pred[valid_points_pred], y_pred[valid_points_pred], z_pred[valid_points_pred], c='red', s=50)
+        if np.any(valid_points_pred):
+            ax2.scatter(x_pred[valid_points_pred], y_pred[valid_points_pred], z_pred[valid_points_pred], c='red', s=50)
+        else:
+            print(f"No valid prediction keypoints to plot for frame {frame}")
         # Highlight keypoint 14 if valid
         if valid_points_pred[14]:
             ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Keypoint 14')
