@@ -49,24 +49,81 @@ def read_mpi_gt(args):
         flip: bool
 
     dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
-    dataset = MPI3DHP(dataset_args, train=True)
+    dataset = MPI3DHP(dataset_args, train=False)  # Use train=False for test data
 
-    _, sequence_3d = dataset[args.sequence_number]
-    sequence_3d = sequence_3d.cpu().numpy()
+    print(f"Dataset length: {len(dataset)}")
+    print(f"Requesting sequence: {args.sequence_number}")
+    
+    if args.sequence_number >= len(dataset):
+        print(f"ERROR: Sequence {args.sequence_number} is out of range! Dataset has {len(dataset)} sequences.")
+        return None
 
+    # Get data from dataset
+    data_tuple = dataset[args.sequence_number]
+    print(f"Dataset returned {len(data_tuple)} items")
+    
+    # MPI3DHP returns: (batch_cam, gt_3D, input_2D, seq_name, scale, bb_box)
+    if len(data_tuple) == 6:
+        batch_cam, gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
+        print(f"Sequence name: {seq_name}")
+        print(f"GT_3D type: {type(gt_3D)}")
+        print(f"GT_3D shape: {gt_3D.shape}")
+        sequence_3d = gt_3D
+    else:
+        print(f"Unexpected data tuple length: {len(data_tuple)}")
+        sequence_3d = data_tuple[1]  # Try the second element
+
+    # Convert to numpy if needed
+    if hasattr(sequence_3d, 'cpu'):
+        sequence_3d = sequence_3d.cpu().numpy()
+    elif hasattr(sequence_3d, 'numpy'):
+        sequence_3d = sequence_3d.numpy()
+
+    print(f"GT raw shape after conversion: {sequence_3d.shape}")
+    print(f"GT raw data sample (first few joints, first frame):")
+    if sequence_3d.ndim >= 2:
+        for i in range(min(5, sequence_3d.shape[0] if sequence_3d.ndim == 3 else sequence_3d.shape[1])):
+            if sequence_3d.ndim == 3:
+                print(f"  Joint {i}: {sequence_3d[i, 0, :] if sequence_3d.shape[1] > 0 else 'No frames'}")
+            else:
+                print(f"  Joint {i}: {sequence_3d[0, i, :] if sequence_3d.shape[0] > 0 else 'No data'}")
+
+    # Handle different possible shapes
+    if sequence_3d.ndim == 3:
+        if sequence_3d.shape[0] == 17:  # (17, T, 3)
+            pass  # Already correct
+        elif sequence_3d.shape[1] == 17:  # (T, 17, 3)
+            sequence_3d = sequence_3d.transpose(1, 0, 2)  # -> (17, T, 3)
+        elif sequence_3d.shape[2] == 17:  # (T, 3, 17)
+            sequence_3d = sequence_3d.transpose(2, 0, 1)  # -> (17, T, 3)
+    elif sequence_3d.ndim == 2:  # (17, 3) - single frame
+        sequence_3d = sequence_3d[:, np.newaxis, :]  # -> (17, 1, 3)
+
+    print(f"GT shape after reshaping: {sequence_3d.shape}")
+
+    # Check for problematic values BEFORE transformations
+    print(f"GT statistics before transformations:")
+    print(f"  Min: {np.min(sequence_3d):.3f}, Max: {np.max(sequence_3d):.3f}")
+    print(f"  Has NaNs: {np.any(np.isnan(sequence_3d))}")
+    print(f"  Has Infs: {np.any(np.isinf(sequence_3d))}")
+    print(f"  All zeros: {np.allclose(sequence_3d, 0)}")
+    print(f"  Non-zero joints: {np.sum(~np.allclose(sequence_3d, 0, axis=2))}")
+
+    # Apply camera transformation
     cam2real = np.array([[1, 0, 0],
                          [0, 0, -1],
                          [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    # Debug GT data
-    print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[14, 0, :]}")
-    print(f"GT min/max values (before cam2real): {np.min(sequence_3d)}, {np.max(sequence_3d)}")
-    if np.any(np.isnan(sequence_3d)):
-        print("Warning: GT contains NaNs")
-    if np.all(sequence_3d == 0):
-        print("Warning: GT is all zeros")
     sequence_3d = sequence_3d @ cam2real
-    print(f"GT keypoint 14 (first frame, after cam2real): {sequence_3d[14, 0, :]}")
+
+    # Set joint 14 to zero (like visualize.py does)
+    sequence_3d[14, :, :] = 0
+
+    print(f"GT statistics after transformations:")
+    print(f"  Min: {np.min(sequence_3d):.3f}, Max: {np.max(sequence_3d):.3f}")
+    print(f"  Joint 0 (first frame): {sequence_3d[0, 0, :]}")
+    print(f"  Joint 8 (first frame): {sequence_3d[8, 0, :]}")
+    print(f"  Joint 14 (first frame): {sequence_3d[14, 0, :]}")
+
     convert_h36m_to_mpi_connection()
     return sequence_3d
 
@@ -168,36 +225,48 @@ def main():
             ax.set_ylabel('Y')
             ax.set_zlabel('Z')
 
-        # Plot ground truth
+        # Plot ground truth - FORCE PLOTTING
         ax1.set_title('Ground Truth')
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
-        # Ground truth connections
-        for connection in connections:
+        
+        print(f"Frame {frame} GT debug:")
+        print(f"  X range: [{np.min(x_gt):.3f}, {np.max(x_gt):.3f}]")
+        print(f"  Y range: [{np.min(y_gt):.3f}, {np.max(y_gt):.3f}]")
+        print(f"  Z range: [{np.min(z_gt):.3f}, {np.max(z_gt):.3f}]")
+        
+        # ALWAYS plot GT joints regardless of validity
+        ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=50, alpha=0.8)
+        
+        # ALWAYS try to draw GT connections
+        connections_drawn = 0
+        for i, connection in enumerate(connections):
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
-            if not (np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end))):
+            try:
                 ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2)
-        valid_points = ~(np.isnan(x_gt) | np.isnan(y_gt) | np.isnan(z_gt) | np.isinf(x_gt) | np.isinf(y_gt) | np.isinf(z_gt))
-        ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50)
-        # Highlight keypoint 14 if valid
-        if valid_points[14]:
-            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Root Joint')
-            ax1.legend()
+                connections_drawn += 1
+            except Exception as e:
+                print(f"Failed to draw GT connection {i} ({connection}): {e}")
+        
+        print(f"Drew {connections_drawn}/{len(connections)} GT connections")
+        
+        # Highlight keypoint 14
+        ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Root Joint')
+        ax1.legend()
 
-        # Plot prediction
+        # Plot prediction (keep original code)
         ax2.set_title('Prediction')
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
-        # Prediction connections - FIX: use ax2 instead of ax1
+        
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)  # Changed to ax2
+            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)
         ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
-        # Highlight keypoint 14
         ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Root Joint')
         ax2.legend()
 
