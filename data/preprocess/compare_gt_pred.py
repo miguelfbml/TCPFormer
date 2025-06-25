@@ -156,11 +156,8 @@ def align_sequences(gt_seq, pred_seq):
     gt_flat = gt_seq[[i for i in range(17) if i != 14], :, :].reshape(gt_frames, -1)
     pred_flat = pred_seq[[i for i in range(17) if i != 14], :, :].reshape(pred_frames, -1)
     
-    # Compute DTW alignment
-    def euclidean_dist(x, y):
-        return np.sqrt(np.sum((x - y) ** 2))
-    
-    alignment = dtw(gt_flat, pred_flat, dist=euclidean_dist)
+    # Compute DTW alignment with Euclidean distance
+    alignment = dtw(gt_flat, pred_flat, keep_internals=True)
     gt_indices, pred_indices = alignment.index1, alignment.index2
     
     # Debug DTW alignment
@@ -260,7 +257,7 @@ def main():
             ax.set_zlabel('Z')
 
         # Plot ground truth
-        ax1.set_title(f'Ground Truth (Frame {frame + 1}/{num_frames})')
+        ax1.set_title(f'Ground Truth (Frame {frame + args.frame_start + 1}/{args.frame_start + num_frames})')
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
@@ -270,14 +267,14 @@ def main():
         if np.any(valid_points):
             ax1.scatter(x_gt[valid_points], y_gt[valid_points], z_gt[valid_points], c='blue', s=50, alpha=0.8)
         else:
-            print(f"No valid GT keypoints for frame {frame}")
+            print(f"No valid GT keypoints for frame {frame + args.frame_start}")
         
         # Draw GT connections
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
             if np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end)):
-                print(f"Skipping GT connection {connection} in frame {frame}: start={start}, end={end}")
+                print(f"Skipping GT connection {connection} in frame {frame + args.frame_start}: start={start}, end={end}")
                 continue
             ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2)
         
@@ -287,7 +284,7 @@ def main():
             ax1.legend()
 
         # Plot prediction
-        ax2.set_title(f'Prediction (Frame {frame + 1}/{num_frames})')
+        ax2.set_title(f'Prediction (Frame {frame + args.frame_start + 1}/{args.frame_start + num_frames})')
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
@@ -297,14 +294,14 @@ def main():
         if np.any(valid_points_pred):
             ax2.scatter(x_pred[valid_points_pred], y_pred[valid_points_pred], z_pred[valid_points_pred], c='red', s=50)
         else:
-            print(f"No valid prediction keypoints for frame {frame}")
+            print(f"No valid prediction keypoints for frame {frame + args.frame_start}")
         
         # Draw prediction connections
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
             if np.any(np.isnan(start)) or np.any(np.isnan(end)) or np.any(np.isinf(start)) or np.any(np.isinf(end)):
-                print(f"Skipping prediction connection {connection} in frame {frame}: start={start}, end={end}")
+                print(f"Skipping prediction connection {connection} in frame {frame + args.frame_start}: start={start}, end={end}")
                 continue
             ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)
         
