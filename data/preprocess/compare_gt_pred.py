@@ -41,114 +41,129 @@ def read_h36m_gt(args):
     return sample_joint_seq
 
 def read_mpi_gt(args):
+    """Load ground truth exactly as in train_3dhp.py evaluation"""
     @dataclass
     class DatasetArgs:
         data_root: str
         n_frames: int
         stride: int
         flip: bool
+        test_augmentation: bool
+        data_augmentation: bool
+        reverse_augmentation: bool
+        out_all: int
+        test_batch_size: int
 
-    dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
-    dataset = MPI3DHP(dataset_args, train=False)
-
+    # Use same parameters as your model evaluation
+    dataset_args = DatasetArgs(
+        data_root='../motion3d/', 
+        n_frames=27,  # Same as your model's n_frames
+        stride=9,     # Same as your model's stride
+        flip=False,
+        test_augmentation=False,
+        data_augmentation=False,
+        reverse_augmentation=False,
+        out_all=1,
+        test_batch_size=1
+    )
+    
+    dataset = Fusion(dataset_args, train=False)  # Use Fusion like train_3dhp.py
+    
     if args.sequence_number >= len(dataset):
         print(f"ERROR: Sequence {args.sequence_number} is out of range! Dataset has {len(dataset)} sequences.")
         return None
 
-    data_tuple = dataset[args.sequence_number]
+    # Get multiple samples to build a sequence
+    sequence_data = []
+    target_seq_name = None
     
-    # Handle different tuple lengths
-    if len(data_tuple) == 5:
-        _, _, raw_gt_3D, seq_name, _ = data_tuple
-        sequence_3d = raw_gt_3D
-    elif len(data_tuple) == 6:
-        _, _, _, raw_gt_3D, seq_name, _ = data_tuple
-        sequence_3d = raw_gt_3D
-    else:
-        sequence_3d = data_tuple[-3]
-
-    # Convert to numpy if needed
-    if hasattr(sequence_3d, 'cpu'):
-        sequence_3d = sequence_3d.cpu().numpy()
-    elif hasattr(sequence_3d, 'numpy'):
-        sequence_3d = sequence_3d.numpy()
-
-    # Handle different possible shapes
-    if sequence_3d.ndim == 3:
-        if sequence_3d.shape[0] == 17:  # (17, T, 3)
-            pass  # Already correct
-        elif sequence_3d.shape[1] == 17:  # (T, 17, 3)
-            sequence_3d = sequence_3d.transpose(1, 0, 2)  # -> (17, T, 3)
-        elif sequence_3d.shape[2] == 17:  # (T, 3, 17)
-            sequence_3d = sequence_3d.transpose(2, 0, 1)  # -> (17, T, 3)
-    elif sequence_3d.ndim == 2:  # (17, 3) - single frame
-        sequence_3d = sequence_3d[:, np.newaxis, :]  # -> (17, 1, 3)
-
+    for i in range(min(len(dataset), 100)):  # Sample multiple windows
+        try:
+            batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
+            
+            current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else seq
+            
+            # Filter by target sequence if specified
+            if args.sequence_name and current_seq_name != args.sequence_name:
+                continue
+            
+            if target_seq_name is None:
+                target_seq_name = current_seq_name
+            elif target_seq_name != current_seq_name:
+                continue
+            
+            # Process exactly like train_3dhp.py
+            gt_3D = gt_3D.clone().view(1, -1, 17, 3)  # N=1, T, 17, 3
+            gt_3D[:, :, 14] = 0  # Set root joint to 0
+            
+            # Extract center frame (same as evaluation)
+            center_frame = gt_3D.shape[1] // 2
+            center_pose = gt_3D[0, center_frame]  # (17, 3)
+            
+            # Make root-relative (same as evaluation)
+            center_pose = center_pose - center_pose[14:15, :]
+            
+            sequence_data.append(center_pose.cpu().numpy())
+            
+        except Exception as e:
+            continue
+    
+    if not sequence_data:
+        print("No valid ground truth data found")
+        return None
+    
+    # Stack frames: (17, T, 3)
+    sequence_3d = np.stack(sequence_data, axis=1)
+    
     # Apply camera transformation
-    cam2real = np.array([[1, 0, 0],
-                         [0, 0, -1],
-                         [0, -1, 0]], dtype=np.float32)
+    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
-
-    # Make ground truth root-relative
-    for t in range(sequence_3d.shape[1]):
-        root_position = sequence_3d[14, t, :].copy()
-        sequence_3d[:, t, :] = sequence_3d[:, t, :] - root_position
-
+    
     convert_h36m_to_mpi_connection()
-    return sequence_3d
+    print(f"Ground truth sequence: {target_seq_name}, shape: {sequence_3d.shape}")
+    return sequence_3d, target_seq_name
 
-def load_predictions(args):
+def load_predictions(args, gt_seq_name):
+    """Load predictions from inference_data.mat, matching the GT sequence"""
     data = scio.loadmat(args.inference_file)
     
     available_seqs = [key for key in data.keys() if not key.startswith('__')]
+    print(f"Available sequences in inference file: {available_seqs}")
     
-    seq_name = args.sequence_name if args.sequence_name else None
-    if seq_name is None:
+    # Use the ground truth sequence name
+    seq_name = gt_seq_name
+    
+    if seq_name not in data:
+        print(f"Sequence {seq_name} not found in inference file")
+        # Try to match by index
         if args.sequence_number < len(available_seqs):
             seq_name = available_seqs[args.sequence_number]
+            print(f"Using sequence by index: {seq_name}")
         else:
-            raise ValueError(f"Sequence index {args.sequence_number} out of range. Available sequences: {available_seqs}")
+            raise ValueError(f"No matching sequence found")
     
-    if seq_name in data:
-        pred_3d = data[seq_name]
-        if pred_3d.ndim == 4:  # (3, 17, 1, T)
-            pred_3d = pred_3d[:, :, 0, :]  # (3, 17, T)
-            pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
-        elif pred_3d.ndim == 3:  # (3, 17, T)
-            pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
-        elif pred_3d.ndim == 2:  # (17, 3)
-            pred_3d = pred_3d[:, np.newaxis, :]  # (17, 1, 3)
-        
-        # Apply camera transformation
-        cam2real = np.array([[1, 0, 0],
-                             [0, 0, -1],
-                             [0, -1, 0]], dtype=np.float32)
-        pred_3d = pred_3d @ cam2real
-        
-        # Rotate prediction 90 degrees around Z-axis
-        # Rotation matrix for 90 degrees around Z-axis: 
-        # [cos(90°) -sin(90°) 0]   [0 -1 0]
-        # [sin(90°)  cos(90°) 0] = [1  0 0]
-        # [0         0        1]   [0  0 1]
-        rotation_z_90 = np.array([[0, -1, 0],
-                                  [1,  0, 0],
-                                  [0,  0, 1]], dtype=np.float32)
-        pred_3d = pred_3d @ rotation_z_90
-        
-        # Make predictions root-relative
-        for t in range(pred_3d.shape[1]):
-            root_position = pred_3d[14, t, :].copy()
-            pred_3d[:, t, :] = pred_3d[:, t, :] - root_position
-        
-        return pred_3d
-    else:
-        raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}. Available sequences: {available_seqs}")
+    pred_3d = data[seq_name]
+    print(f"Loaded prediction for sequence: {seq_name}, shape: {pred_3d.shape}")
+    
+    if pred_3d.ndim == 4:  # (3, 17, 1, T)
+        pred_3d = pred_3d[:, :, 0, :]  # (3, 17, T)
+        pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
+    elif pred_3d.ndim == 3:  # (3, 17, T)
+        pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
+    
+    # Apply camera transformation
+    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+    pred_3d = pred_3d @ cam2real
+    
+    # The predictions from inference_data.mat are already processed correctly
+    # They should already be in the right coordinate system
+    
+    return pred_3d
     
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
-    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence name in inference file')
+    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence name')
     parser.add_argument('--dataset', choices=['h36m', 'mpi'], default='mpi')
     parser.add_argument('--inference-file', type=str, default='../../checkpoint_mpi/inference_data.mat',
                         help='Path to inference_data.mat file')
@@ -158,60 +173,31 @@ def main():
 
     print(f"Comparing sequence {args.sequence_number} of {args.dataset} dataset")
 
-    # Load ground truth
-    dataset_reader_mapper = {
-        'h36m': read_h36m_gt,
-        'mpi': read_mpi_gt,
-    }
-    gt_joint_seq = dataset_reader_mapper[args.dataset](args)
+    # Load ground truth with the same method as train_3dhp.py
+    if args.dataset == 'mpi':
+        gt_result = read_mpi_gt(args)
+        if gt_result is None:
+            return
+        gt_joint_seq, gt_seq_name = gt_result
+    else:
+        gt_joint_seq = read_h36m_gt(args)
+        gt_seq_name = f"h36m_seq_{args.sequence_number}"
+    
     print(f"Ground truth shape: {gt_joint_seq.shape}")
 
-    available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
-    
-    if args.sequence_name is None:
-        args.sequence_name = available_sequences[args.sequence_number % len(available_sequences)]
-        print(f"Using sequence: {args.sequence_name}")
-
-    # Load predictions
-    pred_joint_seq = load_predictions(args)
+    # Load predictions using the same sequence name
+    pred_joint_seq = load_predictions(args, gt_seq_name)
     print(f"Prediction shape: {pred_joint_seq.shape}")
 
-    # PROPER TEMPORAL ALIGNMENT FOR MPI-INF-3DHP
-    # Ground truth: sliding window with stride=81, n_frames=243
-    # Predictions: full sequence
+    # Now both GT and predictions should be synchronized
+    # Both represent the same temporal sampling as used in evaluation
     
-    gt_frames = gt_joint_seq.shape[1]  # 243
-    pred_frames = pred_joint_seq.shape[1]  # 506
-    
-    print(f"GT frames: {gt_frames}, Pred frames: {pred_frames}")
-    
-    # Calculate the proper alignment based on MPI-INF-3DHP evaluation protocol
-    # The ground truth represents frames sampled with stride=81
-    # We need to extract corresponding frames from predictions
-    
-    if pred_frames > gt_frames:
-        # Calculate stride to match GT sampling
-        stride = max(1, pred_frames // gt_frames)
-        
-        # Sample predictions to match GT temporal distribution
-        sampled_indices = np.linspace(0, pred_frames - 1, gt_frames, dtype=int)
-        pred_joint_seq = pred_joint_seq[:, sampled_indices, :]
-        print(f"Resampled predictions using indices: {sampled_indices[:5]}...{sampled_indices[-5:]} (stride≈{stride})")
-        
-    elif gt_frames > pred_frames:
-        # If GT has more frames, sample it to match predictions
-        sampled_indices = np.linspace(0, gt_frames - 1, pred_frames, dtype=int)
-        gt_joint_seq = gt_joint_seq[:, sampled_indices, :]
-        print(f"Resampled GT using indices: {sampled_indices[:5]}...{sampled_indices[-5:]}")
-    
-    # Ensure exact same number of frames after resampling
+    # Ensure same number of frames
     num_frames = min(gt_joint_seq.shape[1], pred_joint_seq.shape[1])
     gt_joint_seq = gt_joint_seq[:, :num_frames, :]
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
     
-    print(f"After alignment - GT: {gt_joint_seq.shape}, Pred: {pred_joint_seq.shape}")
-    
-    # Optional: Limit visualization to a reasonable number of frames
+    # Limit visualization frames if needed
     if num_frames > args.num_frames:
         start_frame = args.frame_start
         end_frame = min(start_frame + args.num_frames, num_frames)
@@ -220,10 +206,13 @@ def main():
         num_frames = end_frame - start_frame
         print(f"Limited visualization to frames {start_frame}-{end_frame} ({num_frames} frames)")
     
-    print(f"Final number of frames for visualization: {num_frames}")
+    print(f"Final synchronized frames: {num_frames}")
 
-    # Rest of the function remains the same...
-    # Compute global min/max for consistent scaling
+    # Calculate overall MPJPE for verification
+    overall_error = np.mean(np.linalg.norm(gt_joint_seq - pred_joint_seq, axis=2))
+    print(f"Overall MPJPE: {overall_error:.2f} mm")
+
+    # Rest of visualization code remains the same...
     valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
     valid_pred = pred_joint_seq[~np.isnan(pred_joint_seq) & ~np.isinf(pred_joint_seq)]
     if valid_gt.size == 0:
@@ -237,8 +226,8 @@ def main():
     max_value += padding
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), subplot_kw={'projection': '3d'})
-    seq_title = args.sequence_name if args.sequence_name else f"Sequence {args.sequence_number}"
-    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title}\n(Synchronized Frames: {num_frames})', fontsize=14)
+    seq_title = gt_seq_name
+    fig.suptitle(f'Ground Truth vs Prediction - {seq_title}\n(Synchronized Evaluation Frames: {num_frames})', fontsize=14)
 
     def update(frame):
         ax1.clear()
@@ -266,7 +255,6 @@ def main():
             ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2, alpha=0.8)
         
         ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=0.5)
-        # Highlight root joint
         ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
 
         # Plot prediction
@@ -282,33 +270,25 @@ def main():
             ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2, alpha=0.8)
         
         ax2.scatter(x_pred, y_pred, z_pred, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=0.5)
-        # Highlight root joint
         ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
 
-        # Calculate frame-wise error for display
+        # Calculate frame-wise error
         frame_error = np.mean(np.linalg.norm(gt_joint_seq[:, frame, :] - pred_joint_seq[:, frame, :], axis=1))
-        fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title}\n(Synchronized Frames: {num_frames}, Frame Error: {frame_error:.1f}mm)', fontsize=14)
+        fig.suptitle(f'Ground Truth vs Prediction - {seq_title}\n(Frame {frame + 1}/{num_frames}, Error: {frame_error:.1f}mm)', fontsize=14)
 
         return ax1, ax2
 
-    # Create animation with appropriate speed
+    # Create animation
     ani = FuncAnimation(fig, update, frames=num_frames, interval=150, repeat=True, blit=False)
-    output_path = f'../mpi_comparison_{seq_title.lower()}_synced_frames_{args.frame_start}_{args.frame_start + num_frames}.gif'
+    output_path = f'../mpi_comparison_{seq_title.lower()}_synced.gif'
     ani.save(output_path, writer='pillow', fps=8, dpi=100)
     print(f"Synchronized comparison GIF saved to: {output_path}")
 
-    # Save static image of first frame
+    # Save static image
     update(0)
     plt.tight_layout()
     plt.savefig(output_path.replace('.gif', '.png'), dpi=150, bbox_inches='tight')
     print(f"Static comparison image saved to: {output_path.replace('.gif', '.png')}")
-
-    # Print synchronization summary
-    print(f"\nSynchronization Summary:")
-    print(f"- Original GT frames: {gt_frames}")
-    print(f"- Original Pred frames: {pred_frames}")
-    print(f"- Final synchronized frames: {num_frames}")
-    print(f"- Visualization frames: {num_frames}")
 
 if __name__ == '__main__':
     main()
