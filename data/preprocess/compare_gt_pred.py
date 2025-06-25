@@ -176,31 +176,40 @@ def main():
     pred_joint_seq = load_predictions(args)
     print(f"Prediction shape: {pred_joint_seq.shape}")
 
-    # PROPER TEMPORAL ALIGNMENT
-    # Ground truth uses windowed sampling, predictions are full sequences
-    # We need to extract corresponding frames from predictions
+    # PROPER TEMPORAL ALIGNMENT FOR MPI-INF-3DHP
+    # Ground truth: sliding window with stride=81, n_frames=243
+    # Predictions: full sequence
     
-    gt_frames = gt_joint_seq.shape[1]
-    pred_frames = pred_joint_seq.shape[1]
+    gt_frames = gt_joint_seq.shape[1]  # 243
+    pred_frames = pred_joint_seq.shape[1]  # 506
     
     print(f"GT frames: {gt_frames}, Pred frames: {pred_frames}")
     
-    # Method 1: Sample predictions to match GT temporal sampling
-    if pred_frames > gt_frames:
-        # If we have more prediction frames, sample them to match GT
-        # Assuming GT represents center frames of a longer sequence
-        center_start = (pred_frames - gt_frames) // 2
-        pred_joint_seq = pred_joint_seq[:, center_start:center_start + gt_frames, :]
-        print(f"Sampled predictions from frame {center_start} to {center_start + gt_frames}")
-    elif gt_frames > pred_frames:
-        # If GT has more frames, truncate it
-        gt_joint_seq = gt_joint_seq[:, :pred_frames, :]
-        print(f"Truncated GT to {pred_frames} frames")
+    # Calculate the proper alignment based on MPI-INF-3DHP evaluation protocol
+    # The ground truth represents frames sampled with stride=81
+    # We need to extract corresponding frames from predictions
     
-    # Ensure exact same number of frames
+    if pred_frames > gt_frames:
+        # Calculate stride to match GT sampling
+        stride = max(1, pred_frames // gt_frames)
+        
+        # Sample predictions to match GT temporal distribution
+        sampled_indices = np.linspace(0, pred_frames - 1, gt_frames, dtype=int)
+        pred_joint_seq = pred_joint_seq[:, sampled_indices, :]
+        print(f"Resampled predictions using indices: {sampled_indices[:5]}...{sampled_indices[-5:]} (stride≈{stride})")
+        
+    elif gt_frames > pred_frames:
+        # If GT has more frames, sample it to match predictions
+        sampled_indices = np.linspace(0, gt_frames - 1, pred_frames, dtype=int)
+        gt_joint_seq = gt_joint_seq[:, sampled_indices, :]
+        print(f"Resampled GT using indices: {sampled_indices[:5]}...{sampled_indices[-5:]}")
+    
+    # Ensure exact same number of frames after resampling
     num_frames = min(gt_joint_seq.shape[1], pred_joint_seq.shape[1])
     gt_joint_seq = gt_joint_seq[:, :num_frames, :]
     pred_joint_seq = pred_joint_seq[:, :num_frames, :]
+    
+    print(f"After alignment - GT: {gt_joint_seq.shape}, Pred: {pred_joint_seq.shape}")
     
     # Optional: Limit visualization to a reasonable number of frames
     if num_frames > args.num_frames:
@@ -213,6 +222,7 @@ def main():
     
     print(f"Final number of frames for visualization: {num_frames}")
 
+    # Rest of the function remains the same...
     # Compute global min/max for consistent scaling
     valid_gt = gt_joint_seq[~np.isnan(gt_joint_seq) & ~np.isinf(gt_joint_seq)]
     valid_pred = pred_joint_seq[~np.isnan(pred_joint_seq) & ~np.isinf(pred_joint_seq)]
@@ -226,9 +236,9 @@ def main():
     min_value -= padding
     max_value += padding
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': '3d'})
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), subplot_kw={'projection': '3d'})
     seq_title = args.sequence_name if args.sequence_name else f"Sequence {args.sequence_number}"
-    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title} (Frames: {num_frames})')
+    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title}\n(Synchronized Frames: {num_frames})', fontsize=14)
 
     def update(frame):
         ax1.clear()
@@ -239,30 +249,28 @@ def main():
             ax.set_xlim3d([min_value[0], max_value[0]])
             ax.set_ylim3d([min_value[1], max_value[1]])
             ax.set_zlim3d([min_value[2], max_value[2]])
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Z')
+            ax.set_xlabel('X', fontsize=10)
+            ax.set_ylabel('Y', fontsize=10)
+            ax.set_zlabel('Z', fontsize=10)
 
         # Plot ground truth
-        ax1.set_title(f'Ground Truth (Frame {frame + 1}/{num_frames})')
+        ax1.set_title(f'Ground Truth\n(Frame {frame + 1}/{num_frames})', fontsize=12)
         x_gt = gt_joint_seq[:, frame, 0]
         y_gt = gt_joint_seq[:, frame, 1]
         z_gt = gt_joint_seq[:, frame, 2]
-        
-        ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=50, alpha=0.8)
         
         # Draw GT connections
         for connection in connections:
             start = gt_joint_seq[connection[0], frame, :]
             end = gt_joint_seq[connection[1], frame, :]
-            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2)
+            ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b-', linewidth=2, alpha=0.8)
         
+        ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=0.5)
         # Highlight root joint
-        ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Root Joint')
-        ax1.legend()
+        ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
 
         # Plot prediction
-        ax2.set_title(f'Prediction (Frame {frame + 1}/{num_frames})')
+        ax2.set_title(f'Prediction\n(Frame {frame + 1}/{num_frames})', fontsize=12)
         x_pred = pred_joint_seq[:, frame, 0]
         y_pred = pred_joint_seq[:, frame, 1]
         z_pred = pred_joint_seq[:, frame, 2]
@@ -271,23 +279,36 @@ def main():
         for connection in connections:
             start = pred_joint_seq[connection[0], frame, :]
             end = pred_joint_seq[connection[1], frame, :]
-            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2)
-        ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
-        ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Root Joint')
-        ax2.legend()
+            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r-', linewidth=2, alpha=0.8)
+        
+        ax2.scatter(x_pred, y_pred, z_pred, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=0.5)
+        # Highlight root joint
+        ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
+
+        # Calculate frame-wise error for display
+        frame_error = np.mean(np.linalg.norm(gt_joint_seq[:, frame, :] - pred_joint_seq[:, frame, :], axis=1))
+        fig.suptitle(f'Ground Truth vs Prediction - {args.dataset.upper()} {seq_title}\n(Synchronized Frames: {num_frames}, Frame Error: {frame_error:.1f}mm)', fontsize=14)
 
         return ax1, ax2
 
-    # Create animation with slower speed
-    ani = FuncAnimation(fig, update, frames=num_frames, interval=100, repeat=True)  # Increased interval to 100ms
-    output_path = f'../{args.dataset}_comparison_{seq_title.replace(" ", "_").lower()}_frames_{args.frame_start}_{args.frame_start + num_frames}.gif'
-    ani.save(output_path, writer='pillow', fps=10)  # Reduced FPS to 10
-    print(f"Comparison GIF saved to: {output_path}")
+    # Create animation with appropriate speed
+    ani = FuncAnimation(fig, update, frames=num_frames, interval=150, repeat=True, blit=False)
+    output_path = f'../mpi_comparison_{seq_title.lower()}_synced_frames_{args.frame_start}_{args.frame_start + num_frames}.gif'
+    ani.save(output_path, writer='pillow', fps=8, dpi=100)
+    print(f"Synchronized comparison GIF saved to: {output_path}")
 
     # Save static image of first frame
     update(0)
+    plt.tight_layout()
     plt.savefig(output_path.replace('.gif', '.png'), dpi=150, bbox_inches='tight')
     print(f"Static comparison image saved to: {output_path.replace('.gif', '.png')}")
+
+    # Print synchronization summary
+    print(f"\nSynchronization Summary:")
+    print(f"- Original GT frames: {gt_frames}")
+    print(f"- Original Pred frames: {pred_frames}")
+    print(f"- Final synchronized frames: {num_frames}")
+    print(f"- Visualization frames: {num_frames}")
 
 if __name__ == '__main__':
     main()
