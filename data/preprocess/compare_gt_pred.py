@@ -66,13 +66,13 @@ def read_mpi_gt(args):
     if len(data_tuple) == 5:
         # Likely: (gt_3D, input_2D, seq_name, scale, bb_box) - missing batch_cam
         gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
-        print(f"Sequence name: {seq_name}")
+        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")  # Pay attention to this!
         print(f"GT_3D type: {type(gt_3D)}")
         print(f"GT_3D shape: {gt_3D.shape}")
         sequence_3d = gt_3D
     elif len(data_tuple) == 6:
         batch_cam, gt_3D, input_2D, seq_name, scale, bb_box = data_tuple
-        print(f"Sequence name: {seq_name}")
+        print(f"=== GROUND TRUTH SEQUENCE NAME: {seq_name} ===")  # Pay attention to this!
         sequence_3d = gt_3D
     else:
         print(f"Unexpected data tuple length: {len(data_tuple)}")
@@ -190,9 +190,17 @@ def main():
     gt_joint_seq = dataset_reader_mapper[args.dataset](args)
     print(f"Ground truth shape: {gt_joint_seq.shape}")
 
+    available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
+    
+    if args.sequence_name is None:
+        # Try to match by trying different sequences
+        args.sequence_name = available_sequences[args.sequence_number % len(available_sequences)]
+        print(f"Trying sequence: {args.sequence_name}")
+
     # Load predictions
     pred_joint_seq = load_predictions(args)
     print(f"Prediction shape: {pred_joint_seq.shape}")
+
 
     # Ensure same number of frames
     num_frames = min(gt_joint_seq.shape[1], pred_joint_seq.shape[1])
