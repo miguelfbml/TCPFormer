@@ -14,12 +14,31 @@ from data.const import H36M_TO_MPI
 
 # MPI-INF-3DHP skeleton connections
 connections = [
-    (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
-    (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
-    (1, 2), (2, 3), (4, 5), (5, 6)
+    # Legs
+    (14, 8),   # Pelvis to Left Hip
+    (14, 11),  # Pelvis to Right Hip
+    (8, 9),    # Left Hip to Left Knee
+    (9, 10),   # Left Knee to Left Ankle
+    (11, 12),  # Right Hip to Right Knee
+    (12, 13),  # Right Knee to Right Ankle
+    
+    # Torso
+    (14, 15),  # Pelvis to Spine
+    (15, 1),   # Spine to Neck
+    (1, 16),   # Neck to Head
+    (1, 0),    # Neck to Head Top
+    
+    # Arms
+    (1, 2),    # Neck to Left Shoulder
+    (2, 3),    # Left Shoulder to Left Elbow
+    (3, 4),    # Left Elbow to Left Wrist
+    (1, 5),    # Neck to Right Shoulder
+    (5, 6),    # Right Shoulder to Right Elbow
+    (6, 7),    # Right Elbow to Right Wrist
 ]
 
 def convert_h36m_to_mpi_connection():
+    pass
     global connections
     new_connections = []
     for connection in connections:
