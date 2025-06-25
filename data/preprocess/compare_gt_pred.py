@@ -54,10 +54,16 @@ def read_mpi_gt(args):
 
     _, sequence_3d = dataset[args.sequence_number]
     sequence_3d = sequence_3d.cpu().numpy()
+    print(f"Raw GT shape: {sequence_3d.shape}")
+
+    # Ensure correct number of keypoints (17)
+    if sequence_3d.shape[1] != 17:
+        print(f"Warning: Expected 17 keypoints, got {sequence_3d.shape[1]}. Truncating to first 17.")
+        sequence_3d = sequence_3d[:, :17, :]
 
     # Debug raw GT data
     print(f"Raw GT data (first frame, all keypoints):\n{sequence_3d[:, 0, :]}")
-    print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[14, 0, :]}")
+    print(f"GT keypoint 14 (first frame, before cam2real): {sequence_3d[0, 14, :]}")
     print(f"GT min/max values (before cam2real): {np.min(sequence_3d)}, {np.max(sequence_3d)}")
     if np.any(np.isnan(sequence_3d)):
         print("Warning: GT contains NaNs")
@@ -70,8 +76,9 @@ def read_mpi_gt(args):
                          [0, 0, -1],
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    sequence_3d = sequence_3d @ cam2real
-    print(f"GT keypoint 14 (first frame, after cam2real): {sequence_3d[14, 0, :]}")
+    # Skip cam2real if it causes issues
+    # sequence_3d = sequence_3d @ cam2real
+    print(f"GT keypoint 14 (first frame, after processing): {sequence_3d[14, 0, :]}")
     convert_h36m_to_mpi_connection()
     return sequence_3d
 
@@ -104,11 +111,11 @@ def load_predictions(args):
         # Debug prediction data
         print(f"Prediction keypoint 14 (first frame): {pred_3d[14, 0, :]}")
         print(f"Prediction min/max values: {np.min(pred_3d)}, {np.max(pred_3d)}")
-        # Apply same camera transformation as GT
+        # Apply same camera transformation as GT (or skip if GT skips it)
         cam2real = np.array([[1, 0, 0],
                              [0, 0, -1],
                              [0, -1, 0]], dtype=np.float32)
-        pred_3d = pred_3d @ cam2real
+        # pred_3d = pred_3d @ cam2real
         return pred_3d
     else:
         raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}. Available sequences: {available_seqs}")
@@ -160,6 +167,7 @@ def main():
     padding = (max_value - min_value) * 0.1
     min_value -= padding
     max_value += padding
+    print(f"Axis limits: min={min_value}, max={max_value}")
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': '3d'})
     seq_title = args.sequence_name if args.sequence_name else f"Sequence {args.sequence_number}"
