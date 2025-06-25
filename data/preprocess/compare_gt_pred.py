@@ -126,6 +126,16 @@ def load_predictions(args):
                              [0, -1, 0]], dtype=np.float32)
         pred_3d = pred_3d @ cam2real
         
+        # Rotate prediction 90 degrees around Z-axis
+        # Rotation matrix for 90 degrees around Z-axis: 
+        # [cos(90°) -sin(90°) 0]   [0 -1 0]
+        # [sin(90°)  cos(90°) 0] = [1  0 0]
+        # [0         0        1]   [0  0 1]
+        rotation_z_90 = np.array([[0, -1, 0],
+                                  [1,  0, 0],
+                                  [0,  0, 1]], dtype=np.float32)
+        pred_3d = pred_3d @ rotation_z_90
+        
         # Make predictions root-relative
         for t in range(pred_3d.shape[1]):
             root_position = pred_3d[14, t, :].copy()
