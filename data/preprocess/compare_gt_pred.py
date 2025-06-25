@@ -40,8 +40,6 @@ def read_h36m_gt(args):
     convert_h36m_to_mpi_connection()
     return sample_joint_seq
 
-
-    
 def read_mpi_gt(args):
     @dataclass
     class DatasetArgs:
@@ -85,37 +83,6 @@ def read_mpi_gt(args):
     
     convert_h36m_to_mpi_connection()
     return sequence_3d
-    '''
-
-
-def read_mpi_gt(args):
-    @dataclass
-    class DatasetArgs:
-        data_root: str
-        n_frames: int
-        stride: int
-        flip: bool
-
-    dataset_args = DatasetArgs('../motion3d/', 243, 81, False)
-    dataset = MPI3DHP(dataset_args, train=False)  # Use test data
-
-    # Get the exact same data format as visualize.py
-    _, sequence_3d = dataset[args.sequence_number]
-    sequence_3d = sequence_3d.cpu().numpy()
-    
-    # Apply the exact same transformations as visualize.py
-    sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    sequence_3d[14, ...] = 0  # Set root joint to 0 FIRST
-    
-    cam2real = np.array([[1, 0, 0],
-                        [0, 0, -1],
-                        [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d @ cam2real
-    
-    convert_h36m_to_mpi_connection()
-    return sequence_3d
-    '''
-
 
 def load_predictions(args):
     data = scio.loadmat(args.inference_file)
