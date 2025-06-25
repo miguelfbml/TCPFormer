@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
-from data.reader.motion_dataset import Fusion, MPI3DHP
+from data.reader.motion_dataset import Fusion
 from data.const import H36M_TO_MPI
 
 # MPI-INF-3DHP skeleton connections
@@ -28,35 +28,54 @@ def convert_h36m_to_mpi_connection():
     connections = new_connections
 
 def load_ground_truth(sequence_idx=0):
-    """Load ground truth from test dataset - matching visualize.py approach"""
+    """Load ground truth from test dataset"""
     @dataclass
     class DatasetArgs:
         data_root: str
         n_frames: int
         stride: int
         flip: bool
+        test_augmentation: bool
+        data_augmentation: bool
+        reverse_augmentation: bool
+        out_all: int
+        test_batch_size: int
 
-    # Use the same approach as visualize.py
-    dataset_args = DatasetArgs('../motion3d/', 27, 9, False)
-    dataset = MPI3DHP(dataset_args, train=False)  # Use MPI3DHP instead of Fusion
+    # Configure for T=27 (adjust based on your model)
+    dataset_args = DatasetArgs(
+        data_root='../motion3d/', 
+        n_frames=27, 
+        stride=9, 
+        flip=False,
+        test_augmentation=False,
+        data_augmentation=False,
+        reverse_augmentation=False,
+        out_all=1,
+        test_batch_size=1
+    )
+    
+    dataset = Fusion(dataset_args, train=False)
     
     if sequence_idx < len(dataset):
-        _, gt_3D_normalized, gt_3D, valid_frames, seq_name = dataset[sequence_idx]
+        cam, gt_3D, input_2D, seq_name, scale, bb_box = dataset[sequence_idx]
         
-        # Use the raw gt_3D (not normalized) like visualize.py does
-        gt_3D = gt_3D.cpu().numpy() if hasattr(gt_3D, 'cpu') else gt_3D
+        # Convert to numpy - check if it's already numpy or torch tensor
+        if hasattr(gt_3D, 'numpy'):
+            gt_3D = gt_3D.numpy()  # It's a torch tensor
+        # If it's already numpy, gt_3D stays as is
         
-        # Take the center frame (for T=27, center is frame 13)
-        center_frame = gt_3D.shape[0] // 2
-        gt_3D = gt_3D[center_frame]  # Shape: (17, 3)
+        # Get the center frame (shape should be (1, 17, 3) -> (17, 3))
+        if gt_3D.ndim == 3 and gt_3D.shape[0] == 1:
+            gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
+        elif gt_3D.ndim == 2:
+            pass  # Already (17, 3)
+        else:
+            print(f"Unexpected GT shape: {gt_3D.shape}")
         
-        # Apply the same transformations as visualize.py
+        # Apply camera transformation for visualization
         cam2real = np.array([[1, 0, 0],
                             [0, 0, -1],
                             [0, -1, 0]], dtype=np.float32)
-        
-        # Set root joint to zero (like visualize.py does)
-        gt_3D[14, ...] = 0
         gt_3D = gt_3D @ cam2real
         
         convert_h36m_to_mpi_connection()
