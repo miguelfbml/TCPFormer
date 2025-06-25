@@ -69,6 +69,8 @@ def read_mpi_gt(args):
     
     dataset = Fusion(dataset_args, train=False)  # Use Fusion like train_3dhp.py
     
+    print(f"Dataset length: {len(dataset)}")
+    
     if args.sequence_number >= len(dataset):
         print(f"ERROR: Sequence {args.sequence_number} is out of range! Dataset has {len(dataset)} sequences.")
         return None
@@ -76,24 +78,44 @@ def read_mpi_gt(args):
     # Get multiple samples to build a sequence
     sequence_data = []
     target_seq_name = None
+    processed_samples = 0
     
-    for i in range(min(len(dataset), 100)):  # Sample multiple windows
+    # Available sequence names in MPI-INF-3DHP test set
+    available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
+    
+    # If sequence_name is provided, use it; otherwise use sequence_number
+    if args.sequence_name:
+        target_seq_name = args.sequence_name
+    else:
+        target_seq_name = available_sequences[args.sequence_number % len(available_sequences)]
+    
+    print(f"Looking for sequence: {target_seq_name}")
+    
+    for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
-            current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else seq
+            # Extract sequence name properly
+            if isinstance(seq, (list, tuple)):
+                current_seq_name = seq[0]
+            elif isinstance(seq, torch.Tensor):
+                current_seq_name = seq.item() if seq.numel() == 1 else str(seq)
+            else:
+                current_seq_name = str(seq)
             
-            # Filter by target sequence if specified
-            if args.sequence_name and current_seq_name != args.sequence_name:
+            # Filter by target sequence
+            if current_seq_name != target_seq_name:
                 continue
             
-            if target_seq_name is None:
-                target_seq_name = current_seq_name
-            elif target_seq_name != current_seq_name:
-                continue
+            print(f"Found matching sequence: {current_seq_name} (sample {i})")
             
             # Process exactly like train_3dhp.py
-            gt_3D = gt_3D.clone().view(1, -1, 17, 3)  # N=1, T, 17, 3
+            if isinstance(gt_3D, torch.Tensor):
+                gt_3D = gt_3D.clone()
+            else:
+                gt_3D = torch.tensor(gt_3D)
+                
+            gt_3D = gt_3D.view(1, -1, 17, 3)  # N=1, T, 17, 3
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
             # Extract center frame (same as evaluation)
@@ -103,10 +125,26 @@ def read_mpi_gt(args):
             # Make root-relative (same as evaluation)
             center_pose = center_pose - center_pose[14:15, :]
             
-            sequence_data.append(center_pose.cpu().numpy())
+            # Convert to numpy
+            if hasattr(center_pose, 'cpu'):
+                center_pose = center_pose.cpu().numpy()
+            elif hasattr(center_pose, 'numpy'):
+                center_pose = center_pose.numpy()
+            else:
+                center_pose = np.array(center_pose)
             
+            sequence_data.append(center_pose)
+            processed_samples += 1
+            
+            # Limit the number of samples for visualization
+            if processed_samples >= 100:  # Collect up to 100 frames
+                break
+                
         except Exception as e:
+            print(f"Error processing sample {i}: {e}")
             continue
+    
+    print(f"Processed {processed_samples} samples for sequence {target_seq_name}")
     
     if not sequence_data:
         print("No valid ground truth data found")
@@ -114,6 +152,7 @@ def read_mpi_gt(args):
     
     # Stack frames: (17, T, 3)
     sequence_3d = np.stack(sequence_data, axis=1)
+    print(f"Stacked sequence shape: {sequence_3d.shape}")
     
     # Apply camera transformation
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
@@ -163,7 +202,7 @@ def load_predictions(args, gt_seq_name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
-    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence name')
+    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence name (TS1, TS2, TS3, TS4, TS5, TS6)')
     parser.add_argument('--dataset', choices=['h36m', 'mpi'], default='mpi')
     parser.add_argument('--inference-file', type=str, default='../../checkpoint_mpi/inference_data.mat',
                         help='Path to inference_data.mat file')
@@ -177,6 +216,7 @@ def main():
     if args.dataset == 'mpi':
         gt_result = read_mpi_gt(args)
         if gt_result is None:
+            print("Failed to load ground truth data. Exiting.")
             return
         gt_joint_seq, gt_seq_name = gt_result
     else:
