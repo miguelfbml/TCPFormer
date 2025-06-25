@@ -58,17 +58,29 @@ def read_mpi_gt(args):
                          [0, 0, -1],
                          [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d.transpose(1, 0, 2)  # (17, T, 3)
-    # Remove zeroing of keypoint 14 to avoid GT error
-    # sequence_3d[14, ...] = 0  # Commented out to preserve keypoint 14
+    # Do not zero keypoint 14 to preserve original coordinates
     sequence_3d = sequence_3d @ cam2real
     convert_h36m_to_mpi_connection()
     return sequence_3d
 
 def load_predictions(args):
     data = scio.loadmat(args.inference_file)
-    seq_name = f'seq_{args.sequence_number:08d}'  # Adjust based on .mat file naming
+    
+    # Print available sequences for debugging
+    available_seqs = [key for key in data.keys() if not key.startswith('__')]
+    print(f"Available sequences in inference file: {available_seqs}")
+    
+    # Use provided sequence name if available, otherwise try to select by index
+    seq_name = args.sequence_name if args.sequence_name else None
+    if seq_name is None:
+        if args.sequence_number < len(available_seqs):
+            seq_name = available_seqs[args.sequence_number]
+            print(f"Selected sequence: {seq_name} (index {args.sequence_number})")
+        else:
+            raise ValueError(f"Sequence index {args.sequence_number} out of range. Available sequences: {available_seqs}")
+    
     if seq_name in data:
-        pred_3d = data[seq_name]  # Shape: (3, 17, 1, T) or similar
+        pred_3d = data[seq_name]  # Shape: (3, 17, 1, T)
         if pred_3d.ndim == 4:  # (3, 17, 1, T)
             pred_3d = pred_3d[:, :, 0, :]  # (3, 17, T)
             pred_3d = pred_3d.transpose(1, 2, 0)  # (17, T, 3)
@@ -84,11 +96,12 @@ def load_predictions(args):
         pred_3d = pred_3d @ cam2real
         return pred_3d
     else:
-        raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}")
+        raise ValueError(f"Sequence {seq_name} not found in {args.inference_file}. Available sequences: {available_seqs}")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--sequence-number', type=int, default=0)
+    parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
+    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence name in inference file')
     parser.add_argument('--dataset', choices=['h36m', 'mpi'], default='h36m')
     parser.add_argument('--inference-file', type=str, default='../../checkpoint_mpi/inference_data.mat',
                         help='Path to inference_data.mat file')
@@ -122,7 +135,8 @@ def main():
     max_value += padding
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': '3d'})
-    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset} Sequence {args.sequence_number}')
+    seq_title = args.sequence_name if args.sequence_name else f"Sequence {args.sequence_number}"
+    fig.suptitle(f'Ground Truth vs Prediction - {args.dataset} {seq_title}')
 
     def update(frame):
         ax1.clear()
@@ -147,6 +161,9 @@ def main():
             end = gt_joint_seq[connection[1], frame, :]
             ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'b')
         ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=50)
+        # Highlight keypoint 14
+        ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=100, marker='*', label='Keypoint 14')
+        ax1.legend()
 
         # Plot prediction
         ax2.set_title('Prediction')
@@ -158,12 +175,15 @@ def main():
             end = pred_joint_seq[connection[1], frame, :]
             ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 'r')
         ax2.scatter(x_pred, y_pred, z_pred, c='red', s=50)
+        # Highlight keypoint 14
+        ax2.scatter(x_pred[14], y_pred[14], z_pred[14], c='green', s=100, marker='*', label='Keypoint 14')
+        ax2.legend()
 
         return ax1, ax2
 
     # Create animation
     ani = FuncAnimation(fig, update, frames=num_frames, interval=50)
-    output_path = f'../{args.dataset}_comparison_seq{args.sequence_number}.gif'
+    output_path = f'../{args.dataset}_comparison_{seq_title.replace(" ", "_").lower()}.gif'
     ani.save(output_path, writer='pillow', fps=20)
     print(f"Comparison GIF saved to: {output_path}")
 
