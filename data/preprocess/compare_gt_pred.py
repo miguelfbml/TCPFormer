@@ -29,59 +29,46 @@ def convert_h36m_to_mpi_connection():
 
 def load_ground_truth(sequence_idx=0):
     """Load ground truth from test dataset"""
-    @dataclass
-    class DatasetArgs:
-        data_root: str
-        n_frames: int
-        stride: int
-        flip: bool
-        test_augmentation: bool
-        data_augmentation: bool
-        reverse_augmentation: bool
-        out_all: int
-        test_batch_size: int
-
-    # Configure for T=27 (adjust based on your model)
-    dataset_args = DatasetArgs(
-        data_root='../motion3d/', 
-        n_frames=27, 
-        stride=9, 
-        flip=False,
-        test_augmentation=False,
-        data_augmentation=False,
-        reverse_augmentation=False,
-        out_all=1,
-        test_batch_size=1
-    )
+    # Load the raw test data directly
+    data_path = '../motion3d/data_test_3dhp.npz'
     
-    dataset = Fusion(dataset_args, train=False)
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Test data file not found: {data_path}")
     
-    if sequence_idx < len(dataset):
-        cam, gt_3D, input_2D, seq_name, scale, bb_box = dataset[sequence_idx]
-        
-        # Convert to numpy - check if it's already numpy or torch tensor
-        if hasattr(gt_3D, 'numpy'):
-            gt_3D = gt_3D.numpy()  # It's a torch tensor
-        # If it's already numpy, gt_3D stays as is
-        
-        # Get the center frame (shape should be (1, 17, 3) -> (17, 3))
-        if gt_3D.ndim == 3 and gt_3D.shape[0] == 1:
-            gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
-        elif gt_3D.ndim == 2:
-            pass  # Already (17, 3)
-        else:
-            print(f"Unexpected GT shape: {gt_3D.shape}")
-        
-        # Apply camera transformation for visualization
-        cam2real = np.array([[1, 0, 0],
-                            [0, 0, -1],
-                            [0, -1, 0]], dtype=np.float32)
-        gt_3D = gt_3D @ cam2real
-        
-        convert_h36m_to_mpi_connection()
-        return gt_3D, seq_name
-    else:
-        raise ValueError(f"Sequence index {sequence_idx} out of range")
+    data = np.load(data_path, allow_pickle=True)['data'].item()
+    
+    # Get sequence names (TS1, TS2, etc.)
+    seq_names = list(data.keys())
+    seq_names.sort()  # Sort to have consistent ordering
+    
+    if sequence_idx >= len(seq_names):
+        raise ValueError(f"Sequence index {sequence_idx} out of range. Available sequences: {len(seq_names)}")
+    
+    seq_name = seq_names[sequence_idx]
+    print(f"Loading sequence: {seq_name}")
+    
+    # Get the sequence data
+    seq_data = data[seq_name]
+    cameras = list(seq_data[0].keys())  # Get available cameras
+    
+    # Use the first available camera
+    cam_data = seq_data[0][cameras[0]]
+    gt_3d = cam_data['data_3d']  # Shape: (T, 17, 3)
+    
+    # Take the first frame for visualization
+    gt_3d_frame = gt_3d[0]  # Shape: (17, 3)
+    
+    # Apply camera transformation for MPI-INF-3DHP
+    cam2real = np.array([[1, 0, 0],
+                        [0, 0, -1],
+                        [0, -1, 0]], dtype=np.float32)
+    gt_3d_frame = gt_3d_frame @ cam2real
+    
+    # Make root-relative (subtract root joint position)
+    gt_3d_frame = gt_3d_frame - gt_3d_frame[14:15, :]  # Joint 14 is the root in MPI-INF-3DHP
+    
+    convert_h36m_to_mpi_connection()
+    return gt_3d_frame, seq_name
 
 def load_predictions(inference_file, seq_name):
     """Load predictions from inference_data.mat"""
