@@ -41,7 +41,6 @@ def load_ground_truth(sequence_idx=0):
         out_all: int
         test_batch_size: int
 
-    # Configure for T=27 (adjust based on your model)
     dataset_args = DatasetArgs(
         data_root='../motion3d/', 
         n_frames=27, 
@@ -59,24 +58,29 @@ def load_ground_truth(sequence_idx=0):
     if sequence_idx < len(dataset):
         cam, gt_3D, input_2D, seq_name, scale, bb_box = dataset[sequence_idx]
         
-        # Convert to numpy - check if it's already numpy or torch tensor
+        # Convert to numpy
         if hasattr(gt_3D, 'numpy'):
-            gt_3D = gt_3D.numpy()  # It's a torch tensor
-        # If it's already numpy, gt_3D stays as is
+            gt_3D = gt_3D.numpy()
         
-        # Get the center frame (shape should be (1, 17, 3) -> (17, 3))
+        # Get the center frame
         if gt_3D.ndim == 3 and gt_3D.shape[0] == 1:
-            gt_3D = gt_3D[0]  # Remove batch dimension: (17, 3)
+            gt_3D = gt_3D[0]  # (17, 3)
         elif gt_3D.ndim == 2:
-            pass  # Already (17, 3)
+            pass
         else:
             print(f"Unexpected GT shape: {gt_3D.shape}")
         
-        # Apply camera transformation for visualization
+        # Debug keypoint 14
+        print(f"Ground truth keypoint 14 (before cam2real): {gt_3D[14]}")
+        if np.all(gt_3D[14] == 0) or np.any(np.isnan(gt_3D[14])):
+            print(f"Warning: Keypoint 14 in GT is invalid: {gt_3D[14]}")
+        
+        # Apply camera transformation
         cam2real = np.array([[1, 0, 0],
                             [0, 0, -1],
                             [0, -1, 0]], dtype=np.float32)
         gt_3D = gt_3D @ cam2real
+        print(f"Ground truth keypoint 14 (after cam2real): {gt_3D[14]}")
         
         convert_h36m_to_mpi_connection()
         return gt_3D, seq_name
