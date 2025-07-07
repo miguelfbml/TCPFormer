@@ -1,17 +1,14 @@
 '''
 cd data/preprocess
 
-# Run with default sequence (TS1)
-python estimate_2d_pose_realtime.py
-
 # Run with specific sequence
-python estimate_2d_pose_realtime.py --sequence-name TS3 --num-frames 30
-
-# Run in real-time mode (updates frame by frame)
-python estimate_2d_pose_realtime.py --real-time --sequence-name TS2
+python estimate_2d_pose_realtime.py --sequence-name TS1 --num-frames 50
 
 # Save as video
-python estimate_2d_pose_realtime.py --save-video --num-frames 100
+python estimate_2d_pose_realtime.py --sequence-name TS2 --save-video --num-frames 30
+
+# Real-time mode
+python estimate_2d_pose_realtime.py --sequence-name TS3 --real-time --num-frames 20
 '''
 
 
@@ -92,8 +89,8 @@ class MediaPipe2DPoseEstimator:
     def close(self):
         self.pose.close()
 
-def load_test_images_from_dataset(args):
-    """Load test images from the MPI-INF-3DHP dataset"""
+def load_test_data_from_dataset(args):
+    """Load test data from MPI-INF-3DHP dataset exactly like compare_gt_pred.py"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -106,10 +103,11 @@ def load_test_images_from_dataset(args):
         out_all: int
         test_batch_size: int
 
+    # Use same parameters as your model evaluation
     dataset_args = DatasetArgs(
         data_root='../motion3d/', 
-        n_frames=27,
-        stride=9,
+        n_frames=27,  # Same as your model's n_frames
+        stride=9,     # Same as your model's stride
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -118,50 +116,176 @@ def load_test_images_from_dataset(args):
         test_batch_size=1
     )
     
-    dataset = Fusion(dataset_args, train=False)
+    dataset = Fusion(dataset_args, train=False)  # Use Fusion like compare_gt_pred.py
     
-    # Get sequence info
+    print(f"Dataset length: {len(dataset)}")
+    
+    if args.sequence_number >= len(dataset):
+        print(f"ERROR: Sequence {args.sequence_number} is out of range! Dataset has {len(dataset)} sequences.")
+        return None, None, None
+
+    # Get multiple samples to build sequences
+    sequence_data = []
+    input_2d_data = []
+    target_seq_name = None
+    processed_samples = 0
+    
+    # Available sequence names in MPI-INF-3DHP test set
     available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
-    target_seq_name = args.sequence_name if args.sequence_name else available_sequences[args.sequence_number % len(available_sequences)]
     
-    print(f"Loading images for sequence: {target_seq_name}")
+    # If sequence_name is provided, use it; otherwise use sequence_number
+    if args.sequence_name:
+        target_seq_name = args.sequence_name
+    else:
+        target_seq_name = available_sequences[args.sequence_number % len(available_sequences)]
     
-    # For this example, we'll simulate loading images
-    # In a real scenario, you'd load actual video frames or images from the dataset
-    # For now, we'll create dummy images and use the 2D poses from the dataset
+    print(f"Looking for sequence: {target_seq_name}")
     
-    images = []
-    gt_poses_2d = []
-    
-    for i in range(min(100, len(dataset))):  # Limit to 100 samples
+    for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
-            current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else seq
+            # Extract sequence name properly
+            if isinstance(seq, (list, tuple)):
+                current_seq_name = seq[0]
+            elif isinstance(seq, torch.Tensor):
+                current_seq_name = seq.item() if seq.numel() == 1 else str(seq)
+            else:
+                current_seq_name = str(seq)
+            
+            # Filter by target sequence
             if current_seq_name != target_seq_name:
                 continue
             
-            # Extract 2D pose (center frame)
-            if input_2D.ndim == 4:  # (1, T, 17, 3)
-                center_frame = input_2D.shape[1] // 2
-                pose_2d = input_2D[0, center_frame].numpy()  # (17, 3)
+            print(f"Found matching sequence: {current_seq_name} (sample {i})")
+            
+            # Process exactly like compare_gt_pred.py
+            if isinstance(gt_3D, torch.Tensor):
+                gt_3D = gt_3D.clone()
             else:
-                pose_2d = input_2D[0].numpy()
+                gt_3D = torch.tensor(gt_3D)
+                
+            gt_3D = gt_3D.view(1, -1, 17, 3)  # N=1, T, 17, 3
+            gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            # Create a dummy image (in real scenario, load actual image)
-            # You would replace this with actual image loading from your dataset
-            dummy_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+            # Extract center frame (same as evaluation)
+            center_frame = gt_3D.shape[1] // 2
+            center_pose = gt_3D[0, center_frame]  # (17, 3)
             
-            images.append(dummy_image)
-            gt_poses_2d.append(pose_2d)
+            # Make root-relative (same as evaluation)
+            center_pose = center_pose - center_pose[14:15, :]
             
-            if len(images) >= args.num_frames:
+            # Convert to numpy
+            if hasattr(center_pose, 'cpu'):
+                center_pose = center_pose.cpu().numpy()
+            elif hasattr(center_pose, 'numpy'):
+                center_pose = center_pose.numpy()
+            else:
+                center_pose = np.array(center_pose)
+            
+            # Also get the 2D input data
+            if isinstance(input_2D, torch.Tensor):
+                input_2D_np = input_2D.clone()
+            else:
+                input_2D_np = torch.tensor(input_2D)
+            
+            # Handle different input_2D shapes
+            if input_2D_np.ndim == 4:  # (1, T, 17, 3) or (1, T, 17, 2)
+                input_center_frame = input_2D_np.shape[1] // 2
+                input_2d_pose = input_2D_np[0, input_center_frame].cpu().numpy()  # (17, 2/3)
+            elif input_2D_np.ndim == 3:  # (T, 17, 3) or (T, 17, 2)
+                input_center_frame = input_2D_np.shape[0] // 2
+                input_2d_pose = input_2D_np[input_center_frame].cpu().numpy()  # (17, 2/3)
+            else:
+                input_2d_pose = input_2D_np.cpu().numpy()
+            
+            # Ensure we have at least x, y coordinates
+            if input_2d_pose.shape[1] < 2:
+                print(f"Skipping sample {i}: insufficient 2D coordinates")
+                continue
+            
+            # Add confidence column if not present
+            if input_2d_pose.shape[1] == 2:
+                confidence = np.ones((input_2d_pose.shape[0], 1))
+                input_2d_pose = np.hstack([input_2d_pose, confidence])
+            
+            sequence_data.append(center_pose)
+            input_2d_data.append(input_2d_pose)
+            processed_samples += 1
+            
+            # Limit the number of samples for visualization
+            if processed_samples >= args.num_frames:
                 break
                 
         except Exception as e:
+            print(f"Error processing sample {i}: {e}")
             continue
     
-    return images, gt_poses_2d, target_seq_name
+    print(f"Processed {processed_samples} samples for sequence {target_seq_name}")
+    
+    if not sequence_data:
+        print("No valid ground truth data found")
+        return None, None, None
+    
+    # Stack frames: (17, T, 3) for 3D, (17, T, 3) for 2D
+    sequence_3d = np.stack(sequence_data, axis=1)
+    sequence_2d = np.stack(input_2d_data, axis=1)  # (17, T, 3)
+    
+    print(f"Stacked 3D sequence shape: {sequence_3d.shape}")
+    print(f"Stacked 2D sequence shape: {sequence_2d.shape}")
+    
+    # Apply camera transformation to 3D data
+    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+    sequence_3d = sequence_3d @ cam2real
+    
+    print(f"Ground truth sequence: {target_seq_name}, 3D shape: {sequence_3d.shape}, 2D shape: {sequence_2d.shape}")
+    return sequence_3d, sequence_2d, target_seq_name
+
+def create_dummy_images_from_2d_poses(poses_2d, image_size=(640, 480)):
+    """Create dummy images with 2D pose keypoints drawn on them"""
+    images = []
+    
+    for t in range(poses_2d.shape[1]):  # For each time frame
+        # Create a blank image
+        image = np.zeros((image_size[1], image_size[0], 3), dtype=np.uint8)
+        
+        # Get 2D pose for this frame
+        pose_2d = poses_2d[:, t, :]  # (17, 3)
+        
+        # Draw keypoints on the image
+        for joint_idx in range(17):
+            if pose_2d[joint_idx, 2] > 0.5:  # If confidence > 0.5
+                # Convert normalized coordinates to pixel coordinates
+                x = int(pose_2d[joint_idx, 0] * image_size[0])
+                y = int(pose_2d[joint_idx, 1] * image_size[1])
+                
+                # Draw keypoint
+                cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
+                
+                # Add joint index as text
+                cv2.putText(image, str(joint_idx), (x+5, y-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+        
+        # Draw skeleton connections
+        connections = [
+            (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
+            (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
+            (1, 2), (2, 3), (4, 5), (5, 6)
+        ]
+        
+        for connection in connections:
+            joint1, joint2 = connection
+            if (pose_2d[joint1, 2] > 0.5 and pose_2d[joint2, 2] > 0.5):
+                x1 = int(pose_2d[joint1, 0] * image_size[0])
+                y1 = int(pose_2d[joint1, 1] * image_size[1])
+                x2 = int(pose_2d[joint2, 0] * image_size[0])
+                y2 = int(pose_2d[joint2, 1] * image_size[1])
+                
+                cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        
+        images.append(image)
+    
+    return images
 
 def create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args):
     """Create real-time visualization comparing MediaPipe estimates with ground truth"""
@@ -178,7 +302,7 @@ def create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args
             return
         
         image = images[frame_idx]
-        gt_pose_2d = gt_poses_2d[frame_idx]
+        gt_pose_2d = gt_poses_2d[:, frame_idx, :]  # (17, 3)
         
         # Measure processing time
         start_time = time.time()
@@ -194,7 +318,7 @@ def create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args
         ax4.clear()
         
         # Plot 1: Original image with MediaPipe overlay
-        ax1.set_title('MediaPipe Detection')
+        ax1.set_title('Ground Truth 2D Pose + MediaPipe Detection')
         ax1.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         if mp_results.pose_landmarks:
             # Draw MediaPipe pose landmarks
@@ -287,14 +411,18 @@ def main():
     estimator = MediaPipe2DPoseEstimator()
     
     try:
-        print("Loading test images from dataset...")
-        images, gt_poses_2d, seq_name = load_test_images_from_dataset(args)
+        print("Loading test data from dataset...")
+        gt_poses_3d, gt_poses_2d, seq_name = load_test_data_from_dataset(args)
         
-        if not images:
-            print("No images loaded. Please check your dataset.")
+        if gt_poses_3d is None or gt_poses_2d is None:
+            print("No data loaded. Please check your dataset.")
             return
         
-        print(f"Loaded {len(images)} images for sequence {seq_name}")
+        print(f"Loaded {gt_poses_2d.shape[1]} frames for sequence {seq_name}")
+        
+        # Create dummy images from 2D poses
+        print("Creating dummy images from 2D poses...")
+        images = create_dummy_images_from_2d_poses(gt_poses_2d)
         
         # Create visualization
         update_func = create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args)
