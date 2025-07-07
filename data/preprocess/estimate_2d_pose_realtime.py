@@ -1,16 +1,12 @@
 '''
 cd data/preprocess
 
-# Create simple 2-panel comparison
+# Try to load real frames
 python estimate_2d_pose_realtime.py --sequence-name TS1 --num-frames 30
 
 # Save as GIF
 python estimate_2d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
-
-# Real-time mode
-python estimate_2d_pose_realtime.py --sequence-name TS2 --real-time --num-frames 15
 '''
-
 
 
 import argparse
@@ -23,6 +19,7 @@ import mediapipe as mp
 from dataclasses import dataclass
 import torch
 import time
+import glob
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
@@ -82,6 +79,92 @@ class MediaPipe2DPoseEstimator:
     def close(self):
         self.pose.close()
 
+def load_mpi_test_frames(sequence_name, num_frames=50):
+    """Load actual video frames from MPI-INF-3DHP test set"""
+    # MPI-INF-3DHP test set video paths
+    mpi_root = '../motion3d/MPI-INF-3DHP'
+    
+    # Try different possible paths for MPI-INF-3DHP test videos
+    possible_paths = [
+        f'{mpi_root}/test/{sequence_name}',
+        f'{mpi_root}/Test/{sequence_name}',
+        f'{mpi_root}/mpi_inf_3dhp_test_set/{sequence_name}',
+        f'../motion3d/mpi_inf_3dhp_test_set/{sequence_name}',
+        f'../motion3d/MPI_INF_3DHP/test/{sequence_name}',
+    ]
+    
+    print(f"Looking for video frames for sequence: {sequence_name}")
+    
+    video_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            video_path = path
+            print(f"Found video path: {video_path}")
+            break
+    
+    if video_path is None:
+        print("Video frames not found. Available paths:")
+        for path in possible_paths:
+            print(f"  - {path} (exists: {os.path.exists(path)})")
+        
+        # Try to find any video files in the motion3d directory
+        motion3d_files = glob.glob('../motion3d/**/*.mp4', recursive=True)
+        motion3d_files.extend(glob.glob('../motion3d/**/*.avi', recursive=True))
+        motion3d_files.extend(glob.glob('../motion3d/**/*.jpg', recursive=True))
+        motion3d_files.extend(glob.glob('../motion3d/**/*.png', recursive=True))
+        
+        if motion3d_files:
+            print("Found these video/image files in motion3d:")
+            for f in motion3d_files[:10]:  # Show first 10
+                print(f"  - {f}")
+        
+        return None
+    
+    # Load frames from video or image sequence
+    frames = []
+    
+    # Check if it's a video file
+    video_files = glob.glob(os.path.join(video_path, '*.mp4'))
+    video_files.extend(glob.glob(os.path.join(video_path, '*.avi')))
+    
+    if video_files:
+        # Load from video file
+        video_file = video_files[0]
+        print(f"Loading frames from video: {video_file}")
+        
+        cap = cv2.VideoCapture(video_file)
+        frame_count = 0
+        
+        while cap.isOpened() and frame_count < num_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(frame)
+            frame_count += 1
+            
+        cap.release()
+        
+    else:
+        # Load from image sequence
+        image_files = glob.glob(os.path.join(video_path, '*.jpg'))
+        image_files.extend(glob.glob(os.path.join(video_path, '*.png')))
+        image_files.sort()
+        
+        if image_files:
+            print(f"Loading frames from {len(image_files)} images")
+            
+            for i, img_path in enumerate(image_files[:num_frames]):
+                frame = cv2.imread(img_path)
+                if frame is not None:
+                    frames.append(frame)
+                    
+        else:
+            print("No video or image files found")
+            return None
+    
+    print(f"Loaded {len(frames)} frames")
+    return frames
+
 def load_test_data_from_dataset(args):
     """Load test data from MPI-INF-3DHP dataset"""
     @dataclass
@@ -138,26 +221,6 @@ def load_test_data_from_dataset(args):
             if current_seq_name != target_seq_name:
                 continue
             
-            # Process 3D GT
-            if isinstance(gt_3D, torch.Tensor):
-                gt_3D = gt_3D.clone()
-            else:
-                gt_3D = torch.tensor(gt_3D)
-                
-            gt_3D = gt_3D.view(1, -1, 17, 3)
-            gt_3D[:, :, 14] = 0
-            
-            center_frame = gt_3D.shape[1] // 2
-            center_pose = gt_3D[0, center_frame]
-            center_pose = center_pose - center_pose[14:15, :]
-            
-            if hasattr(center_pose, 'cpu'):
-                center_pose = center_pose.cpu().numpy()
-            elif hasattr(center_pose, 'numpy'):
-                center_pose = center_pose.numpy()
-            else:
-                center_pose = np.array(center_pose)
-            
             # Process 2D input
             if isinstance(input_2D, torch.Tensor):
                 input_2D_np = input_2D.clone()
@@ -180,7 +243,6 @@ def load_test_data_from_dataset(args):
                 confidence = np.ones((input_2d_pose.shape[0], 1))
                 input_2d_pose = np.hstack([input_2d_pose, confidence])
             
-            sequence_data.append(center_pose)
             input_2d_data.append(input_2d_pose)
             processed_samples += 1
             
@@ -190,53 +252,14 @@ def load_test_data_from_dataset(args):
         except Exception as e:
             continue
     
-    if not sequence_data:
-        return None, None, None
+    if not input_2d_data:
+        return None, None
     
-    sequence_3d = np.stack(sequence_data, axis=1)
     sequence_2d = np.stack(input_2d_data, axis=1)
     
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d @ cam2real
-    
-    return sequence_3d, sequence_2d, target_seq_name
+    return sequence_2d, target_seq_name
 
-def create_dummy_images_from_2d_poses(poses_2d, image_size=(640, 480)):
-    """Create dummy images with 2D pose keypoints drawn on them"""
-    images = []
-    
-    for t in range(poses_2d.shape[1]):
-        image = np.zeros((image_size[1], image_size[0], 3), dtype=np.uint8)
-        pose_2d = poses_2d[:, t, :]
-        
-        # Draw keypoints
-        for joint_idx in range(17):
-            if pose_2d[joint_idx, 2] > 0.1:
-                x = int(pose_2d[joint_idx, 0] * image_size[0])
-                y = int(pose_2d[joint_idx, 1] * image_size[1])
-                cv2.circle(image, (x, y), 8, (0, 255, 0), -1)
-        
-        # Draw skeleton connections
-        connections = [
-            (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
-            (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
-            (1, 2), (2, 3), (4, 5), (5, 6)
-        ]
-        
-        for connection in connections:
-            joint1, joint2 = connection
-            if (pose_2d[joint1, 2] > 0.1 and pose_2d[joint2, 2] > 0.1):
-                x1 = int(pose_2d[joint1, 0] * image_size[0])
-                y1 = int(pose_2d[joint1, 1] * image_size[1])
-                x2 = int(pose_2d[joint2, 0] * image_size[0])
-                y2 = int(pose_2d[joint2, 1] * image_size[1])
-                cv2.line(image, (x1, y1), (x2, y2), (0, 255, 255), 3)
-        
-        images.append(image)
-    
-    return images
-
-def create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args):
+def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
     """Create simple visualization with just GT and MediaPipe predictions"""
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
@@ -245,14 +268,15 @@ def create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args):
     estimated_poses = []
     
     def update(frame_idx):
-        if frame_idx >= len(images):
+        if frame_idx >= len(frames) or frame_idx >= gt_poses_2d.shape[1]:
             return
         
-        image = images[frame_idx]
+        # Get real frame and ground truth
+        frame = frames[frame_idx]
         gt_pose_2d = gt_poses_2d[:, frame_idx, :]
         
-        # Get MediaPipe estimation
-        estimated_pose, mp_results = estimator.estimate_pose_from_image(image)
+        # Get MediaPipe estimation from real frame
+        estimated_pose, mp_results = estimator.estimate_pose_from_image(frame)
         estimated_poses.append(estimated_pose)
         
         # Clear axes
@@ -332,7 +356,12 @@ def create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args):
         ax2.grid(True, alpha=0.3)
         
         # Update frame info
-        fig.suptitle(f'2D Pose Comparison - {seq_name}\nFrame: {frame_idx+1}/{len(images)}', fontsize=16)
+        detected_joints = np.sum(valid_est)
+        gt_joints = np.sum(valid_gt)
+        
+        fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
+                    f'Frame: {frame_idx+1}/{len(frames)} | '
+                    f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints}', fontsize=16)
         
         plt.tight_layout()
         
@@ -355,25 +384,37 @@ def main():
     
     try:
         print("Loading test data from dataset...")
-        gt_poses_3d, gt_poses_2d, seq_name = load_test_data_from_dataset(args)
+        gt_poses_2d, seq_name = load_test_data_from_dataset(args)
         
-        if gt_poses_3d is None or gt_poses_2d is None:
-            print("No data loaded. Please check your dataset.")
+        if gt_poses_2d is None:
+            print("No ground truth data loaded. Please check your dataset.")
             return
         
-        print(f"Loaded {gt_poses_2d.shape[1]} frames for sequence {seq_name}")
+        print(f"Loaded {gt_poses_2d.shape[1]} ground truth frames for sequence {seq_name}")
         
-        # Create dummy images from 2D poses
-        print("Creating dummy images from 2D poses...")
-        images = create_dummy_images_from_2d_poses(gt_poses_2d)
+        # Load actual video frames
+        print("Loading video frames...")
+        frames = load_mpi_test_frames(seq_name, args.num_frames)
+        
+        if frames is None:
+            print("Could not load video frames. Creating fallback visualization...")
+            # Create dummy frames with better human-like figures
+            frames = create_better_dummy_frames(gt_poses_2d, args.num_frames)
+        
+        print(f"Using {len(frames)} frames for MediaPipe processing")
+        
+        # Ensure we have matching number of frames
+        min_frames = min(len(frames), gt_poses_2d.shape[1])
+        frames = frames[:min_frames]
+        gt_poses_2d = gt_poses_2d[:, :min_frames, :]
         
         # Create visualization
-        update_func, fig = create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args)
+        update_func, fig = create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args)
         
         if args.real_time:
             # Real-time processing
             print("Starting real-time processing...")
-            for i in range(len(images)):
+            for i in range(min_frames):
                 update_func(i)
                 plt.pause(0.1)
                 if i == 0:
@@ -384,7 +425,7 @@ def main():
         else:
             # Create animation
             print("Creating animation...")
-            ani = FuncAnimation(fig, update_func, frames=len(images), 
+            ani = FuncAnimation(fig, update_func, frames=min_frames, 
                               interval=300, repeat=True, blit=False)
             
             if args.save_video:
@@ -393,14 +434,6 @@ def main():
                 
                 ani.save(output_path, writer='pillow', fps=3, dpi=100)
                 print(f"Animation saved successfully to: {output_path}")
-                
-                # Also save as MP4
-                output_mp4 = output_path.replace('.gif', '.mp4')
-                try:
-                    ani.save(output_mp4, writer='ffmpeg', fps=5, dpi=100)
-                    print(f"MP4 version saved to: {output_mp4}")
-                except:
-                    print("FFmpeg not available, MP4 not saved")
             
             plt.show()
     
@@ -412,6 +445,85 @@ def main():
     finally:
         estimator.close()
         print("MediaPipe estimator closed.")
+
+def create_better_dummy_frames(gt_poses_2d, num_frames, image_size=(640, 480)):
+    """Create better dummy frames with human-like stick figures"""
+    frames = []
+    
+    for t in range(min(num_frames, gt_poses_2d.shape[1])):
+        # Create a more realistic background
+        frame = np.random.randint(20, 50, (image_size[1], image_size[0], 3), dtype=np.uint8)
+        
+        # Add some texture/noise
+        noise = np.random.randint(-10, 10, (image_size[1], image_size[0], 3), dtype=np.int16)
+        frame = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        
+        pose_2d = gt_poses_2d[:, t, :]
+        
+        # Draw a more realistic human figure
+        # Draw head as a circle
+        if pose_2d[9, 2] > 0.1:  # nose
+            head_x = int(pose_2d[9, 0] * image_size[0])
+            head_y = int(pose_2d[9, 1] * image_size[1])
+            cv2.circle(frame, (head_x, head_y), 25, (200, 180, 150), -1)  # Skin color
+            cv2.circle(frame, (head_x, head_y), 25, (100, 100, 100), 2)   # Outline
+        
+        # Draw torso as a rectangle
+        if pose_2d[8, 2] > 0.1 and pose_2d[0, 2] > 0.1:  # thorax and root
+            torso_top_x = int(pose_2d[8, 0] * image_size[0])
+            torso_top_y = int(pose_2d[8, 1] * image_size[1])
+            torso_bottom_x = int(pose_2d[0, 0] * image_size[0])
+            torso_bottom_y = int(pose_2d[0, 1] * image_size[1])
+            
+            cv2.rectangle(frame, 
+                         (torso_top_x - 30, torso_top_y), 
+                         (torso_bottom_x + 30, torso_bottom_y), 
+                         (100, 150, 200), -1)  # Shirt color
+            cv2.rectangle(frame, 
+                         (torso_top_x - 30, torso_top_y), 
+                         (torso_bottom_x + 30, torso_bottom_y), 
+                         (50, 50, 50), 2)      # Outline
+        
+        # Draw limbs as thick lines
+        connections = [
+            (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
+            (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
+            (1, 2), (2, 3), (4, 5), (5, 6)
+        ]
+        
+        for connection in connections:
+            joint1, joint2 = connection
+            if (pose_2d[joint1, 2] > 0.1 and pose_2d[joint2, 2] > 0.1):
+                x1 = int(pose_2d[joint1, 0] * image_size[0])
+                y1 = int(pose_2d[joint1, 1] * image_size[1])
+                x2 = int(pose_2d[joint2, 0] * image_size[0])
+                y2 = int(pose_2d[joint2, 1] * image_size[1])
+                
+                # Different colors for different body parts
+                if joint1 in [4, 5, 6] or joint2 in [4, 5, 6]:  # Left leg
+                    color = (100, 100, 150)
+                elif joint1 in [1, 2, 3] or joint2 in [1, 2, 3]:  # Right leg
+                    color = (100, 100, 150)
+                elif joint1 in [11, 12, 13] or joint2 in [11, 12, 13]:  # Left arm
+                    color = (200, 180, 150)
+                elif joint1 in [14, 15, 16] or joint2 in [14, 15, 16]:  # Right arm
+                    color = (200, 180, 150)
+                else:  # Torso
+                    color = (150, 150, 150)
+                
+                cv2.line(frame, (x1, y1), (x2, y2), color, 8)
+        
+        # Draw joints as circles
+        for joint_idx in range(17):
+            if pose_2d[joint_idx, 2] > 0.1:
+                x = int(pose_2d[joint_idx, 0] * image_size[0])
+                y = int(pose_2d[joint_idx, 1] * image_size[1])
+                cv2.circle(frame, (x, y), 6, (255, 255, 255), -1)
+                cv2.circle(frame, (x, y), 6, (0, 0, 0), 2)
+        
+        frames.append(frame)
+    
+    return frames
 
 if __name__ == '__main__':
     main()
