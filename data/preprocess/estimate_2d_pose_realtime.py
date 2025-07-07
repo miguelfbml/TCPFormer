@@ -396,7 +396,6 @@ def create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args
         plt.tight_layout()
     
     return update
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
@@ -424,8 +423,12 @@ def main():
         print("Creating dummy images from 2D poses...")
         images = create_dummy_images_from_2d_poses(gt_poses_2d)
         
-        # Create visualization
-        update_func = create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args)
+        # Create the figure first
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}', fontsize=16)
+        
+        # Create visualization function
+        update_func = create_realtime_visualization_fixed(estimator, images, gt_poses_2d, seq_name, args, fig, ax1, ax2, ax3, ax4)
         
         if args.real_time:
             # Real-time processing
@@ -441,14 +444,25 @@ def main():
         else:
             # Create animation
             print("Creating animation...")
-            fig = plt.gcf()
             ani = FuncAnimation(fig, update_func, frames=len(images), 
-                              interval=100, repeat=True, blit=False)
+                              interval=200, repeat=True, blit=False)
             
             if args.save_video:
                 output_path = f'../realtime_2d_pose_{seq_name.lower()}.gif'
-                ani.save(output_path, writer='pillow', fps=10, dpi=100)
-                print(f"Animation saved to: {output_path}")
+                print(f"Saving animation to: {output_path}")
+                
+                # Use better writer settings for GIF
+                writer = 'pillow'
+                ani.save(output_path, writer=writer, fps=5, dpi=80, bitrate=1800)
+                print(f"Animation saved successfully to: {output_path}")
+                
+                # Also save as MP4 for better compatibility
+                output_mp4 = output_path.replace('.gif', '.mp4')
+                try:
+                    ani.save(output_mp4, writer='ffmpeg', fps=10, dpi=100, bitrate=1800)
+                    print(f"MP4 version saved to: {output_mp4}")
+                except:
+                    print("FFmpeg not available, MP4 not saved")
             
             plt.show()
     
@@ -460,6 +474,122 @@ def main():
     finally:
         estimator.close()
         print("MediaPipe estimator closed.")
+
+def create_realtime_visualization_fixed(estimator, images, gt_poses_2d, seq_name, args, fig, ax1, ax2, ax3, ax4):
+    """Create real-time visualization with fixed figure references"""
+    
+    # Initialize pose storage
+    estimated_poses = []
+    processing_times = []
+    
+    def update(frame_idx):
+        if frame_idx >= len(images):
+            return
+        
+        image = images[frame_idx]
+        gt_pose_2d = gt_poses_2d[:, frame_idx, :]  # (17, 3)
+        
+        # Measure processing time
+        start_time = time.time()
+        estimated_pose, mp_results = estimator.estimate_pose_from_image(image)
+        processing_time = time.time() - start_time
+        processing_times.append(processing_time)
+        estimated_poses.append(estimated_pose)
+        
+        # Clear all axes
+        ax1.clear()
+        ax2.clear()
+        ax3.clear()
+        ax4.clear()
+        
+        # Plot 1: Original image with MediaPipe overlay
+        ax1.set_title('Ground Truth 2D Pose + MediaPipe Detection', fontsize=10)
+        ax1.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        if mp_results.pose_landmarks:
+            # Draw MediaPipe pose landmarks
+            annotated_image = image.copy()
+            estimator.mp_drawing.draw_landmarks(
+                annotated_image, mp_results.pose_landmarks, estimator.mp_pose.POSE_CONNECTIONS)
+            ax1.imshow(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+        ax1.axis('off')
+        
+        # Plot 2: 2D pose comparison (scatter plot)
+        ax2.set_title('2D Pose Comparison', fontsize=10)
+        ax2.set_xlim(0, 1)
+        ax2.set_ylim(0, 1)
+        ax2.invert_yaxis()  # Invert y-axis for image coordinates
+        
+        # Plot ground truth (blue)
+        valid_gt = gt_pose_2d[:, 2] > 0.1  # Lower threshold for better visibility
+        if np.any(valid_gt):
+            ax2.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
+                       c='blue', s=30, alpha=0.7, label='Ground Truth')
+        
+        # Plot MediaPipe estimates (red)
+        valid_est = estimated_pose[:, 2] > 0.1
+        if np.any(valid_est):
+            ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
+                       c='red', s=30, alpha=0.7, label='MediaPipe')
+        
+        ax2.legend(fontsize=8)
+        ax2.set_xlabel('X (normalized)', fontsize=8)
+        ax2.set_ylabel('Y (normalized)', fontsize=8)
+        ax2.tick_params(labelsize=8)
+        
+        # Plot 3: Processing time graph
+        ax3.set_title('Processing Time', fontsize=10)
+        if len(processing_times) > 0:
+            ax3.plot(processing_times, 'g-', linewidth=2)
+            if len(processing_times) > 1:
+                ax3.axhline(y=np.mean(processing_times), color='r', linestyle='--', 
+                           label=f'Avg: {np.mean(processing_times):.3f}s')
+                ax3.legend(fontsize=8)
+        ax3.set_xlabel('Frame', fontsize=8)
+        ax3.set_ylabel('Time (seconds)', fontsize=8)
+        ax3.tick_params(labelsize=8)
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Error analysis
+        ax4.set_title('Joint-wise Error Analysis', fontsize=10)
+        if len(estimated_poses) > 0:
+            # Calculate per-joint errors
+            errors = []
+            for i in range(17):  # 17 joints
+                if gt_pose_2d[i, 2] > 0.1 and estimated_pose[i, 2] > 0.1:
+                    error = np.linalg.norm(gt_pose_2d[i, :2] - estimated_pose[i, :2])
+                    errors.append(error)
+                else:
+                    errors.append(0)
+            
+            joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
+                          'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+                          'RShoulder', 'RElbow', 'RWrist']
+            
+            bars = ax4.bar(range(17), errors, color='orange', alpha=0.7)
+            ax4.set_xticks(range(17))
+            ax4.set_xticklabels(joint_names, rotation=45, ha='right', fontsize=7)
+            ax4.set_ylabel('Error (normalized units)', fontsize=8)
+            ax4.tick_params(labelsize=8)
+            
+            # Add error values on bars (only for non-zero errors)
+            for i, (bar, error) in enumerate(zip(bars, errors)):
+                if error > 0.01:  # Only show significant errors
+                    ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.005,
+                            f'{error:.2f}', ha='center', va='bottom', fontsize=6)
+        
+        # Update frame info
+        fps = 1.0 / processing_time if processing_time > 0 else 0
+        fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}\n'
+                    f'Frame: {frame_idx+1}/{len(images)} | '
+                    f'Processing Time: {processing_time:.3f}s | '
+                    f'FPS: {fps:.1f}', fontsize=12)
+        
+        plt.tight_layout()
+        
+        # Return the artists for blitting (optional)
+        return [ax1, ax2, ax3, ax4]
+    
+    return update
 
 if __name__ == '__main__':
     main()
