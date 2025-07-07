@@ -81,17 +81,25 @@ class MediaPipe2DPoseEstimator:
 
 def load_mpi_test_frames(sequence_name, num_frames=50):
     """Load actual video frames from MPI-INF-3DHP test set"""
-    # MPI-INF-3DHP test set video paths
-    mpi_root = '../motion3d/MPI-INF-3DHP'
+    # MPI-INF-3DHP test set video paths - updated for your system
+    mpi_roots = [
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp',
+        '../motion3d/MPI-INF-3DHP',
+        '../motion3d'
+    ]
     
     # Try different possible paths for MPI-INF-3DHP test videos
-    possible_paths = [
-        f'{mpi_root}/test/{sequence_name}',
-        f'{mpi_root}/Test/{sequence_name}',
-        f'{mpi_root}/mpi_inf_3dhp_test_set/{sequence_name}',
-        f'../motion3d/mpi_inf_3dhp_test_set/{sequence_name}',
-        f'../motion3d/MPI_INF_3DHP/test/{sequence_name}',
-    ]
+    possible_paths = []
+    for root in mpi_roots:
+        possible_paths.extend([
+            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence',
+            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}/imageFrames',
+            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}/images',
+            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}',
+            f'{root}/test/{sequence_name}/imageSequence',
+            f'{root}/Test/{sequence_name}/imageSequence',
+            f'{root}/MPI_INF_3DHP/test/{sequence_name}/imageSequence',
+        ])
     
     print(f"Looking for video frames for sequence: {sequence_name}")
     
@@ -103,67 +111,80 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
             break
     
     if video_path is None:
-        print("Video frames not found. Available paths:")
-        for path in possible_paths:
+        print("Video frames not found. Available paths checked:")
+        for path in possible_paths[:10]:  # Show first 10 paths
             print(f"  - {path} (exists: {os.path.exists(path)})")
         
-        # Try to find any video files in the motion3d directory
-        motion3d_files = glob.glob('../motion3d/**/*.mp4', recursive=True)
-        motion3d_files.extend(glob.glob('../motion3d/**/*.avi', recursive=True))
-        motion3d_files.extend(glob.glob('../motion3d/**/*.jpg', recursive=True))
-        motion3d_files.extend(glob.glob('../motion3d/**/*.png', recursive=True))
+        # Try to find any image files in the expected directory structure
+        for root in mpi_roots:
+            if os.path.exists(root):
+                print(f"\nExploring {root}:")
+                try:
+                    # List subdirectories
+                    for item in os.listdir(root):
+                        item_path = os.path.join(root, item)
+                        if os.path.isdir(item_path) and sequence_name in item:
+                            print(f"  Found related directory: {item_path}")
+                            # Look for image subdirectories
+                            for subitem in os.listdir(item_path):
+                                subitem_path = os.path.join(item_path, subitem)
+                                if os.path.isdir(subitem_path):
+                                    print(f"    Subdirectory: {subitem_path}")
+                                    # Check if it contains images
+                                    image_files = glob.glob(os.path.join(subitem_path, '*.jpg'))
+                                    image_files.extend(glob.glob(os.path.join(subitem_path, '*.png')))
+                                    if image_files:
+                                        print(f"      Contains {len(image_files)} images")
+                                        video_path = subitem_path
+                                        break
+                            if video_path:
+                                break
+                except Exception as e:
+                    print(f"  Error exploring {root}: {e}")
+                
+                if video_path:
+                    break
         
-        if motion3d_files:
-            print("Found these video/image files in motion3d:")
-            for f in motion3d_files[:10]:  # Show first 10
-                print(f"  - {f}")
-        
-        return None
-    
-    # Load frames from video or image sequence
-    frames = []
-    
-    # Check if it's a video file
-    video_files = glob.glob(os.path.join(video_path, '*.mp4'))
-    video_files.extend(glob.glob(os.path.join(video_path, '*.avi')))
-    
-    if video_files:
-        # Load from video file
-        video_file = video_files[0]
-        print(f"Loading frames from video: {video_file}")
-        
-        cap = cv2.VideoCapture(video_file)
-        frame_count = 0
-        
-        while cap.isOpened() and frame_count < num_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-            frame_count += 1
-            
-        cap.release()
-        
-    else:
-        # Load from image sequence
-        image_files = glob.glob(os.path.join(video_path, '*.jpg'))
-        image_files.extend(glob.glob(os.path.join(video_path, '*.png')))
-        image_files.sort()
-        
-        if image_files:
-            print(f"Loading frames from {len(image_files)} images")
-            
-            for i, img_path in enumerate(image_files[:num_frames]):
-                frame = cv2.imread(img_path)
-                if frame is not None:
-                    frames.append(frame)
-                    
-        else:
-            print("No video or image files found")
+        if video_path is None:
             return None
     
-    print(f"Loaded {len(frames)} frames")
+    print(f"Loading frames from: {video_path}")
+    
+    # Load frames from image sequence
+    frames = []
+    
+    # Check for different image extensions
+    image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tiff']
+    image_files = []
+    
+    for ext in image_extensions:
+        files = glob.glob(os.path.join(video_path, ext))
+        files.extend(glob.glob(os.path.join(video_path, ext.upper())))
+        image_files.extend(files)
+    
+    if image_files:
+        image_files.sort()  # Sort to ensure correct order
+        print(f"Found {len(image_files)} image files")
+        
+        # Load images
+        for i, img_path in enumerate(image_files[:num_frames]):
+            frame = cv2.imread(img_path)
+            if frame is not None:
+                frames.append(frame)
+                if i % 50 == 0:  # Progress indicator
+                    print(f"Loaded {i+1}/{min(num_frames, len(image_files))} images...")
+            else:
+                print(f"Warning: Could not load image {img_path}")
+                
+        print(f"Successfully loaded {len(frames)} frames")
+        
+    else:
+        print("No image files found in the directory")
+        print(f"Directory contents: {os.listdir(video_path) if os.path.exists(video_path) else 'Directory does not exist'}")
+        return None
+    
     return frames
+
 
 def load_test_data_from_dataset(args):
     """Load test data from MPI-INF-3DHP dataset"""
