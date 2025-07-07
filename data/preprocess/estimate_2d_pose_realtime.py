@@ -1,15 +1,16 @@
 '''
 cd data/preprocess
 
-# Run with specific sequence
-python estimate_2d_pose_realtime.py --sequence-name TS1 --num-frames 50
+# Create simple 2-panel comparison
+python estimate_2d_pose_realtime.py --sequence-name TS1 --num-frames 30
 
-# Save as video
-python estimate_2d_pose_realtime.py --sequence-name TS2 --save-video --num-frames 30
+# Save as GIF
+python estimate_2d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
 
 # Real-time mode
-python estimate_2d_pose_realtime.py --sequence-name TS3 --real-time --num-frames 20
+python estimate_2d_pose_realtime.py --sequence-name TS2 --real-time --num-frames 15
 '''
+
 
 
 import argparse
@@ -35,7 +36,7 @@ class MediaPipe2DPoseEstimator:
         self.mp_drawing = mp.solutions.drawing_utils
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=2,  # Heavy model (0=lite, 1=full, 2=heavy)
+            model_complexity=2,
             enable_segmentation=False,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
@@ -43,7 +44,6 @@ class MediaPipe2DPoseEstimator:
         
         # MediaPipe to H36M/MPI mapping
         self.mp_to_h36m_mapping = {
-            # MediaPipe landmark index -> H36M joint index
             0: 9,   # nose -> nose
             11: 11, # left_shoulder -> left shoulder
             12: 8,  # right_shoulder -> right shoulder  
@@ -61,27 +61,20 @@ class MediaPipe2DPoseEstimator:
         
     def estimate_pose_from_image(self, image):
         """Estimate 2D pose from a single image using MediaPipe"""
-        # Convert BGR to RGB
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Process the image
         results = self.pose.process(rgb_image)
         
-        # Initialize pose array (17 joints, 3 coordinates: x, y, confidence)
         pose_2d = np.zeros((17, 3))
         
         if results.pose_landmarks:
-            # Extract landmarks
             landmarks = results.pose_landmarks.landmark
-            
-            # Map MediaPipe landmarks to H36M format
             for mp_idx, h36m_idx in self.mp_to_h36m_mapping.items():
                 if mp_idx < len(landmarks):
                     landmark = landmarks[mp_idx]
                     pose_2d[h36m_idx] = [
-                        landmark.x,  # Normalized x coordinate
-                        landmark.y,  # Normalized y coordinate
-                        landmark.visibility  # Confidence/visibility score
+                        landmark.x,
+                        landmark.y,
+                        landmark.visibility
                     ]
         
         return pose_2d, results
@@ -90,7 +83,7 @@ class MediaPipe2DPoseEstimator:
         self.pose.close()
 
 def load_test_data_from_dataset(args):
-    """Load test data from MPI-INF-3DHP dataset exactly like compare_gt_pred.py"""
+    """Load test data from MPI-INF-3DHP dataset"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -103,11 +96,10 @@ def load_test_data_from_dataset(args):
         out_all: int
         test_batch_size: int
 
-    # Use same parameters as your model evaluation
     dataset_args = DatasetArgs(
         data_root='../motion3d/', 
-        n_frames=27,  # Same as your model's n_frames
-        stride=9,     # Same as your model's stride
+        n_frames=27,
+        stride=9,
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -116,24 +108,15 @@ def load_test_data_from_dataset(args):
         test_batch_size=1
     )
     
-    dataset = Fusion(dataset_args, train=False)  # Use Fusion like compare_gt_pred.py
+    dataset = Fusion(dataset_args, train=False)
     
-    print(f"Dataset length: {len(dataset)}")
-    
-    if args.sequence_number >= len(dataset):
-        print(f"ERROR: Sequence {args.sequence_number} is out of range! Dataset has {len(dataset)} sequences.")
-        return None, None, None
-
-    # Get multiple samples to build sequences
     sequence_data = []
     input_2d_data = []
     target_seq_name = None
     processed_samples = 0
     
-    # Available sequence names in MPI-INF-3DHP test set
     available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
     
-    # If sequence_name is provided, use it; otherwise use sequence_number
     if args.sequence_name:
         target_seq_name = args.sequence_name
     else:
@@ -145,7 +128,6 @@ def load_test_data_from_dataset(args):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
-            # Extract sequence name properly
             if isinstance(seq, (list, tuple)):
                 current_seq_name = seq[0]
             elif isinstance(seq, torch.Tensor):
@@ -153,29 +135,22 @@ def load_test_data_from_dataset(args):
             else:
                 current_seq_name = str(seq)
             
-            # Filter by target sequence
             if current_seq_name != target_seq_name:
                 continue
             
-            print(f"Found matching sequence: {current_seq_name} (sample {i})")
-            
-            # Process exactly like compare_gt_pred.py
+            # Process 3D GT
             if isinstance(gt_3D, torch.Tensor):
                 gt_3D = gt_3D.clone()
             else:
                 gt_3D = torch.tensor(gt_3D)
                 
-            gt_3D = gt_3D.view(1, -1, 17, 3)  # N=1, T, 17, 3
-            gt_3D[:, :, 14] = 0  # Set root joint to 0
+            gt_3D = gt_3D.view(1, -1, 17, 3)
+            gt_3D[:, :, 14] = 0
             
-            # Extract center frame (same as evaluation)
             center_frame = gt_3D.shape[1] // 2
-            center_pose = gt_3D[0, center_frame]  # (17, 3)
-            
-            # Make root-relative (same as evaluation)
+            center_pose = gt_3D[0, center_frame]
             center_pose = center_pose - center_pose[14:15, :]
             
-            # Convert to numpy
             if hasattr(center_pose, 'cpu'):
                 center_pose = center_pose.cpu().numpy()
             elif hasattr(center_pose, 'numpy'):
@@ -183,28 +158,24 @@ def load_test_data_from_dataset(args):
             else:
                 center_pose = np.array(center_pose)
             
-            # Also get the 2D input data
+            # Process 2D input
             if isinstance(input_2D, torch.Tensor):
                 input_2D_np = input_2D.clone()
             else:
                 input_2D_np = torch.tensor(input_2D)
             
-            # Handle different input_2D shapes
-            if input_2D_np.ndim == 4:  # (1, T, 17, 3) or (1, T, 17, 2)
+            if input_2D_np.ndim == 4:
                 input_center_frame = input_2D_np.shape[1] // 2
-                input_2d_pose = input_2D_np[0, input_center_frame].cpu().numpy()  # (17, 2/3)
-            elif input_2D_np.ndim == 3:  # (T, 17, 3) or (T, 17, 2)
+                input_2d_pose = input_2D_np[0, input_center_frame].cpu().numpy()
+            elif input_2D_np.ndim == 3:
                 input_center_frame = input_2D_np.shape[0] // 2
-                input_2d_pose = input_2D_np[input_center_frame].cpu().numpy()  # (17, 2/3)
+                input_2d_pose = input_2D_np[input_center_frame].cpu().numpy()
             else:
                 input_2d_pose = input_2D_np.cpu().numpy()
             
-            # Ensure we have at least x, y coordinates
             if input_2d_pose.shape[1] < 2:
-                print(f"Skipping sample {i}: insufficient 2D coordinates")
                 continue
             
-            # Add confidence column if not present
             if input_2d_pose.shape[1] == 2:
                 confidence = np.ones((input_2d_pose.shape[0], 1))
                 input_2d_pose = np.hstack([input_2d_pose, confidence])
@@ -213,58 +184,37 @@ def load_test_data_from_dataset(args):
             input_2d_data.append(input_2d_pose)
             processed_samples += 1
             
-            # Limit the number of samples for visualization
             if processed_samples >= args.num_frames:
                 break
                 
         except Exception as e:
-            print(f"Error processing sample {i}: {e}")
             continue
     
-    print(f"Processed {processed_samples} samples for sequence {target_seq_name}")
-    
     if not sequence_data:
-        print("No valid ground truth data found")
         return None, None, None
     
-    # Stack frames: (17, T, 3) for 3D, (17, T, 3) for 2D
     sequence_3d = np.stack(sequence_data, axis=1)
-    sequence_2d = np.stack(input_2d_data, axis=1)  # (17, T, 3)
+    sequence_2d = np.stack(input_2d_data, axis=1)
     
-    print(f"Stacked 3D sequence shape: {sequence_3d.shape}")
-    print(f"Stacked 2D sequence shape: {sequence_2d.shape}")
-    
-    # Apply camera transformation to 3D data
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
-    print(f"Ground truth sequence: {target_seq_name}, 3D shape: {sequence_3d.shape}, 2D shape: {sequence_2d.shape}")
     return sequence_3d, sequence_2d, target_seq_name
 
 def create_dummy_images_from_2d_poses(poses_2d, image_size=(640, 480)):
     """Create dummy images with 2D pose keypoints drawn on them"""
     images = []
     
-    for t in range(poses_2d.shape[1]):  # For each time frame
-        # Create a blank image
+    for t in range(poses_2d.shape[1]):
         image = np.zeros((image_size[1], image_size[0], 3), dtype=np.uint8)
+        pose_2d = poses_2d[:, t, :]
         
-        # Get 2D pose for this frame
-        pose_2d = poses_2d[:, t, :]  # (17, 3)
-        
-        # Draw keypoints on the image
+        # Draw keypoints
         for joint_idx in range(17):
-            if pose_2d[joint_idx, 2] > 0.5:  # If confidence > 0.5
-                # Convert normalized coordinates to pixel coordinates
+            if pose_2d[joint_idx, 2] > 0.1:
                 x = int(pose_2d[joint_idx, 0] * image_size[0])
                 y = int(pose_2d[joint_idx, 1] * image_size[1])
-                
-                # Draw keypoint
-                cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
-                
-                # Add joint index as text
-                cv2.putText(image, str(joint_idx), (x+5, y-5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                cv2.circle(image, (x, y), 8, (0, 255, 0), -1)
         
         # Draw skeleton connections
         connections = [
@@ -275,127 +225,121 @@ def create_dummy_images_from_2d_poses(poses_2d, image_size=(640, 480)):
         
         for connection in connections:
             joint1, joint2 = connection
-            if (pose_2d[joint1, 2] > 0.5 and pose_2d[joint2, 2] > 0.5):
+            if (pose_2d[joint1, 2] > 0.1 and pose_2d[joint2, 2] > 0.1):
                 x1 = int(pose_2d[joint1, 0] * image_size[0])
                 y1 = int(pose_2d[joint1, 1] * image_size[1])
                 x2 = int(pose_2d[joint2, 0] * image_size[0])
                 y2 = int(pose_2d[joint2, 1] * image_size[1])
-                
-                cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                cv2.line(image, (x1, y1), (x2, y2), (0, 255, 255), 3)
         
         images.append(image)
     
     return images
 
-def create_realtime_visualization(estimator, images, gt_poses_2d, seq_name, args):
-    """Create real-time visualization comparing MediaPipe estimates with ground truth"""
+def create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args):
+    """Create simple visualization with just GT and MediaPipe predictions"""
     
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}', fontsize=16)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle(f'2D Pose Comparison - {seq_name}', fontsize=16)
     
-    # Initialize pose storage
     estimated_poses = []
-    processing_times = []
     
     def update(frame_idx):
         if frame_idx >= len(images):
             return
         
         image = images[frame_idx]
-        gt_pose_2d = gt_poses_2d[:, frame_idx, :]  # (17, 3)
+        gt_pose_2d = gt_poses_2d[:, frame_idx, :]
         
-        # Measure processing time
-        start_time = time.time()
+        # Get MediaPipe estimation
         estimated_pose, mp_results = estimator.estimate_pose_from_image(image)
-        processing_time = time.time() - start_time
-        processing_times.append(processing_time)
         estimated_poses.append(estimated_pose)
         
-        # Clear all axes
+        # Clear axes
         ax1.clear()
         ax2.clear()
-        ax3.clear()
-        ax4.clear()
         
-        # Plot 1: Original image with MediaPipe overlay
-        ax1.set_title('Ground Truth 2D Pose + MediaPipe Detection')
-        ax1.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        if mp_results.pose_landmarks:
-            # Draw MediaPipe pose landmarks
-            annotated_image = image.copy()
-            estimator.mp_drawing.draw_landmarks(
-                annotated_image, mp_results.pose_landmarks, estimator.mp_pose.POSE_CONNECTIONS)
-            ax1.imshow(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
-        ax1.axis('off')
+        # Plot 1: Ground Truth 2D Pose
+        ax1.set_title('Ground Truth 2D Pose', fontsize=14)
+        ax1.set_xlim(0, 1)
+        ax1.set_ylim(0, 1)
+        ax1.invert_yaxis()
         
-        # Plot 2: 2D pose comparison (scatter plot)
-        ax2.set_title('2D Pose Comparison')
+        # Plot GT keypoints
+        valid_gt = gt_pose_2d[:, 2] > 0.1
+        if np.any(valid_gt):
+            ax1.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
+                       c='blue', s=80, alpha=0.8, edgecolors='darkblue', linewidth=2)
+        
+        # Draw GT skeleton connections
+        connections = [
+            (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
+            (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
+            (1, 2), (2, 3), (4, 5), (5, 6)
+        ]
+        
+        for connection in connections:
+            joint1, joint2 = connection
+            if (gt_pose_2d[joint1, 2] > 0.1 and gt_pose_2d[joint2, 2] > 0.1):
+                ax1.plot([gt_pose_2d[joint1, 0], gt_pose_2d[joint2, 0]], 
+                        [gt_pose_2d[joint1, 1], gt_pose_2d[joint2, 1]], 
+                        'b-', linewidth=3, alpha=0.7)
+        
+        # Add joint labels
+        joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
+                      'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+                      'RShoulder', 'RElbow', 'RWrist']
+        
+        for i, (valid, name) in enumerate(zip(valid_gt, joint_names)):
+            if valid:
+                ax1.annotate(f'{i}', (gt_pose_2d[i, 0], gt_pose_2d[i, 1]), 
+                           xytext=(5, 5), textcoords='offset points', 
+                           fontsize=8, color='white', weight='bold')
+        
+        ax1.set_xlabel('X (normalized)', fontsize=12)
+        ax1.set_ylabel('Y (normalized)', fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: MediaPipe Predictions
+        ax2.set_title('MediaPipe 2D Pose Predictions', fontsize=14)
         ax2.set_xlim(0, 1)
         ax2.set_ylim(0, 1)
-        ax2.invert_yaxis()  # Invert y-axis for image coordinates
+        ax2.invert_yaxis()
         
-        # Plot ground truth (blue)
-        valid_gt = gt_pose_2d[:, 2] > 0.5  # Filter by confidence
-        ax2.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
-                   c='blue', s=50, alpha=0.7, label='Ground Truth')
+        # Plot MediaPipe keypoints
+        valid_est = estimated_pose[:, 2] > 0.1
+        if np.any(valid_est):
+            ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
+                       c='red', s=80, alpha=0.8, edgecolors='darkred', linewidth=2)
         
-        # Plot MediaPipe estimates (red)
-        valid_est = estimated_pose[:, 2] > 0.5
-        ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
-                   c='red', s=50, alpha=0.7, label='MediaPipe')
+        # Draw MediaPipe skeleton connections
+        for connection in connections:
+            joint1, joint2 = connection
+            if (estimated_pose[joint1, 2] > 0.1 and estimated_pose[joint2, 2] > 0.1):
+                ax2.plot([estimated_pose[joint1, 0], estimated_pose[joint2, 0]], 
+                        [estimated_pose[joint1, 1], estimated_pose[joint2, 1]], 
+                        'r-', linewidth=3, alpha=0.7)
         
-        ax2.legend()
-        ax2.set_xlabel('X (normalized)')
-        ax2.set_ylabel('Y (normalized)')
+        # Add joint labels
+        for i, (valid, name) in enumerate(zip(valid_est, joint_names)):
+            if valid:
+                ax2.annotate(f'{i}', (estimated_pose[i, 0], estimated_pose[i, 1]), 
+                           xytext=(5, 5), textcoords='offset points', 
+                           fontsize=8, color='white', weight='bold')
         
-        # Plot 3: Processing time graph
-        ax3.set_title('Processing Time')
-        if len(processing_times) > 1:
-            ax3.plot(processing_times, 'g-', linewidth=2)
-            ax3.axhline(y=np.mean(processing_times), color='r', linestyle='--', 
-                       label=f'Avg: {np.mean(processing_times):.3f}s')
-            ax3.legend()
-        ax3.set_xlabel('Frame')
-        ax3.set_ylabel('Time (seconds)')
-        ax3.grid(True)
-        
-        # Plot 4: Error analysis
-        ax4.set_title('Joint-wise Error Analysis')
-        if len(estimated_poses) > 0:
-            # Calculate per-joint errors
-            errors = []
-            for i in range(17):  # 17 joints
-                if gt_pose_2d[i, 2] > 0.5 and estimated_pose[i, 2] > 0.5:
-                    error = np.linalg.norm(gt_pose_2d[i, :2] - estimated_pose[i, :2])
-                    errors.append(error)
-                else:
-                    errors.append(0)
-            
-            joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
-                          'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-                          'RShoulder', 'RElbow', 'RWrist']
-            
-            bars = ax4.bar(range(17), errors, color='orange', alpha=0.7)
-            ax4.set_xticks(range(17))
-            ax4.set_xticklabels(joint_names, rotation=45, ha='right')
-            ax4.set_ylabel('Error (normalized units)')
-            
-            # Add error values on bars
-            for i, (bar, error) in enumerate(zip(bars, errors)):
-                if error > 0:
-                    ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                            f'{error:.3f}', ha='center', va='bottom', fontsize=8)
+        ax2.set_xlabel('X (normalized)', fontsize=12)
+        ax2.set_ylabel('Y (normalized)', fontsize=12)
+        ax2.grid(True, alpha=0.3)
         
         # Update frame info
-        fps = 1.0 / processing_time if processing_time > 0 else 0
-        fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}\n'
-                    f'Frame: {frame_idx+1}/{len(images)} | '
-                    f'Processing Time: {processing_time:.3f}s | '
-                    f'FPS: {fps:.1f}', fontsize=14)
+        fig.suptitle(f'2D Pose Comparison - {seq_name}\nFrame: {frame_idx+1}/{len(images)}', fontsize=16)
         
         plt.tight_layout()
+        
+        return [ax1, ax2]
     
-    return update
+    return update, fig
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
@@ -423,19 +367,15 @@ def main():
         print("Creating dummy images from 2D poses...")
         images = create_dummy_images_from_2d_poses(gt_poses_2d)
         
-        # Create the figure first
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}', fontsize=16)
-        
-        # Create visualization function
-        update_func = create_realtime_visualization_fixed(estimator, images, gt_poses_2d, seq_name, args, fig, ax1, ax2, ax3, ax4)
+        # Create visualization
+        update_func, fig = create_simple_visualization(estimator, images, gt_poses_2d, seq_name, args)
         
         if args.real_time:
             # Real-time processing
             print("Starting real-time processing...")
             for i in range(len(images)):
                 update_func(i)
-                plt.pause(0.033)  # ~30 FPS
+                plt.pause(0.1)
                 if i == 0:
                     plt.show(block=False)
             
@@ -445,21 +385,19 @@ def main():
             # Create animation
             print("Creating animation...")
             ani = FuncAnimation(fig, update_func, frames=len(images), 
-                              interval=200, repeat=True, blit=False)
+                              interval=300, repeat=True, blit=False)
             
             if args.save_video:
-                output_path = f'../realtime_2d_pose_{seq_name.lower()}.gif'
+                output_path = f'../simple_2d_pose_{seq_name.lower()}.gif'
                 print(f"Saving animation to: {output_path}")
                 
-                # Use better writer settings for GIF
-                writer = 'pillow'
-                ani.save(output_path, writer=writer, fps=5, dpi=80, bitrate=1800)
+                ani.save(output_path, writer='pillow', fps=3, dpi=100)
                 print(f"Animation saved successfully to: {output_path}")
                 
-                # Also save as MP4 for better compatibility
+                # Also save as MP4
                 output_mp4 = output_path.replace('.gif', '.mp4')
                 try:
-                    ani.save(output_mp4, writer='ffmpeg', fps=10, dpi=100, bitrate=1800)
+                    ani.save(output_mp4, writer='ffmpeg', fps=5, dpi=100)
                     print(f"MP4 version saved to: {output_mp4}")
                 except:
                     print("FFmpeg not available, MP4 not saved")
@@ -474,122 +412,6 @@ def main():
     finally:
         estimator.close()
         print("MediaPipe estimator closed.")
-
-def create_realtime_visualization_fixed(estimator, images, gt_poses_2d, seq_name, args, fig, ax1, ax2, ax3, ax4):
-    """Create real-time visualization with fixed figure references"""
-    
-    # Initialize pose storage
-    estimated_poses = []
-    processing_times = []
-    
-    def update(frame_idx):
-        if frame_idx >= len(images):
-            return
-        
-        image = images[frame_idx]
-        gt_pose_2d = gt_poses_2d[:, frame_idx, :]  # (17, 3)
-        
-        # Measure processing time
-        start_time = time.time()
-        estimated_pose, mp_results = estimator.estimate_pose_from_image(image)
-        processing_time = time.time() - start_time
-        processing_times.append(processing_time)
-        estimated_poses.append(estimated_pose)
-        
-        # Clear all axes
-        ax1.clear()
-        ax2.clear()
-        ax3.clear()
-        ax4.clear()
-        
-        # Plot 1: Original image with MediaPipe overlay
-        ax1.set_title('Ground Truth 2D Pose + MediaPipe Detection', fontsize=10)
-        ax1.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        if mp_results.pose_landmarks:
-            # Draw MediaPipe pose landmarks
-            annotated_image = image.copy()
-            estimator.mp_drawing.draw_landmarks(
-                annotated_image, mp_results.pose_landmarks, estimator.mp_pose.POSE_CONNECTIONS)
-            ax1.imshow(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
-        ax1.axis('off')
-        
-        # Plot 2: 2D pose comparison (scatter plot)
-        ax2.set_title('2D Pose Comparison', fontsize=10)
-        ax2.set_xlim(0, 1)
-        ax2.set_ylim(0, 1)
-        ax2.invert_yaxis()  # Invert y-axis for image coordinates
-        
-        # Plot ground truth (blue)
-        valid_gt = gt_pose_2d[:, 2] > 0.1  # Lower threshold for better visibility
-        if np.any(valid_gt):
-            ax2.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
-                       c='blue', s=30, alpha=0.7, label='Ground Truth')
-        
-        # Plot MediaPipe estimates (red)
-        valid_est = estimated_pose[:, 2] > 0.1
-        if np.any(valid_est):
-            ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
-                       c='red', s=30, alpha=0.7, label='MediaPipe')
-        
-        ax2.legend(fontsize=8)
-        ax2.set_xlabel('X (normalized)', fontsize=8)
-        ax2.set_ylabel('Y (normalized)', fontsize=8)
-        ax2.tick_params(labelsize=8)
-        
-        # Plot 3: Processing time graph
-        ax3.set_title('Processing Time', fontsize=10)
-        if len(processing_times) > 0:
-            ax3.plot(processing_times, 'g-', linewidth=2)
-            if len(processing_times) > 1:
-                ax3.axhline(y=np.mean(processing_times), color='r', linestyle='--', 
-                           label=f'Avg: {np.mean(processing_times):.3f}s')
-                ax3.legend(fontsize=8)
-        ax3.set_xlabel('Frame', fontsize=8)
-        ax3.set_ylabel('Time (seconds)', fontsize=8)
-        ax3.tick_params(labelsize=8)
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: Error analysis
-        ax4.set_title('Joint-wise Error Analysis', fontsize=10)
-        if len(estimated_poses) > 0:
-            # Calculate per-joint errors
-            errors = []
-            for i in range(17):  # 17 joints
-                if gt_pose_2d[i, 2] > 0.1 and estimated_pose[i, 2] > 0.1:
-                    error = np.linalg.norm(gt_pose_2d[i, :2] - estimated_pose[i, :2])
-                    errors.append(error)
-                else:
-                    errors.append(0)
-            
-            joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
-                          'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-                          'RShoulder', 'RElbow', 'RWrist']
-            
-            bars = ax4.bar(range(17), errors, color='orange', alpha=0.7)
-            ax4.set_xticks(range(17))
-            ax4.set_xticklabels(joint_names, rotation=45, ha='right', fontsize=7)
-            ax4.set_ylabel('Error (normalized units)', fontsize=8)
-            ax4.tick_params(labelsize=8)
-            
-            # Add error values on bars (only for non-zero errors)
-            for i, (bar, error) in enumerate(zip(bars, errors)):
-                if error > 0.01:  # Only show significant errors
-                    ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.005,
-                            f'{error:.2f}', ha='center', va='bottom', fontsize=6)
-        
-        # Update frame info
-        fps = 1.0 / processing_time if processing_time > 0 else 0
-        fig.suptitle(f'Real-time 2D Pose Estimation - {seq_name}\n'
-                    f'Frame: {frame_idx+1}/{len(images)} | '
-                    f'Processing Time: {processing_time:.3f}s | '
-                    f'FPS: {fps:.1f}', fontsize=12)
-        
-        plt.tight_layout()
-        
-        # Return the artists for blitting (optional)
-        return [ax1, ax2, ax3, ax4]
-    
-    return update
 
 if __name__ == '__main__':
     main()
