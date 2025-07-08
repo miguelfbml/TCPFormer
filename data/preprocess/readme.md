@@ -1,6 +1,7 @@
 cameraInsp.py
 compare_gt_pred.py
 estimate_2d_pose_realtime.py
+generateTestVideos.py
 
 foram os ficheiros adicionados
 
