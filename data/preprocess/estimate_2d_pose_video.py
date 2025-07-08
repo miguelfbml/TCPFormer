@@ -12,8 +12,8 @@ pose = mp_pose.Pose(
 )
 
 # Input and output video paths
-input_video_path = 'input_video.mp4'  # Replace with your video file path
-output_video_path = 'output_video_with_keypoints.mp4'
+input_video_path = '../videos_test_sequences/TS1.mp4'
+output_video_path = '../videos_test_sequences/TS1_Pred.mp4'
 
 # Open the video file
 cap = cv2.VideoCapture(input_video_path)
