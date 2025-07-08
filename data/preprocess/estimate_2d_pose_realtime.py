@@ -38,25 +38,33 @@ class MediaPipe2DPoseEstimator:
             min_tracking_confidence=0.5
         )
         
-        # Fixed MediaPipe to H36M/MPI mapping - more accurate
+        # FIXED MediaPipe to H36M/MPI mapping - matches compare_gt_pred.py joint order
         self.mp_to_h36m_mapping = {
-            # Core body points
+            # MediaPipe -> H36M/MPI joint mapping
             0: 9,   # nose -> nose
             11: 11, # left_shoulder -> left shoulder
-            12: 14, # right_shoulder -> right shoulder (corrected)
+            12: 14, # right_shoulder -> right shoulder
             13: 12, # left_elbow -> left elbow
-            14: 15, # right_elbow -> right elbow (corrected)
+            14: 15, # right_elbow -> right elbow
             15: 13, # left_wrist -> left wrist
-            16: 16, # right_wrist -> right wrist (corrected)
+            16: 16, # right_wrist -> right wrist
             23: 4,  # left_hip -> left hip
             24: 1,  # right_hip -> right hip
             25: 5,  # left_knee -> left knee
             26: 2,  # right_knee -> right knee
             27: 6,  # left_ankle -> left ankle
             28: 3,  # right_ankle -> right ankle
-            # Additional mappings for better coverage
-            7: 10,  # left_ear -> head (approximate)
-            8: 10,  # right_ear -> head (approximate)
+            # Map ears to head for better coverage
+            7: 10,  # left_ear -> head
+            8: 10,  # right_ear -> head
+        }
+        
+        # Add missing joints mapping for better skeleton
+        # Try to estimate missing joints from available ones
+        self.missing_joints_estimation = {
+            0: [9, 10],     # root from nose and head
+            7: [8, 9],      # spine from thorax and nose
+            8: [11, 14],    # thorax from shoulders
         }
         
     def estimate_pose_from_image(self, image):
@@ -68,6 +76,8 @@ class MediaPipe2DPoseEstimator:
         
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
+            
+            # First pass: map directly available joints
             for mp_idx, h36m_idx in self.mp_to_h36m_mapping.items():
                 if mp_idx < len(landmarks):
                     landmark = landmarks[mp_idx]
@@ -76,6 +86,17 @@ class MediaPipe2DPoseEstimator:
                         landmark.y,
                         landmark.visibility
                     ]
+            
+            # Second pass: estimate missing joints from available ones
+            for missing_joint, source_joints in self.missing_joints_estimation.items():
+                if pose_2d[missing_joint, 2] == 0:  # Joint not detected
+                    # Try to estimate from source joints
+                    valid_sources = [j for j in source_joints if pose_2d[j, 2] > 0.1]
+                    if len(valid_sources) >= 2:
+                        # Average position of source joints
+                        avg_x = np.mean([pose_2d[j, 0] for j in valid_sources])
+                        avg_y = np.mean([pose_2d[j, 1] for j in valid_sources])
+                        pose_2d[missing_joint] = [avg_x, avg_y, 0.5]  # Lower confidence
         
         return pose_2d, results
     
@@ -274,10 +295,13 @@ def load_test_data_from_dataset(args):
             if input_2d_pose.shape[1] < 2:
                 continue
             
-            # Add confidence if not present
+            # Add confidence if not present (like compare_gt_pred.py adds root-relative processing)
             if input_2d_pose.shape[1] == 2:
                 confidence = np.ones((input_2d_pose.shape[0], 1)) * 0.9
                 input_2d_pose = np.hstack([input_2d_pose, confidence])
+            
+            # The key fix: Don't assume normalization, let the data speak for itself
+            # Most MPI-INF-3DHP 2D data is already properly normalized
             
             # Debug: Print range for first few samples
             if processed_samples < 3:
@@ -313,18 +337,9 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(f'2D Pose Comparison - {seq_name}', fontsize=16)
     
-    # Pre-compute all MediaPipe estimations for synchronization
-    print("Pre-computing MediaPipe estimations for synchronization...")
     estimated_poses = []
-    for i, frame in enumerate(frames):
-        estimated_pose, _ = estimator.estimate_pose_from_image(frame)
-        estimated_poses.append(estimated_pose)
-        if i % 10 == 0:
-            print(f"Processed {i+1}/{len(frames)} frames...")
     
-    print(f"✓ Pre-computed {len(estimated_poses)} MediaPipe estimations")
-    
-    # Use exact same connections as compare_gt_pred.py
+    # Use same connections as compare_gt_pred.py - FIXED
     connections = [
         (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
         (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
@@ -332,29 +347,40 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
     ]
     
     def update(frame_idx):
-        if frame_idx >= len(frames) or frame_idx >= gt_poses_2d.shape[1] or frame_idx >= len(estimated_poses):
+        if frame_idx >= len(frames) or frame_idx >= gt_poses_2d.shape[1]:
             return
         
-        # Get synchronized ground truth and MediaPipe estimation
+        # Get real frame and ground truth - SYNCHRONIZED
+        frame = frames[frame_idx]
         gt_pose_2d = gt_poses_2d[:, frame_idx, :]
-        estimated_pose = estimated_poses[frame_idx]
+        
+        # Only estimate MediaPipe pose when we have a new frame
+        # This ensures synchronization between GT and MediaPipe
+        if frame_idx >= len(estimated_poses):
+            estimated_pose, mp_results = estimator.estimate_pose_from_image(frame)
+            estimated_poses.append(estimated_pose)
+        else:
+            estimated_pose = estimated_poses[frame_idx]
         
         # Clear axes
         ax1.clear()
         ax2.clear()
         
-        # Plot 1: Ground Truth 2D Pose (same style as compare_gt_pred.py)
+        # Plot 1: Ground Truth 2D Pose
         ax1.set_title(f'Ground Truth 2D Pose - {seq_name}', fontsize=14)
         
-        # Auto-scale based on actual data range (exactly like compare_gt_pred.py)
-        valid_gt = gt_pose_2d[:, 2] > 0.1
+        # Check if we have valid ground truth data
+        valid_gt = gt_pose_2d[:, 2] > 0.1 if gt_pose_2d.shape[1] > 2 else np.ones(gt_pose_2d.shape[0], dtype=bool)
+        
+        # Auto-scale based on actual data range (like compare_gt_pred.py does for 3D)
         if np.any(valid_gt):
-            x_range = [np.min(gt_pose_2d[valid_gt, 0]), np.max(gt_pose_2d[valid_gt, 0])]
-            y_range = [np.min(gt_pose_2d[valid_gt, 1]), np.max(gt_pose_2d[valid_gt, 1])]
+            valid_coords = gt_pose_2d[valid_gt, :2]
+            x_range = [np.min(valid_coords[:, 0]), np.max(valid_coords[:, 0])]
+            y_range = [np.min(valid_coords[:, 1]), np.max(valid_coords[:, 1])]
             
-            # Add padding exactly like compare_gt_pred.py
-            x_padding = (x_range[1] - x_range[0]) * 0.1
-            y_padding = (y_range[1] - y_range[0]) * 0.1
+            # Add padding like compare_gt_pred.py
+            x_padding = max((x_range[1] - x_range[0]) * 0.1, 0.01)
+            y_padding = max((y_range[1] - y_range[0]) * 0.1, 0.01)
             
             ax1.set_xlim(x_range[0] - x_padding, x_range[1] + x_padding)
             ax1.set_ylim(y_range[0] - y_padding, y_range[1] + y_padding)
@@ -364,24 +390,45 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         
         ax1.invert_yaxis()
         
-        # Draw GT skeleton connections FIRST (exactly like compare_gt_pred.py)
-        for connection in connections:
-            joint1, joint2 = connection
-            if (joint1 < len(gt_pose_2d) and joint2 < len(gt_pose_2d) and 
-                gt_pose_2d[joint1, 2] > 0.1 and gt_pose_2d[joint2, 2] > 0.1):
-                ax1.plot([gt_pose_2d[joint1, 0], gt_pose_2d[joint2, 0]], 
-                        [gt_pose_2d[joint1, 1], gt_pose_2d[joint2, 1]], 
-                        'b-', linewidth=2, alpha=0.8)
-        
-        # Plot GT keypoints AFTER connections (exactly like compare_gt_pred.py)
+        # Plot GT keypoints with same style as compare_gt_pred.py
         if np.any(valid_gt):
             ax1.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
                        c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=0.5)
         
-        # Highlight root joint (joint 14 is the root in MPI-INF-3DHP)
-        if len(gt_pose_2d) > 14 and gt_pose_2d[14, 2] > 0.1:
-            ax1.scatter(gt_pose_2d[14, 0], gt_pose_2d[14, 1], 
-                       c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
+        # Draw GT skeleton connections with same style - FIXED LOGIC
+        for connection in connections:
+            joint1, joint2 = connection
+            # Check bounds and validity
+            if (joint1 < len(gt_pose_2d) and joint2 < len(gt_pose_2d)):
+                # Check if joints are valid (have confidence > 0.1 if confidence exists)
+                joint1_valid = gt_pose_2d[joint1, 2] > 0.1 if gt_pose_2d.shape[1] > 2 else True
+                joint2_valid = gt_pose_2d[joint2, 2] > 0.1 if gt_pose_2d.shape[1] > 2 else True
+                
+                if joint1_valid and joint2_valid:
+                    ax1.plot([gt_pose_2d[joint1, 0], gt_pose_2d[joint2, 0]], 
+                            [gt_pose_2d[joint1, 1], gt_pose_2d[joint2, 1]], 
+                            'b-', linewidth=2, alpha=0.8)
+        
+        # Highlight root joint (like compare_gt_pred.py) - use joint 14 as root
+        if len(gt_pose_2d) > 14:
+            root_valid = gt_pose_2d[14, 2] > 0.1 if gt_pose_2d.shape[1] > 2 else True
+            if root_valid:
+                ax1.scatter(gt_pose_2d[14, 0], gt_pose_2d[14, 1], 
+                           c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
+        
+        # Add joint labels for ground truth - only show valid ones
+        joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
+                      'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+                      'RShoulder', 'RElbow', 'RWrist']
+        
+        for i, name in enumerate(joint_names):
+            if i < len(gt_pose_2d):
+                joint_valid = gt_pose_2d[i, 2] > 0.1 if gt_pose_2d.shape[1] > 2 else True
+                if joint_valid:
+                    ax1.annotate(f'{i}', (gt_pose_2d[i, 0], gt_pose_2d[i, 1]), 
+                               xytext=(5, 5), textcoords='offset points', 
+                               fontsize=8, color='white', weight='bold',
+                               bbox=dict(boxstyle="round,pad=0.2", facecolor='blue', alpha=0.7))
         
         ax1.set_xlabel('X', fontsize=12)
         ax1.set_ylabel('Y', fontsize=12)
@@ -393,25 +440,33 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         ax2.set_ylim(0, 1)
         ax2.invert_yaxis()
         
-        # Draw MediaPipe skeleton connections FIRST
+        # Plot MediaPipe keypoints
         valid_est = estimated_pose[:, 2] > 0.1
-        for connection in connections:
-            joint1, joint2 = connection
-            if (joint1 < len(estimated_pose) and joint2 < len(estimated_pose) and 
-                estimated_pose[joint1, 2] > 0.1 and estimated_pose[joint2, 2] > 0.1):
-                ax2.plot([estimated_pose[joint1, 0], estimated_pose[joint2, 0]], 
-                        [estimated_pose[joint1, 1], estimated_pose[joint2, 1]], 
-                        'r-', linewidth=2, alpha=0.8)
-        
-        # Plot MediaPipe keypoints AFTER connections
         if np.any(valid_est):
             ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
                        c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=0.5)
         
-        # Highlight root joint for MediaPipe
+        # Draw MediaPipe skeleton connections - FIXED LOGIC
+        for connection in connections:
+            joint1, joint2 = connection
+            if (joint1 < len(estimated_pose) and joint2 < len(estimated_pose)):
+                if (estimated_pose[joint1, 2] > 0.1 and estimated_pose[joint2, 2] > 0.1):
+                    ax2.plot([estimated_pose[joint1, 0], estimated_pose[joint2, 0]], 
+                            [estimated_pose[joint1, 1], estimated_pose[joint2, 1]], 
+                            'r-', linewidth=2, alpha=0.8)
+        
+        # Highlight root joint for MediaPipe - use joint 14
         if len(estimated_pose) > 14 and estimated_pose[14, 2] > 0.1:
             ax2.scatter(estimated_pose[14, 0], estimated_pose[14, 1], 
                        c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
+        
+        # Add joint labels for MediaPipe
+        for i, name in enumerate(joint_names):
+            if i < len(estimated_pose) and estimated_pose[i, 2] > 0.1:
+                ax2.annotate(f'{i}', (estimated_pose[i, 0], estimated_pose[i, 1]), 
+                           xytext=(5, 5), textcoords='offset points', 
+                           fontsize=8, color='white', weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor='red', alpha=0.7))
         
         ax2.set_xlabel('X', fontsize=12)
         ax2.set_ylabel('Y', fontsize=12)
@@ -428,17 +483,17 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if np.any(common_valid):
                 distances = np.linalg.norm(gt_pose_2d[common_valid, :2] - estimated_pose[common_valid, :2], axis=1)
                 avg_error = np.mean(distances)
-                fig.suptitle(f'2D Pose Comparison - {seq_name} [SYNCHRONIZED]\n'
+                fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
                             f'Frame: {frame_idx+1}/{len(frames)} | '
                             f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints} | '
                             f'Avg Error: {avg_error:.4f}', fontsize=16)
             else:
-                fig.suptitle(f'2D Pose Comparison - {seq_name} [SYNCHRONIZED]\n'
+                fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
                             f'Frame: {frame_idx+1}/{len(frames)} | '
                             f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints} | '
                             f'No common joints', fontsize=16)
         else:
-            fig.suptitle(f'2D Pose Comparison - {seq_name} [SYNCHRONIZED]\n'
+            fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
                         f'Frame: {frame_idx+1}/{len(frames)} | '
                         f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints}', fontsize=16)
         
@@ -577,9 +632,7 @@ def main():
         frames = frames[:min_frames]
         gt_poses_2d = gt_poses_2d[:, :min_frames, :]
         
-        print(f"Final synchronized frame count: {min_frames}")
-        
-        # Create visualization with pre-computed MediaPipe estimations
+        # Create visualization
         update_func, fig = create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args)
         
         if args.real_time:
@@ -587,7 +640,7 @@ def main():
             print("Starting real-time processing...")
             for i in range(min_frames):
                 update_func(i)
-                plt.pause(0.2)  # Slower for better visualization
+                plt.pause(0.1)
                 if i == 0:
                     plt.show(block=False)
             
@@ -597,13 +650,13 @@ def main():
             # Create animation
             print("Creating animation...")
             ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                              interval=500, repeat=True, blit=False)  # Slower interval
+                              interval=300, repeat=True, blit=False)
             
             if args.save_video:
-                output_path = f'../2d_pose_comparison_synced_{seq_name.lower()}_frames_{min_frames}.gif'
+                output_path = f'../2d_pose_comparison_{seq_name.lower()}_frames_{min_frames}.gif'
                 print(f"Saving animation to: {output_path}")
                 
-                ani.save(output_path, writer='pillow', fps=2, dpi=100)  # Slower FPS
+                ani.save(output_path, writer='pillow', fps=3, dpi=100)
                 print(f"✓ Animation saved successfully to: {output_path}")
             
             plt.show()
