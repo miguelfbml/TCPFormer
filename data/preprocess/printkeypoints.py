@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
+import torch
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
