@@ -8,7 +8,6 @@ python estimate_2d_pose_realtime.py --sequence-name TS1 --num-frames 30
 python estimate_2d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
 '''
 
-
 import argparse
 import os
 import cv2
@@ -185,7 +184,6 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     
     return frames
 
-
 def load_test_data_from_dataset(args):
     """Load test data from MPI-INF-3DHP dataset"""
     @dataclass
@@ -214,24 +212,31 @@ def load_test_data_from_dataset(args):
     
     dataset = Fusion(dataset_args, train=False)
     
-    sequence_data = []
     input_2d_data = []
     target_seq_name = None
     processed_samples = 0
     
     available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
     
+    # Fix sequence selection logic
     if args.sequence_name:
-        target_seq_name = args.sequence_name
+        if args.sequence_name not in available_sequences:
+            print(f"Warning: {args.sequence_name} not in available sequences {available_sequences}")
+            target_seq_name = available_sequences[0]
+        else:
+            target_seq_name = args.sequence_name
     else:
         target_seq_name = available_sequences[args.sequence_number % len(available_sequences)]
     
     print(f"Looking for sequence: {target_seq_name}")
     
+    # First pass: find samples from the target sequence
+    found_samples = []
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
+            # Extract sequence name properly
             if isinstance(seq, (list, tuple)):
                 current_seq_name = seq[0]
             elif isinstance(seq, torch.Tensor):
@@ -239,8 +244,25 @@ def load_test_data_from_dataset(args):
             else:
                 current_seq_name = str(seq)
             
-            if current_seq_name != target_seq_name:
-                continue
+            if current_seq_name == target_seq_name:
+                found_samples.append(i)
+                print(f"Found matching sequence: {target_seq_name} (sample {i})")
+                if len(found_samples) >= args.num_frames:
+                    break
+                    
+        except Exception as e:
+            continue
+    
+    print(f"Found {len(found_samples)} samples for sequence {target_seq_name}")
+    
+    if not found_samples:
+        print(f"No samples found for sequence {target_seq_name}")
+        return None, None
+    
+    # Second pass: process the found samples
+    for sample_idx in found_samples:
+        try:
+            batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[sample_idx]
             
             # Process 2D input
             if isinstance(input_2D, torch.Tensor):
@@ -248,34 +270,47 @@ def load_test_data_from_dataset(args):
             else:
                 input_2D_np = torch.tensor(input_2D)
             
-            if input_2D_np.ndim == 4:
+            # Extract center frame for consistency with evaluation
+            if input_2D_np.ndim == 4:  # (1, T, 17, 3) or (1, T, 17, 2)
                 input_center_frame = input_2D_np.shape[1] // 2
                 input_2d_pose = input_2D_np[0, input_center_frame].cpu().numpy()
-            elif input_2D_np.ndim == 3:
+            elif input_2D_np.ndim == 3:  # (T, 17, 3) or (T, 17, 2)
                 input_center_frame = input_2D_np.shape[0] // 2
                 input_2d_pose = input_2D_np[input_center_frame].cpu().numpy()
-            else:
+            else:  # (17, 3) or (17, 2)
                 input_2d_pose = input_2D_np.cpu().numpy()
             
+            # Ensure we have at least x, y coordinates
             if input_2d_pose.shape[1] < 2:
                 continue
             
+            # Add confidence if not present
             if input_2d_pose.shape[1] == 2:
-                confidence = np.ones((input_2d_pose.shape[0], 1))
+                confidence = np.ones((input_2d_pose.shape[0], 1)) * 0.9  # High confidence for GT
                 input_2d_pose = np.hstack([input_2d_pose, confidence])
+            
+            # Normalize 2D poses to [0, 1] range if they're not already
+            if np.max(input_2d_pose[:, :2]) > 2.0:  # Likely in pixel coordinates
+                # Assume image size (you might need to adjust this)
+                image_width, image_height = 2048, 2048  # Common MPI-INF-3DHP size
+                input_2d_pose[:, 0] /= image_width   # Normalize x
+                input_2d_pose[:, 1] /= image_height  # Normalize y
+                input_2d_pose[:, 0] = np.clip(input_2d_pose[:, 0], 0, 1)
+                input_2d_pose[:, 1] = np.clip(input_2d_pose[:, 1], 0, 1)
             
             input_2d_data.append(input_2d_pose)
             processed_samples += 1
             
-            if processed_samples >= args.num_frames:
-                break
-                
         except Exception as e:
+            print(f"Error processing sample {sample_idx}: {e}")
             continue
+    
+    print(f"Successfully processed {processed_samples} samples for sequence {target_seq_name}")
     
     if not input_2d_data:
         return None, None
     
+    # Stack frames: (17, T, 3)
     sequence_2d = np.stack(input_2d_data, axis=1)
     
     return sequence_2d, target_seq_name
@@ -305,16 +340,16 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         ax2.clear()
         
         # Plot 1: Ground Truth 2D Pose
-        ax1.set_title('Ground Truth 2D Pose', fontsize=14)
+        ax1.set_title(f'Ground Truth 2D Pose - {seq_name}', fontsize=14)
         ax1.set_xlim(0, 1)
         ax1.set_ylim(0, 1)
         ax1.invert_yaxis()
         
-        # Plot GT keypoints
+        # Plot GT keypoints with better visibility
         valid_gt = gt_pose_2d[:, 2] > 0.1
         if np.any(valid_gt):
             ax1.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
-                       c='blue', s=80, alpha=0.8, edgecolors='darkblue', linewidth=2)
+                       c='blue', s=100, alpha=0.9, edgecolors='darkblue', linewidth=2)
         
         # Draw GT skeleton connections
         connections = [
@@ -328,9 +363,9 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if (gt_pose_2d[joint1, 2] > 0.1 and gt_pose_2d[joint2, 2] > 0.1):
                 ax1.plot([gt_pose_2d[joint1, 0], gt_pose_2d[joint2, 0]], 
                         [gt_pose_2d[joint1, 1], gt_pose_2d[joint2, 1]], 
-                        'b-', linewidth=3, alpha=0.7)
+                        'b-', linewidth=4, alpha=0.8)
         
-        # Add joint labels
+        # Add joint labels for ground truth
         joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
                       'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
                       'RShoulder', 'RElbow', 'RWrist']
@@ -339,14 +374,15 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if valid:
                 ax1.annotate(f'{i}', (gt_pose_2d[i, 0], gt_pose_2d[i, 1]), 
                            xytext=(5, 5), textcoords='offset points', 
-                           fontsize=8, color='white', weight='bold')
+                           fontsize=10, color='white', weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='blue', alpha=0.7))
         
         ax1.set_xlabel('X (normalized)', fontsize=12)
         ax1.set_ylabel('Y (normalized)', fontsize=12)
         ax1.grid(True, alpha=0.3)
         
         # Plot 2: MediaPipe Predictions
-        ax2.set_title('MediaPipe 2D Pose Predictions', fontsize=14)
+        ax2.set_title(f'MediaPipe 2D Pose Predictions - {seq_name}', fontsize=14)
         ax2.set_xlim(0, 1)
         ax2.set_ylim(0, 1)
         ax2.invert_yaxis()
@@ -355,7 +391,7 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         valid_est = estimated_pose[:, 2] > 0.1
         if np.any(valid_est):
             ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
-                       c='red', s=80, alpha=0.8, edgecolors='darkred', linewidth=2)
+                       c='red', s=100, alpha=0.9, edgecolors='darkred', linewidth=2)
         
         # Draw MediaPipe skeleton connections
         for connection in connections:
@@ -363,109 +399,50 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if (estimated_pose[joint1, 2] > 0.1 and estimated_pose[joint2, 2] > 0.1):
                 ax2.plot([estimated_pose[joint1, 0], estimated_pose[joint2, 0]], 
                         [estimated_pose[joint1, 1], estimated_pose[joint2, 1]], 
-                        'r-', linewidth=3, alpha=0.7)
+                        'r-', linewidth=4, alpha=0.8)
         
-        # Add joint labels
+        # Add joint labels for MediaPipe
         for i, (valid, name) in enumerate(zip(valid_est, joint_names)):
             if valid:
                 ax2.annotate(f'{i}', (estimated_pose[i, 0], estimated_pose[i, 1]), 
                            xytext=(5, 5), textcoords='offset points', 
-                           fontsize=8, color='white', weight='bold')
+                           fontsize=10, color='white', weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='red', alpha=0.7))
         
         ax2.set_xlabel('X (normalized)', fontsize=12)
         ax2.set_ylabel('Y (normalized)', fontsize=12)
         ax2.grid(True, alpha=0.3)
         
-        # Update frame info
+        # Update frame info with better statistics
         detected_joints = np.sum(valid_est)
         gt_joints = np.sum(valid_gt)
         
-        fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
-                    f'Frame: {frame_idx+1}/{len(frames)} | '
-                    f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints}', fontsize=16)
+        # Calculate 2D pose similarity (simple distance metric)
+        if np.any(valid_gt) and np.any(valid_est):
+            # Only compare joints that are valid in both GT and estimation
+            common_valid = valid_gt & valid_est
+            if np.any(common_valid):
+                distances = np.linalg.norm(gt_pose_2d[common_valid, :2] - estimated_pose[common_valid, :2], axis=1)
+                avg_error = np.mean(distances)
+                fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
+                            f'Frame: {frame_idx+1}/{len(frames)} | '
+                            f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints} | '
+                            f'Avg Error: {avg_error:.3f}', fontsize=16)
+            else:
+                fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
+                            f'Frame: {frame_idx+1}/{len(frames)} | '
+                            f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints} | '
+                            f'No common joints', fontsize=16)
+        else:
+            fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
+                        f'Frame: {frame_idx+1}/{len(frames)} | '
+                        f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints}', fontsize=16)
         
         plt.tight_layout()
         
         return [ax1, ax2]
     
     return update, fig
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
-    parser.add_argument('--sequence-name', type=str, default=None, 
-                       help='Specific sequence name (TS1, TS2, TS3, TS4, TS5, TS6)')
-    parser.add_argument('--num-frames', type=int, default=50, help='Number of frames to process')
-    parser.add_argument('--save-video', action='store_true', help='Save animation as video')
-    parser.add_argument('--real-time', action='store_true', help='Run in real-time mode')
-    args = parser.parse_args()
-    
-    print("Initializing MediaPipe pose estimator...")
-    estimator = MediaPipe2DPoseEstimator()
-    
-    try:
-        print("Loading test data from dataset...")
-        gt_poses_2d, seq_name = load_test_data_from_dataset(args)
-        
-        if gt_poses_2d is None:
-            print("No ground truth data loaded. Please check your dataset.")
-            return
-        
-        print(f"Loaded {gt_poses_2d.shape[1]} ground truth frames for sequence {seq_name}")
-        
-        # Load actual video frames
-        print("Loading video frames...")
-        frames = load_mpi_test_frames(seq_name, args.num_frames)
-        
-        if frames is None:
-            print("Could not load video frames. Creating fallback visualization...")
-            # Create dummy frames with better human-like figures
-            frames = create_better_dummy_frames(gt_poses_2d, args.num_frames)
-        
-        print(f"Using {len(frames)} frames for MediaPipe processing")
-        
-        # Ensure we have matching number of frames
-        min_frames = min(len(frames), gt_poses_2d.shape[1])
-        frames = frames[:min_frames]
-        gt_poses_2d = gt_poses_2d[:, :min_frames, :]
-        
-        # Create visualization
-        update_func, fig = create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args)
-        
-        if args.real_time:
-            # Real-time processing
-            print("Starting real-time processing...")
-            for i in range(min_frames):
-                update_func(i)
-                plt.pause(0.1)
-                if i == 0:
-                    plt.show(block=False)
-            
-            input("Press Enter to close...")
-            
-        else:
-            # Create animation
-            print("Creating animation...")
-            ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                              interval=300, repeat=True, blit=False)
-            
-            if args.save_video:
-                output_path = f'../simple_2d_pose_{seq_name.lower()}.gif'
-                print(f"Saving animation to: {output_path}")
-                
-                ani.save(output_path, writer='pillow', fps=3, dpi=100)
-                print(f"Animation saved successfully to: {output_path}")
-            
-            plt.show()
-    
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    finally:
-        estimator.close()
-        print("MediaPipe estimator closed.")
 
 def create_better_dummy_frames(gt_poses_2d, num_frames, image_size=(640, 480)):
     """Create better dummy frames with human-like stick figures"""
@@ -545,6 +522,94 @@ def create_better_dummy_frames(gt_poses_2d, num_frames, image_size=(640, 480)):
         frames.append(frame)
     
     return frames
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
+    parser.add_argument('--sequence-name', type=str, default=None, 
+                       help='Specific sequence name (TS1, TS2, TS3, TS4, TS5, TS6)')
+    parser.add_argument('--num-frames', type=int, default=50, help='Number of frames to process')
+    parser.add_argument('--save-video', action='store_true', help='Save animation as video')
+    parser.add_argument('--real-time', action='store_true', help='Run in real-time mode')
+    args = parser.parse_args()
+    
+    print(f"Initializing MediaPipe pose estimator for sequence: {args.sequence_name}")
+    estimator = MediaPipe2DPoseEstimator()
+    
+    try:
+        print("Loading test data from dataset...")
+        gt_poses_2d, seq_name = load_test_data_from_dataset(args)
+        
+        if gt_poses_2d is None:
+            print("No ground truth data loaded. Please check your dataset.")
+            return
+        
+        print(f"✓ Loaded {gt_poses_2d.shape[1]} ground truth frames for sequence {seq_name}")
+        
+        # Verify we got the right sequence
+        if args.sequence_name and seq_name != args.sequence_name:
+            print(f"WARNING: Requested {args.sequence_name} but loaded {seq_name}")
+        
+        # Debug: Print some statistics
+        print(f"Ground truth pose stats:")
+        print(f"  Shape: {gt_poses_2d.shape}")
+        print(f"  X range: {np.min(gt_poses_2d[:, :, 0]):.3f} to {np.max(gt_poses_2d[:, :, 0]):.3f}")
+        print(f"  Y range: {np.min(gt_poses_2d[:, :, 1]):.3f} to {np.max(gt_poses_2d[:, :, 1]):.3f}")
+        print(f"  Confidence range: {np.min(gt_poses_2d[:, :, 2]):.3f} to {np.max(gt_poses_2d[:, :, 2]):.3f}")
+        
+        # Load actual video frames
+        print("Loading video frames...")
+        frames = load_mpi_test_frames(seq_name, args.num_frames)
+        
+        if frames is None:
+            print("Could not load video frames. Creating fallback visualization...")
+            # Create dummy frames with better human-like figures
+            frames = create_better_dummy_frames(gt_poses_2d, args.num_frames)
+        
+        print(f"✓ Using {len(frames)} frames for MediaPipe processing")
+        
+        # Ensure we have matching number of frames
+        min_frames = min(len(frames), gt_poses_2d.shape[1])
+        frames = frames[:min_frames]
+        gt_poses_2d = gt_poses_2d[:, :min_frames, :]
+        
+        # Create visualization
+        update_func, fig = create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args)
+        
+        if args.real_time:
+            # Real-time processing
+            print("Starting real-time processing...")
+            for i in range(min_frames):
+                update_func(i)
+                plt.pause(0.1)
+                if i == 0:
+                    plt.show(block=False)
+            
+            input("Press Enter to close...")
+            
+        else:
+            # Create animation
+            print("Creating animation...")
+            ani = FuncAnimation(fig, update_func, frames=min_frames, 
+                              interval=300, repeat=True, blit=False)
+            
+            if args.save_video:
+                output_path = f'../2d_pose_comparison_{seq_name.lower()}_frames_{min_frames}.gif'
+                print(f"Saving animation to: {output_path}")
+                
+                ani.save(output_path, writer='pillow', fps=3, dpi=100)
+                print(f"✓ Animation saved successfully to: {output_path}")
+            
+            plt.show()
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    finally:
+        estimator.close()
+        print("MediaPipe estimator closed.")
 
 if __name__ == '__main__':
     main()
