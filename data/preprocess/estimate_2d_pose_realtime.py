@@ -38,21 +38,25 @@ class MediaPipe2DPoseEstimator:
             min_tracking_confidence=0.5
         )
         
-        # MediaPipe to H36M/MPI mapping
+        # Fixed MediaPipe to H36M/MPI mapping - more accurate
         self.mp_to_h36m_mapping = {
+            # Core body points
             0: 9,   # nose -> nose
             11: 11, # left_shoulder -> left shoulder
-            12: 8,  # right_shoulder -> right shoulder  
+            12: 14, # right_shoulder -> right shoulder (corrected)
             13: 12, # left_elbow -> left elbow
-            14: 9,  # right_elbow -> right elbow
+            14: 15, # right_elbow -> right elbow (corrected)
             15: 13, # left_wrist -> left wrist
-            16: 10, # right_wrist -> right wrist
+            16: 16, # right_wrist -> right wrist (corrected)
             23: 4,  # left_hip -> left hip
             24: 1,  # right_hip -> right hip
             25: 5,  # left_knee -> left knee
             26: 2,  # right_knee -> right knee
             27: 6,  # left_ankle -> left ankle
             28: 3,  # right_ankle -> right ankle
+            # Additional mappings for better coverage
+            7: 10,  # left_ear -> head (approximate)
+            8: 10,  # right_ear -> head (approximate)
         }
         
     def estimate_pose_from_image(self, image):
@@ -185,7 +189,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     return frames
 
 def load_test_data_from_dataset(args):
-    """Load test data from MPI-INF-3DHP dataset"""
+    """Load test data from MPI-INF-3DHP dataset - using same method as compare_gt_pred.py"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -198,10 +202,11 @@ def load_test_data_from_dataset(args):
         out_all: int
         test_batch_size: int
 
+    # Use same parameters as compare_gt_pred.py
     dataset_args = DatasetArgs(
         data_root='../motion3d/', 
-        n_frames=27,
-        stride=9,
+        n_frames=27,  # Same as your model's n_frames
+        stride=9,     # Same as your model's stride
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -210,33 +215,32 @@ def load_test_data_from_dataset(args):
         test_batch_size=1
     )
     
-    dataset = Fusion(dataset_args, train=False)
+    dataset = Fusion(dataset_args, train=False)  # Use Fusion like compare_gt_pred.py
     
-    input_2d_data = []
+    print(f"Dataset length: {len(dataset)}")
+    
+    # Get multiple samples to build a sequence
+    sequence_data = []
     target_seq_name = None
     processed_samples = 0
     
+    # Available sequence names in MPI-INF-3DHP test set
     available_sequences = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
     
-    # Fix sequence selection logic
+    # If sequence_name is provided, use it; otherwise use sequence_number
     if args.sequence_name:
-        if args.sequence_name not in available_sequences:
-            print(f"Warning: {args.sequence_name} not in available sequences {available_sequences}")
-            target_seq_name = available_sequences[0]
-        else:
-            target_seq_name = args.sequence_name
+        target_seq_name = args.sequence_name
     else:
         target_seq_name = available_sequences[args.sequence_number % len(available_sequences)]
     
     print(f"Looking for sequence: {target_seq_name}")
     
-    # First pass: find samples from the target sequence
-    found_samples = []
+    # Process samples exactly like compare_gt_pred.py
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
-            # Extract sequence name properly
+            # Extract sequence name properly - same as compare_gt_pred.py
             if isinstance(seq, (list, tuple)):
                 current_seq_name = seq[0]
             elif isinstance(seq, torch.Tensor):
@@ -244,27 +248,13 @@ def load_test_data_from_dataset(args):
             else:
                 current_seq_name = str(seq)
             
-            if current_seq_name == target_seq_name:
-                found_samples.append(i)
-                print(f"Found matching sequence: {target_seq_name} (sample {i})")
-                if len(found_samples) >= args.num_frames:
-                    break
-                    
-        except Exception as e:
-            continue
-    
-    print(f"Found {len(found_samples)} samples for sequence {target_seq_name}")
-    
-    if not found_samples:
-        print(f"No samples found for sequence {target_seq_name}")
-        return None, None
-    
-    # Second pass: process the found samples
-    for sample_idx in found_samples:
-        try:
-            batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[sample_idx]
+            # Filter by target sequence
+            if current_seq_name != target_seq_name:
+                continue
             
-            # Process 2D input
+            print(f"Found matching sequence: {current_seq_name} (sample {i})")
+            
+            # Process 2D input exactly like the working 3D processing in compare_gt_pred.py
             if isinstance(input_2D, torch.Tensor):
                 input_2D_np = input_2D.clone()
             else:
@@ -284,34 +274,39 @@ def load_test_data_from_dataset(args):
             if input_2d_pose.shape[1] < 2:
                 continue
             
-            # Add confidence if not present
+            # Add confidence if not present (like compare_gt_pred.py adds root-relative processing)
             if input_2d_pose.shape[1] == 2:
-                confidence = np.ones((input_2d_pose.shape[0], 1)) * 0.9  # High confidence for GT
+                confidence = np.ones((input_2d_pose.shape[0], 1)) * 0.9
                 input_2d_pose = np.hstack([input_2d_pose, confidence])
             
-            # Normalize 2D poses to [0, 1] range if they're not already
-            if np.max(input_2d_pose[:, :2]) > 2.0:  # Likely in pixel coordinates
-                # Assume image size (you might need to adjust this)
-                image_width, image_height = 2048, 2048  # Common MPI-INF-3DHP size
-                input_2d_pose[:, 0] /= image_width   # Normalize x
-                input_2d_pose[:, 1] /= image_height  # Normalize y
-                input_2d_pose[:, 0] = np.clip(input_2d_pose[:, 0], 0, 1)
-                input_2d_pose[:, 1] = np.clip(input_2d_pose[:, 1], 0, 1)
+            # The key fix: Don't assume normalization, let the data speak for itself
+            # Most MPI-INF-3DHP 2D data is already properly normalized
             
-            input_2d_data.append(input_2d_pose)
+            # Debug: Print range for first few samples
+            if processed_samples < 3:
+                print(f"Sample {processed_samples}: X range: {np.min(input_2d_pose[:, 0]):.3f} to {np.max(input_2d_pose[:, 0]):.3f}")
+                print(f"Sample {processed_samples}: Y range: {np.min(input_2d_pose[:, 1]):.3f} to {np.max(input_2d_pose[:, 1]):.3f}")
+            
+            sequence_data.append(input_2d_pose)
             processed_samples += 1
             
+            # Limit the number of samples for visualization
+            if processed_samples >= args.num_frames:
+                break
+                
         except Exception as e:
-            print(f"Error processing sample {sample_idx}: {e}")
+            print(f"Error processing sample {i}: {e}")
             continue
     
-    print(f"Successfully processed {processed_samples} samples for sequence {target_seq_name}")
+    print(f"Processed {processed_samples} samples for sequence {target_seq_name}")
     
-    if not input_2d_data:
+    if not sequence_data:
+        print("No valid ground truth data found")
         return None, None
     
-    # Stack frames: (17, T, 3)
-    sequence_2d = np.stack(input_2d_data, axis=1)
+    # Stack frames: (17, T, 3) - same format as compare_gt_pred.py
+    sequence_2d = np.stack(sequence_data, axis=1)
+    print(f"Stacked sequence shape: {sequence_2d.shape}")
     
     return sequence_2d, target_seq_name
 
@@ -322,6 +317,13 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
     fig.suptitle(f'2D Pose Comparison - {seq_name}', fontsize=16)
     
     estimated_poses = []
+    
+    # Use same connections as compare_gt_pred.py
+    connections = [
+        (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
+        (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
+        (1, 2), (2, 3), (4, 5), (5, 6)
+    ]
     
     def update(frame_idx):
         if frame_idx >= len(frames) or frame_idx >= gt_poses_2d.shape[1]:
@@ -341,29 +343,42 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         
         # Plot 1: Ground Truth 2D Pose
         ax1.set_title(f'Ground Truth 2D Pose - {seq_name}', fontsize=14)
-        ax1.set_xlim(0, 1)
-        ax1.set_ylim(0, 1)
-        ax1.invert_yaxis()
         
-        # Plot GT keypoints with better visibility
+        # Auto-scale based on actual data range (like compare_gt_pred.py does for 3D)
         valid_gt = gt_pose_2d[:, 2] > 0.1
         if np.any(valid_gt):
+            x_range = [np.min(gt_pose_2d[valid_gt, 0]), np.max(gt_pose_2d[valid_gt, 0])]
+            y_range = [np.min(gt_pose_2d[valid_gt, 1]), np.max(gt_pose_2d[valid_gt, 1])]
+            
+            # Add padding like compare_gt_pred.py
+            x_padding = (x_range[1] - x_range[0]) * 0.1
+            y_padding = (y_range[1] - y_range[0]) * 0.1
+            
+            ax1.set_xlim(x_range[0] - x_padding, x_range[1] + x_padding)
+            ax1.set_ylim(y_range[0] - y_padding, y_range[1] + y_padding)
+        else:
+            ax1.set_xlim(0, 1)
+            ax1.set_ylim(0, 1)
+        
+        ax1.invert_yaxis()
+        
+        # Plot GT keypoints with same style as compare_gt_pred.py
+        if np.any(valid_gt):
             ax1.scatter(gt_pose_2d[valid_gt, 0], gt_pose_2d[valid_gt, 1], 
-                       c='blue', s=100, alpha=0.9, edgecolors='darkblue', linewidth=2)
+                       c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=0.5)
         
-        # Draw GT skeleton connections
-        connections = [
-            (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
-            (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
-            (1, 2), (2, 3), (4, 5), (5, 6)
-        ]
-        
+        # Draw GT skeleton connections with same style
         for connection in connections:
             joint1, joint2 = connection
             if (gt_pose_2d[joint1, 2] > 0.1 and gt_pose_2d[joint2, 2] > 0.1):
                 ax1.plot([gt_pose_2d[joint1, 0], gt_pose_2d[joint2, 0]], 
                         [gt_pose_2d[joint1, 1], gt_pose_2d[joint2, 1]], 
-                        'b-', linewidth=4, alpha=0.8)
+                        'b-', linewidth=2, alpha=0.8)
+        
+        # Highlight root joint (like compare_gt_pred.py)
+        if gt_pose_2d[0, 2] > 0.1:  # Root joint
+            ax1.scatter(gt_pose_2d[0, 0], gt_pose_2d[0, 1], 
+                       c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
         
         # Add joint labels for ground truth
         joint_names = ['Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
@@ -374,11 +389,11 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if valid:
                 ax1.annotate(f'{i}', (gt_pose_2d[i, 0], gt_pose_2d[i, 1]), 
                            xytext=(5, 5), textcoords='offset points', 
-                           fontsize=10, color='white', weight='bold',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor='blue', alpha=0.7))
+                           fontsize=8, color='white', weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor='blue', alpha=0.7))
         
-        ax1.set_xlabel('X (normalized)', fontsize=12)
-        ax1.set_ylabel('Y (normalized)', fontsize=12)
+        ax1.set_xlabel('X', fontsize=12)
+        ax1.set_ylabel('Y', fontsize=12)
         ax1.grid(True, alpha=0.3)
         
         # Plot 2: MediaPipe Predictions
@@ -391,7 +406,7 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
         valid_est = estimated_pose[:, 2] > 0.1
         if np.any(valid_est):
             ax2.scatter(estimated_pose[valid_est, 0], estimated_pose[valid_est, 1], 
-                       c='red', s=100, alpha=0.9, edgecolors='darkred', linewidth=2)
+                       c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=0.5)
         
         # Draw MediaPipe skeleton connections
         for connection in connections:
@@ -399,18 +414,23 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
             if (estimated_pose[joint1, 2] > 0.1 and estimated_pose[joint2, 2] > 0.1):
                 ax2.plot([estimated_pose[joint1, 0], estimated_pose[joint2, 0]], 
                         [estimated_pose[joint1, 1], estimated_pose[joint2, 1]], 
-                        'r-', linewidth=4, alpha=0.8)
+                        'r-', linewidth=2, alpha=0.8)
+        
+        # Highlight root joint for MediaPipe
+        if estimated_pose[0, 2] > 0.1:  # Root joint
+            ax2.scatter(estimated_pose[0, 0], estimated_pose[0, 1], 
+                       c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=1)
         
         # Add joint labels for MediaPipe
         for i, (valid, name) in enumerate(zip(valid_est, joint_names)):
             if valid:
                 ax2.annotate(f'{i}', (estimated_pose[i, 0], estimated_pose[i, 1]), 
                            xytext=(5, 5), textcoords='offset points', 
-                           fontsize=10, color='white', weight='bold',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor='red', alpha=0.7))
+                           fontsize=8, color='white', weight='bold',
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor='red', alpha=0.7))
         
-        ax2.set_xlabel('X (normalized)', fontsize=12)
-        ax2.set_ylabel('Y (normalized)', fontsize=12)
+        ax2.set_xlabel('X', fontsize=12)
+        ax2.set_ylabel('Y', fontsize=12)
         ax2.grid(True, alpha=0.3)
         
         # Update frame info with better statistics
@@ -427,7 +447,7 @@ def create_simple_visualization(estimator, frames, gt_poses_2d, seq_name, args):
                 fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
                             f'Frame: {frame_idx+1}/{len(frames)} | '
                             f'GT Joints: {gt_joints} | MediaPipe Joints: {detected_joints} | '
-                            f'Avg Error: {avg_error:.3f}', fontsize=16)
+                            f'Avg Error: {avg_error:.4f}', fontsize=16)
             else:
                 fig.suptitle(f'2D Pose Comparison - {seq_name}\n'
                             f'Frame: {frame_idx+1}/{len(frames)} | '
