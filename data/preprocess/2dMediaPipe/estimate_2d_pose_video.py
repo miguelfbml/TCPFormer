@@ -18,13 +18,13 @@ output_video_path = '../videos_test_sequences/TS1_Pred.mp4'
 # Open the video file
 cap = cv2.VideoCapture(input_video_path)
 
-# Get video properties
+
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps = int(cap.get(cv2.CAP_PROP_FPS))
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-# Initialize video writer
+
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
@@ -64,7 +64,7 @@ while cap.isOpened():
     if frame_count % 100 == 0:
         print(f"Processed {frame_count}/{total_frames} frames")
 
-# Release resources
+
 cap.release()
 out.release()
 pose.close()
