@@ -145,7 +145,7 @@ def main():
                        help='Base path to mpi_inf_3dhp_test_set directory')
     parser.add_argument('--output-dir', type=str, default='../videos_test_sequences',
                        help='Output directory for MP4 files')
-    parser.add_argument('--fps', type=int, default=25,
+    parser.add_argument('--fps', type=int, default=30,
                        help='Frames per second for output videos (default: 25)')
     parser.add_argument('--resize', type=str, default=None,
                        help='Resize frames to WxH (e.g., "1920x1080"), leave empty for original size')
