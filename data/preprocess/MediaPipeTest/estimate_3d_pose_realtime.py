@@ -23,7 +23,7 @@ import time
 import glob
 
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from data.const import H36M_TO_MPI
@@ -188,7 +188,7 @@ def load_test_3d_data_from_dataset(args):
         test_batch_size: int
 
     dataset_args = DatasetArgs(
-        data_root='../motion3d/', 
+        data_root='../../motion3d/', 
         n_frames=27,
         stride=9,
         flip=False,
