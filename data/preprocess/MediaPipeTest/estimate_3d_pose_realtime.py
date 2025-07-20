@@ -23,12 +23,13 @@ connections = [
 ]
 
 def convert_h36m_to_mpi_connection():
+    """Convert connections to MPI-INF-3DHP joint mapping."""
     global connections
     new_connections = []
     for connection in connections:
         new_connection = (H36M_TO_MPI[connection[0]], H36M_TO_MPI[connection[1]])
         new_connections.append(new_connection)
-    connections = new_connections
+    return new_connections
 
 class MediaPipe3DPoseEstimator:
     def __init__(self):
@@ -241,8 +242,15 @@ def main():
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
     
-    # Convert connections to match MPI-INF-3DHP joint mapping
-    convert_h36m_to_mpi_connection()
+    # Get connections for ground truth (converted to MPI-INF-3DHP)
+    gt_connections = convert_h36m_to_mpi_connection()
+    
+    # Create separate connections for MediaPipe predictions, ensuring valid joints
+    mp_connections = []
+    mp_valid_joints = set([10, 11, 14, 12, 15, 13, 16, 4, 1, 5, 2, 6, 3, 9, 0, 7, 8])
+    for connection in gt_connections:
+        if connection[0] in mp_valid_joints and connection[1] in mp_valid_joints:
+            mp_connections.append(connection)
     
     estimator = MediaPipe3DPoseEstimator()
     
@@ -318,7 +326,7 @@ def main():
             y_gt = gt_poses_3d[:, frame_idx, 1]
             z_gt = gt_poses_3d[:, frame_idx, 2]
             
-            for connection in connections:
+            for connection in gt_connections:
                 start = gt_poses_3d[connection[0], frame_idx, :]
                 end = gt_poses_3d[connection[1], frame_idx, :]
                 ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
@@ -337,7 +345,7 @@ def main():
             
             if np.any(valid):
                 ax2.scatter(x_pred, y_pred, z_pred, c='red', s=60, alpha=0.9, edgecolors='darkred')
-                for connection in connections:
+                for connection in mp_connections:
                     if valid[connection[0]] and valid[connection[1]]:
                         start = pred_poses_3d[connection[0], frame_idx, :]
                         end = pred_poses_3d[connection[1], frame_idx, :]
