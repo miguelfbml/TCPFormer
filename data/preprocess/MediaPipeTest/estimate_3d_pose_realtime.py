@@ -4,10 +4,10 @@ MediaPipe 3D Pose Estimation vs Ground Truth Comparison
 cd data/preprocess
 
 # Try to load real frames with 3D pose estimation
-python estimate_3d_pose_realtime.py --sequence-name TS1 --num-frames 30
+python MediaPipeTest/estimate_3d_pose_realtime.py --sequence-name TS1 --num-frames 30
 
 # Save as GIF
-python estimate_3d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
+python MediaPipeTest/estimate_3d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
 '''
 
 import argparse
@@ -23,10 +23,27 @@ import time
 import glob
 
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
+# Fix path: MediaPipeTest -> preprocess -> data -> TCPFormerForked (3 levels up)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from data.const import H36M_TO_MPI
+
+# MPI-INF-3DHP skeleton connections (same as compare_gt_pred.py)
+connections = [
+    (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
+    (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
+    (1, 2), (2, 3), (4, 5), (5, 6)
+]
+
+def convert_h36m_to_mpi_connection():
+    """Convert H36M connections to MPI connections - same as compare_gt_pred.py"""
+    global connections
+    new_connections = []
+    for connection in connections:
+        new_connection = (H36M_TO_MPI[connection[0]], H36M_TO_MPI[connection[1]])
+        new_connections.append(new_connection)
+    connections = new_connections
 
 class MediaPipe3DPoseEstimator:
     def __init__(self):
@@ -188,7 +205,7 @@ def load_test_3d_data_from_dataset(args):
         test_batch_size: int
 
     dataset_args = DatasetArgs(
-        data_root='../motion3d/', 
+        data_root='../../motion3d/',  # Updated path for MediaPipeTest subdirectory
         n_frames=27,
         stride=9,
         flip=False,
@@ -279,6 +296,9 @@ def load_test_3d_data_from_dataset(args):
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
+    # IMPORTANT: Convert connections to MPI format (same as compare_gt_pred.py)
+    convert_h36m_to_mpi_connection()
+    
     print(f"Stacked 3D sequence shape: {sequence_3d.shape}")
     
     return sequence_3d, target_seq_name
@@ -293,12 +313,7 @@ def create_3d_pose_visualization(estimator, frames, gt_poses_3d, seq_name, args)
     
     estimated_poses_3d = []
     
-    # MPI skeleton connections
-    connections = [
-        (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
-        (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
-        (1, 2), (2, 3), (4, 5), (5, 6)
-    ]
+    # NOTE: connections are now converted to MPI format by load_test_3d_data_from_dataset()
     
     def update(frame_idx):
         if frame_idx >= len(frames) or frame_idx >= gt_poses_3d.shape[1]:
@@ -326,7 +341,7 @@ def create_3d_pose_visualization(estimator, frames, gt_poses_3d, seq_name, args)
         x_gt, y_gt, z_gt = gt_pose_3d[:, 0], gt_pose_3d[:, 1], gt_pose_3d[:, 2]
         ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue')
         
-        # Draw GT skeleton connections
+        # Draw GT skeleton connections - FIXED: now uses converted MPI connections
         for connection in connections:
             joint1, joint2 = connection
             if joint1 < len(gt_pose_3d) and joint2 < len(gt_pose_3d):
@@ -335,11 +350,11 @@ def create_3d_pose_visualization(estimator, frames, gt_poses_3d, seq_name, args)
                         [gt_pose_3d[joint1, 2], gt_pose_3d[joint2, 2]], 
                         'b-', linewidth=2, alpha=0.8)
         
-        # Highlight root joint (should be at origin)
+        # Highlight root joint (should be at origin) - MPI format uses joint 14
         ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                    alpha=1.0, edgecolors='darkgreen', linewidth=2)
         
-        # Set equal aspect ratio for GT
+        # Set equal aspect ratio for GT - same as compare_gt_pred.py
         max_range_gt = np.array([x_gt.max()-x_gt.min(), y_gt.max()-y_gt.min(), 
                                 z_gt.max()-z_gt.min()]).max() / 2.0
         mid_x_gt = (x_gt.max()+x_gt.min()) * 0.5
@@ -366,7 +381,7 @@ def create_3d_pose_visualization(estimator, frames, gt_poses_3d, seq_name, args)
             
             ax2.scatter(x_est, y_est, z_est, c='red', s=60, alpha=0.9, edgecolors='darkred')
             
-            # Draw MediaPipe skeleton connections
+            # Draw MediaPipe skeleton connections - FIXED: now uses converted MPI connections
             for connection in connections:
                 joint1, joint2 = connection
                 if (joint1 < len(estimated_pose_3d) and joint2 < len(estimated_pose_3d) and
@@ -376,12 +391,12 @@ def create_3d_pose_visualization(estimator, frames, gt_poses_3d, seq_name, args)
                             [estimated_pose_3d[joint1, 2], estimated_pose_3d[joint2, 2]], 
                             'r-', linewidth=2, alpha=0.8)
             
-            # Highlight root joint
+            # Highlight root joint (MPI format uses joint 14)
             if estimated_pose_3d[14, 3] > 0.1:
                 ax2.scatter(estimated_pose_3d[14, 0], estimated_pose_3d[14, 1], estimated_pose_3d[14, 2], 
                            c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=2)
             
-            # Set equal aspect ratio for MediaPipe
+            # Set equal aspect ratio for MediaPipe - same logic as compare_gt_pred.py
             all_coords = estimated_pose_3d[valid_est, :3]
             max_range_est = np.array([all_coords[:, 0].max()-all_coords[:, 0].min(), 
                                      all_coords[:, 1].max()-all_coords[:, 1].min(),
@@ -527,7 +542,7 @@ def main():
                               interval=500, repeat=True, blit=False)
             
             if args.save_video:
-                output_path = f'../3d_pose_comparison_{seq_name.lower()}_frames_{min_frames}.gif'
+                output_path = f'../../3d_pose_comparison_{seq_name.lower()}_frames_{min_frames}.gif'
                 print(f"Saving 3D animation to: {output_path}")
                 ani.save(output_path, writer='pillow', fps=2, dpi=100)
                 print(f"✓ 3D Animation saved successfully to: {output_path}")
