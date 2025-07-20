@@ -241,6 +241,9 @@ def main():
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
     
+    # Convert connections to match MPI-INF-3DHP joint mapping
+    convert_h36m_to_mpi_connection()
+    
     estimator = MediaPipe3DPoseEstimator()
     
     try:
