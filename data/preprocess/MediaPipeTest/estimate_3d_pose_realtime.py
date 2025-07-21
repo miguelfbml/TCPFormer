@@ -233,7 +233,11 @@ def load_test_3d_data_from_dataset(args, num_frames):
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
-    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {frame_indices[:10]}...")
+    # Debugging: Print pose ranges for GT
+    print(f"GT pose range (min, max): X={sequence_3d[:, :, 0].min():.2f}, {sequence_3d[:, :, 0].max():.2f}; "
+          f"Y={sequence_3d[:, :, 1].min():.2f}, {sequence_3d[:, :, 1].max():.2f}; "
+          f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
+    
     return sequence_3d, target_seq_name, frame_indices
 
 def main():
@@ -338,6 +342,16 @@ def main():
         
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
+        
+        # Debugging: Print pose ranges for MediaPipe
+        print(f"MediaPipe pose range (min, max): X={pred_poses_3d[:, :, 0].min():.2f}, {pred_poses_3d[:, :, 0].max():.2f}; "
+              f"Y={pred_poses_3d[:, :, 1].min():.2f}, {pred_poses_3d[:, :, 1].max():.2f}; "
+              f"Z={pred_poses_3d[:, :, 2].min():.2f}, {pred_poses_3d[:, :, 2].max():.2f}")
+        
+        # Debugging: Print sample poses for hip (joint 14) for first frame
+        print(f"Sample poses (first frame, hip joint 14):")
+        print(f"GT: {gt_poses_3d[14, 0, :]}")
+        print(f"MediaPipe: {pred_poses_3d[14, 0, :]}")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
