@@ -5,10 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import mediapipe as mp
-from dataclasses import dataclass
 import torch
 import glob
-import scipy.io as sio  # For loading .mat files, if needed
 
 # Ground truth skeleton connections (based on GT joint order)
 connections = [
@@ -161,43 +159,24 @@ def load_test_3d_data_from_dataset(args, num_frames):
     """Load 3D ground truth data from MPI-INF-3DHP test set, matching video frame count"""
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
-    # Define possible paths for GT data
-    mpi_roots = [
-        '/nas-ctm01/datasets/public/mpi_inf_3dhp',
-        '../motion3d/MPI-INF-3DHP',
-        '../motion3d'
-    ]
+    # Path to the .npz file
+    gt_data_path = '/nas-ctm01/datasets/public/mpi_inf_3dhp/data_3dhp/data_test_3dhp.npz'
     
-    gt_data_path = None
-    for root in mpi_roots:
-        possible_paths = [
-            f'{root}/mpi_inf_3dhp_test_set/{target_seq_name}/annot.mat',
-            f'{root}/test/{target_seq_name}/annot.mat',
-            f'{root}/mpi_inf_3dhp_test_set/{target_seq_name}/annot.npz',
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                gt_data_path = path
-                break
-        if gt_data_path:
-            break
-    
-    if gt_data_path is None:
-        print(f"Ground truth data file for {target_seq_name} not found.")
+    if not os.path.exists(gt_data_path):
+        print(f"Ground truth data file {gt_data_path} not found.")
         return None, None, None
     
-    # Load GT data (assuming .mat or .npz format)
+    # Load GT data from .npz file
     try:
-        if gt_data_path.endswith('.mat'):
-            data = sio.loadmat(gt_data_path)
-            gt_3D = data.get('annot3', None)  # Adjust key based on actual .mat structure
-        else:  # .npz
-            data = np.load(gt_data_path)
-            gt_3D = data.get('annot3', None)  # Adjust key based on actual .npz structure
+        data = np.load(gt_data_path, allow_pickle=True)
         
-        if gt_3D is None:
-            print(f"No 'annot3' key found in {gt_data_path}.")
+        # Assume the .npz file has a key like 'TS1_annot3' for each sequence
+        key = f'{target_seq_name}_annot3'
+        if key not in data:
+            print(f"No key '{key}' found in {gt_data_path}. Available keys: {list(data.keys())}")
             return None, None, None
+        
+        gt_3D = data[key]
         
         # Convert to torch tensor and reshape
         if isinstance(gt_3D, np.ndarray):
@@ -206,7 +185,7 @@ def load_test_3d_data_from_dataset(args, num_frames):
         gt_3D[:, 14] = 0  # Set root joint (hip) to 0
         
         total_frames = gt_3D.shape[0]
-        print(f"Ground truth sequence has {total_frames} frames, selecting up to {num_frames} frames")
+        print(f"Ground truth sequence {target_seq_name} has {total_frames} frames, selecting up to {num_frames} frames")
         
         # Select sequential GT frames up to num_frames
         sequence_data = []
@@ -217,7 +196,7 @@ def load_test_3d_data_from_dataset(args, num_frames):
             if hasattr(pose, 'cpu'):
                 pose = pose.cpu().numpy()
             sequence_data.append(pose)
-            frame_indices.append(frame_idx + 1)  # 1-based indexing
+            frame_indices.append(frame_idx + 1)  # 1-based indexing to match video
         
         if not sequence_data:
             print("No ground truth frames loaded.")
