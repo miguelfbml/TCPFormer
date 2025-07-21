@@ -149,12 +149,11 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
         frame = cv2.imread(img_path)
         if frame is not None:
             frames.append(frame)
-            # Extract frame index from filename (e.g., 'frame_00001.jpg')
             try:
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
-                frame_indices.append(len(frame_indices) + 1)  # Fallback to 1-based indexing
+                frame_indices.append(len(frame_indices) + 1)
     
     return frames, frame_indices
 
@@ -174,8 +173,8 @@ def load_test_3d_data_from_dataset(args):
 
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
-        n_frames=args.num_frames,  # Match requested number of frames
-        stride=1,  # Collect all frames
+        n_frames=args.num_frames,
+        stride=1,
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -206,14 +205,13 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            # Collect all frames, assigning 1-based indices to match video frames
             for frame_idx in range(gt_3D.shape[1]):
                 pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]  # Root-relative
+                pose = pose - pose[14:15, :]
                 if hasattr(pose, 'cpu'):
                     pose = pose.cpu().numpy()
                 sequence_data.append(pose)
-                frame_indices.append(frame_idx + 1)  # 1-based indexing to match 'frame_00001.jpg'
+                frame_indices.append(frame_idx + 1)
                 
                 if len(sequence_data) >= args.num_frames:
                     break
@@ -232,6 +230,7 @@ def load_test_3d_data_from_dataset(args):
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
+    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {frame_indices[:10]}...")
     return sequence_3d, target_seq_name, frame_indices
 
 def main():
@@ -281,25 +280,26 @@ def main():
             print("No video frames loaded. Exiting.")
             return
         
+        print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
+        
         # Synchronize frames
-        # Find common frame indices
         common_indices = sorted(set(frame_indices) & set(gt_frame_indices))
         if not common_indices:
-            print("No common frame indices found for synchronization. Trying fallback alignment.")
-            # Fallback: Assume video frames and ground truth start at the same point
+            print("No common frame indices found for synchronization. Using sequential alignment.")
             min_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
             frames = frames[:min_frames]
             gt_poses_3d = gt_poses_3d[:, :min_frames, :]
             synced_frame_indices = list(range(1, min_frames + 1))
         else:
-            # Filter to common indices
-            common_indices = common_indices[:args.num_frames]
-            min_frames = len(common_indices)
+            common_indices = common_indices[args.frame_start:args.frame_start + args.num_frames]
+            min_frames = min(len(common_indices), args.num_frames)
             frame_mask = [frame_indices.index(idx) for idx in common_indices if idx in frame_indices]
             gt_mask = [gt_frame_indices.index(idx) for idx in common_indices if idx in gt_frame_indices]
             frames = [frames[i] for i in frame_mask]
             gt_poses_3d = gt_poses_3d[:, gt_mask, :]
-            synced_frame_indices = common_indices
+            synced_frame_indices = common_indices[:min_frames]
+        
+        print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
         
         if len(frames) == 0 or gt_poses_3d.shape[1] == 0:
             print("No synchronized frames available. Exiting.")
@@ -397,7 +397,7 @@ def main():
             return ax1, ax2
         
         # Create animation
-        ani = FuncAnimation(fig, update, frames=min_frames, interval=150, repeat=True, blit=False)
+        ani = FuncAnimation(fig, update, frames=range(min_frames), interval=150, repeat=True, blit=False)
         if args.save_video:
             output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}.gif'
             ani.save(output_path, writer='pillow', fps=8, dpi=100)
