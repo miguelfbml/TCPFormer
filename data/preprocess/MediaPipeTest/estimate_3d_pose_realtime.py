@@ -371,7 +371,7 @@ def main():
             # Add joint indices for ground truth
             for i in range(17):
                 if not np.isnan(x_gt[i]) and not np.isinf(x_gt[i]):
-                    ax1.text(x_gt[i], y]gt[i], z_gt[i], str(i), color='black', fontsize=8)
+                    ax1.text(x_gt[i], y_gt[i], z_gt[i], str(i), color='black', fontsize=8)
             
             # Plot prediction
             ax2.set_title(f'MediaPipe Prediction\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
