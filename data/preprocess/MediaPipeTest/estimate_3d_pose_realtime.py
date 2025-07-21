@@ -8,12 +8,7 @@ import mediapipe as mp
 from dataclasses import dataclass
 import torch
 import glob
-
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
-
-from data.reader.motion_dataset import MPI3DHP, Fusion
-from data.const import H36M_TO_MPI
+import scipy.io as sio  # For loading .mat files, if needed
 
 # Ground truth skeleton connections (based on GT joint order)
 connections = [
@@ -163,86 +158,81 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     return frames, frame_indices
 
 def load_test_3d_data_from_dataset(args, num_frames):
-    """Load 3D ground truth data from MPI-INF-3DHP dataset, matching video frame count"""
-    @dataclass
-    class DatasetArgs:
-        data_root: str
-        n_frames: int
-        stride: int
-        flip: bool
-        test_augmentation: bool
-        data_augmentation: bool
-        reverse_augmentation: bool
-        out_all: int
-        test_batch_size: int
-
-    dataset_args = DatasetArgs(
-        data_root='../motion3d/',
-        n_frames=num_frames,
-        stride=1,
-        flip=False,
-        test_augmentation=False,
-        data_augmentation=False,
-        reverse_augmentation=False,
-        out_all=1,
-        test_batch_size=1
-    )
-    
-    dataset = Fusion(dataset_args, train=False)
-    
-    sequence_data = []
-    frame_indices = []
+    """Load 3D ground truth data from MPI-INF-3DHP test set, matching video frame count"""
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
-    frame_counter = 1  # Start with 1-based indexing
-    for i in range(len(dataset)):
-        try:
-            batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
-            
-            current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else str(seq)
-            if current_seq_name != target_seq_name:
-                continue
-            
-            if isinstance(gt_3D, torch.Tensor):
-                gt_3D = gt_3D.clone()
-            else:
-                gt_3D = torch.tensor(gt_3D)
-                
-            gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
-            gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
-            
-            # Select sequential GT frames up to num_frames
-            total_frames = gt_3D.shape[1]
-            print(f"Ground truth sequence has {total_frames} frames, selecting up to {num_frames} frames")
-            
-            for frame_idx in range(min(total_frames, num_frames)):
-                pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
-                if hasattr(pose, 'cpu'):
-                    pose = pose.cpu().numpy()
-                sequence_data.append(pose)
-                frame_indices.append(frame_counter)
-                frame_counter += 1
-                
-                if len(sequence_data) >= num_frames:
-                    break
-            
-            if len(sequence_data) >= num_frames:
-                break
-                
-        except Exception as e:
-            print(f"Error processing sample {i}: {e}")
-            continue
+    # Define possible paths for GT data
+    mpi_roots = [
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp',
+        '../motion3d/MPI-INF-3DHP',
+        '../motion3d'
+    ]
     
-    if not sequence_data:
+    gt_data_path = None
+    for root in mpi_roots:
+        possible_paths = [
+            f'{root}/mpi_inf_3dhp_test_set/{target_seq_name}/annot.mat',
+            f'{root}/test/{target_seq_name}/annot.mat',
+            f'{root}/mpi_inf_3dhp_test_set/{target_seq_name}/annot.npz',
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                gt_data_path = path
+                break
+        if gt_data_path:
+            break
+    
+    if gt_data_path is None:
+        print(f"Ground truth data file for {target_seq_name} not found.")
         return None, None, None
     
-    sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d @ cam2real
+    # Load GT data (assuming .mat or .npz format)
+    try:
+        if gt_data_path.endswith('.mat'):
+            data = sio.loadmat(gt_data_path)
+            gt_3D = data.get('annot3', None)  # Adjust key based on actual .mat structure
+        else:  # .npz
+            data = np.load(gt_data_path)
+            gt_3D = data.get('annot3', None)  # Adjust key based on actual .npz structure
+        
+        if gt_3D is None:
+            print(f"No 'annot3' key found in {gt_data_path}.")
+            return None, None, None
+        
+        # Convert to torch tensor and reshape
+        if isinstance(gt_3D, np.ndarray):
+            gt_3D = torch.tensor(gt_3D)
+        gt_3D = gt_3D.view(-1, 17, 3)  # (T, 17, 3)
+        gt_3D[:, 14] = 0  # Set root joint (hip) to 0
+        
+        total_frames = gt_3D.shape[0]
+        print(f"Ground truth sequence has {total_frames} frames, selecting up to {num_frames} frames")
+        
+        # Select sequential GT frames up to num_frames
+        sequence_data = []
+        frame_indices = []
+        for frame_idx in range(min(total_frames, num_frames)):
+            pose = gt_3D[frame_idx]
+            pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
+            if hasattr(pose, 'cpu'):
+                pose = pose.cpu().numpy()
+            sequence_data.append(pose)
+            frame_indices.append(frame_idx + 1)  # 1-based indexing
+        
+        if not sequence_data:
+            print("No ground truth frames loaded.")
+            return None, None, None
+        
+        sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
+        cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+        sequence_3d = sequence_3d @ cam2real
+        
+        print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {frame_indices[:10]}...")
+        return sequence_3d, target_seq_name, frame_indices
     
-    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {frame_indices[:10]}...")
-    return sequence_3d, target_seq_name, frame_indices
+    except Exception as e:
+        print(f"Error loading ground truth data from {gt_data_path}: {e}")
+        return None, None, None
 
 def main():
     parser = argparse.ArgumentParser()
