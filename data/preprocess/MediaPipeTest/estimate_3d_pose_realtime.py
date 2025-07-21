@@ -35,14 +35,6 @@ connections = [
     (12, 13),   # left leg -> left foot
 ]
 
-def convert_h36m_to_mpi_connection():
-    """Convert connections to MPI-INF-3DHP joint mapping."""
-    new_connections = []
-    for connection in connections:
-        new_connection = (H36M_TO_MPI[connection[0]], H36M_TO_MPI[connection[1]])
-        new_connections.append(new_connection)
-    return new_connections
-
 class MediaPipe3DPoseEstimator:
     def __init__(self):
         self.mp_pose = mp.solutions.pose
@@ -289,8 +281,8 @@ def main():
     for idx, name in GT_JOINT_NAMES.items():
         print(f"Joint {idx}: {name}")
     
-    # Get connections for ground truth
-    gt_connections = convert_h36m_to_mpi_connection()
+    # Use connections directly for ground truth
+    gt_connections = connections
     
     # Define MediaPipe connections to match GT joint order
     mp_connections = [
