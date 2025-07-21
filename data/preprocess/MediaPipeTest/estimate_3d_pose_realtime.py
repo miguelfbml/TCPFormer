@@ -22,27 +22,6 @@ connections = [
     (1, 2), (2, 3), (4, 5), (5, 6)
 ]
 
-# Define joint names for clarity
-MPI_JOINT_NAMES = {
-    0: "Root (Pelvis)",
-    1: "Right Hip",
-    2: "Right Knee",
-    3: "Right Ankle",
-    4: "Left Hip",
-    5: "Left Knee",
-    6: "Left Ankle",
-    7: "Spine",
-    8: "Thorax",
-    9: "Nose",
-    10: "Head",
-    11: "Left Shoulder",
-    12: "Left Elbow",
-    13: "Left Wrist",
-    14: "Right Shoulder",
-    15: "Right Elbow",
-    16: "Right Wrist"
-}
-
 def convert_h36m_to_mpi_connection():
     """Convert connections to MPI-INF-3DHP joint mapping."""
     new_connections = []
@@ -226,7 +205,7 @@ def load_test_3d_data_from_dataset(args):
                 gt_3D = torch.tensor(gt_3D)
                 
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
-            gt_3D[:, :, 0] = 0  # Set root joint (pelvis) to 0
+            gt_3D[:, :, 14] = 0  # Set root joint to 0
             
             # Calculate stride to align with video frame rate
             total_frames += gt_3D.shape[1]
@@ -235,7 +214,7 @@ def load_test_3d_data_from_dataset(args):
             
             for frame_idx in range(0, gt_3D.shape[1], stride):
                 pose = gt_3D[0, frame_idx]
-                pose = pose - pose[0:1, :]  # Center around root joint (MPI joint 0)
+                pose = pose - pose[14:15, :]
                 if hasattr(pose, 'cpu'):
                     pose = pose.cpu().numpy()
                 sequence_data.append(pose)
@@ -270,11 +249,6 @@ def main():
     parser.add_argument('--save-video', action='store_true', help='Save animation as GIF')
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
-    
-    # Print joint mappings for clarity
-    print("MPI-INF-3DHP Joint Mappings:")
-    for idx, name in MPI_JOINT_NAMES.items():
-        print(f"Joint {idx}: {name}")
     
     # Get connections for ground truth
     gt_connections = convert_h36m_to_mpi_connection()
@@ -391,7 +365,7 @@ def main():
                          'b-', linewidth=2, alpha=0.8)
             
             ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue')
-            ax1.scatter(x_gt[0], y_gt[0], z_gt[0], c='green', s=120, marker='*', 
+            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
             # Add joint indices for ground truth
