@@ -149,6 +149,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
         frame = cv2.imread(img_path)
         if frame is not None:
             frames.append(frame)
+            # Extract frame index from filename (e.g., 'frame_00001.jpg')
             try:
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
@@ -174,7 +175,7 @@ def load_test_3d_data_from_dataset(args):
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
         n_frames=27,
-        stride=9,
+        stride=1,  # Set stride to 1 to collect all frames
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -205,15 +206,18 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            center_frame = gt_3D.shape[1] // 2
-            center_pose = gt_3D[0, center_frame]
-            center_pose = center_pose - center_pose[14:15, :]
-            
-            if hasattr(center_pose, 'cpu'):
-                center_pose = center_pose.cpu().numpy()
-            
-            sequence_data.append(center_pose)
-            frame_indices.append(i)
+            # Collect all frames in the sequence
+            for frame_idx in range(gt_3D.shape[1]):
+                pose = gt_3D[0, frame_idx]
+                pose = pose - pose[14:15, :]  # Root-relative
+                if hasattr(pose, 'cpu'):
+                    pose = pose.cpu().numpy()
+                sequence_data.append(pose)
+                # Use dataset index as frame index, adjusted for sequence
+                frame_indices.append(frame_idx)
+                
+                if len(sequence_data) >= args.num_frames:
+                    break
             
             if len(sequence_data) >= args.num_frames:
                 break
@@ -279,10 +283,27 @@ def main():
             return
         
         # Synchronize frames
-        min_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
-        frames = frames[:min_frames]
-        gt_poses_3d = gt_poses_3d[:, :min_frames, :]
-        frame_indices = frame_indices[:min_frames]
+        # Find common frame indices
+        common_indices = sorted(set(frame_indices) & set(gt_frame_indices))
+        if not common_indices:
+            print("No common frame indices found for synchronization. Exiting.")
+            return
+        
+        # Limit to num_frames and common indices
+        common_indices = common_indices[:args.num_frames]
+        min_frames = len(common_indices)
+        
+        # Filter frames and ground truth poses to common indices
+        frame_mask = [frame_indices.index(idx) for idx in common_indices if idx in frame_indices]
+        gt_mask = [gt_frame_indices.index(idx) for idx in common_indices if idx in gt_frame_indices]
+        
+        frames = [frames[i] for i in frame_mask]
+        gt_poses_3d = gt_poses_3d[:, gt_mask, :]
+        synced_frame_indices = common_indices
+        
+        if len(frames) == 0 or gt_poses_3d.shape[1] == 0:
+            print("No synchronized frames available. Exiting.")
+            return
         
         # Estimate 3D poses
         pred_poses_3d = []
@@ -332,7 +353,7 @@ def main():
                 ax.set_zlabel('Z (mm)', fontsize=10)
             
             # Plot ground truth
-            ax1.set_title(f'Ground Truth\n(Frame {frame_idx + 1}/{min_frames})', fontsize=12)
+            ax1.set_title(f'Ground Truth\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
             x_gt = gt_poses_3d[:, frame_idx, 0]
             y_gt = gt_poses_3d[:, frame_idx, 1]
             z_gt = gt_poses_3d[:, frame_idx, 2]
@@ -348,7 +369,7 @@ def main():
                        alpha=1.0, edgecolors='darkgreen')
             
             # Plot prediction
-            ax2.set_title(f'MediaPipe Prediction\n(Frame {frame_idx + 1}/{min_frames})', fontsize=12)
+            ax2.set_title(f'MediaPipe Prediction\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
             valid = visibilities[:, frame_idx] > 0.1
             x_pred = pred_poses_3d[valid, frame_idx, 0]
             y_pred = pred_poses_3d[valid, frame_idx, 1]
@@ -370,7 +391,7 @@ def main():
             
             # Update title with MPJPE
             fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
-                        f'Frame {frame_idx + 1}/{min_frames}, MPJPE: {mpjpe[frame_idx]:.1f}mm', 
+                        f'Frame {synced_frame_indices[frame_idx]}, MPJPE: {mpjpe[frame_idx]:.1f}mm', 
                         fontsize=14)
             
             return ax1, ax2
