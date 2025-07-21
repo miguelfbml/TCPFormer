@@ -145,7 +145,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     frames = []
     frame_indices = []
     
-    for i, img_path in enumerate(image_files[:num_frames]):
+    for img_path in image_files[:num_frames]:
         frame = cv2.imread(img_path)
         if frame is not None:
             frames.append(frame)
@@ -154,7 +154,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
-                frame_indices.append(i)
+                frame_indices.append(len(frame_indices) + 1)  # Fallback to 1-based indexing
     
     return frames, frame_indices
 
@@ -174,8 +174,8 @@ def load_test_3d_data_from_dataset(args):
 
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
-        n_frames=27,
-        stride=1,  # Set stride to 1 to collect all frames
+        n_frames=args.num_frames,  # Match requested number of frames
+        stride=1,  # Collect all frames
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -206,15 +206,14 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            # Collect all frames in the sequence
+            # Collect all frames, assigning 1-based indices to match video frames
             for frame_idx in range(gt_3D.shape[1]):
                 pose = gt_3D[0, frame_idx]
                 pose = pose - pose[14:15, :]  # Root-relative
                 if hasattr(pose, 'cpu'):
                     pose = pose.cpu().numpy()
                 sequence_data.append(pose)
-                # Use dataset index as frame index, adjusted for sequence
-                frame_indices.append(frame_idx)
+                frame_indices.append(frame_idx + 1)  # 1-based indexing to match 'frame_00001.jpg'
                 
                 if len(sequence_data) >= args.num_frames:
                     break
@@ -286,20 +285,21 @@ def main():
         # Find common frame indices
         common_indices = sorted(set(frame_indices) & set(gt_frame_indices))
         if not common_indices:
-            print("No common frame indices found for synchronization. Exiting.")
-            return
-        
-        # Limit to num_frames and common indices
-        common_indices = common_indices[:args.num_frames]
-        min_frames = len(common_indices)
-        
-        # Filter frames and ground truth poses to common indices
-        frame_mask = [frame_indices.index(idx) for idx in common_indices if idx in frame_indices]
-        gt_mask = [gt_frame_indices.index(idx) for idx in common_indices if idx in gt_frame_indices]
-        
-        frames = [frames[i] for i in frame_mask]
-        gt_poses_3d = gt_poses_3d[:, gt_mask, :]
-        synced_frame_indices = common_indices
+            print("No common frame indices found for synchronization. Trying fallback alignment.")
+            # Fallback: Assume video frames and ground truth start at the same point
+            min_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
+            frames = frames[:min_frames]
+            gt_poses_3d = gt_poses_3d[:, :min_frames, :]
+            synced_frame_indices = list(range(1, min_frames + 1))
+        else:
+            # Filter to common indices
+            common_indices = common_indices[:args.num_frames]
+            min_frames = len(common_indices)
+            frame_mask = [frame_indices.index(idx) for idx in common_indices if idx in frame_indices]
+            gt_mask = [gt_frame_indices.index(idx) for idx in common_indices if idx in gt_frame_indices]
+            frames = [frames[i] for i in frame_mask]
+            gt_poses_3d = gt_poses_3d[:, gt_mask, :]
+            synced_frame_indices = common_indices
         
         if len(frames) == 0 or gt_poses_3d.shape[1] == 0:
             print("No synchronized frames available. Exiting.")
