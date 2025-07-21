@@ -162,8 +162,8 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     
     return frames, frame_indices
 
-def load_test_3d_data_from_dataset(args):
-    """Load 3D ground truth data from MPI-INF-3DHP dataset with frame rate alignment"""
+def load_test_3d_data_from_dataset(args, frame_indices):
+    """Load 3D ground truth data from MPI-INF-3DHP dataset, matching video frame indices"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -191,11 +191,9 @@ def load_test_3d_data_from_dataset(args):
     dataset = Fusion(dataset_args, train=False)
     
     sequence_data = []
-    frame_indices = []
+    matched_frame_indices = []
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
-    frame_counter = 1  # Start with 1-based indexing
-    total_frames = 0
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
@@ -212,19 +210,15 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
             
-            # Calculate stride to align with video frame rate
-            total_frames += gt_3D.shape[1]
-            stride = max(1, gt_3D.shape[1] // args.num_frames) if gt_3D.shape[1] > args.num_frames else 1
-            print(f"Ground truth sequence has {gt_3D.shape[1]} frames, using stride {stride} to align with {args.num_frames} video frames")
-            
-            for frame_idx in range(0, gt_3D.shape[1], stride):
-                pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
-                if hasattr(pose, 'cpu'):
-                    pose = pose.cpu().numpy()
-                sequence_data.append(pose)
-                frame_indices.append(frame_counter)
-                frame_counter += 1
+            # Select GT frames matching video frame indices
+            for frame_idx in frame_indices:
+                if frame_idx - 1 < gt_3D.shape[1]:  # frame_indices are 1-based, gt_3D is 0-based
+                    pose = gt_3D[0, frame_idx - 1]
+                    pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
+                    if hasattr(pose, 'cpu'):
+                        pose = pose.cpu().numpy()
+                    sequence_data.append(pose)
+                    matched_frame_indices.append(frame_idx)
                 
                 if len(sequence_data) >= args.num_frames:
                     break
@@ -243,8 +237,8 @@ def load_test_3d_data_from_dataset(args):
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
-    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {frame_indices[:10]}...")
-    return sequence_3d, target_seq_name, frame_indices
+    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {matched_frame_indices[:10]}...")
+    return sequence_3d, target_seq_name, matched_frame_indices
 
 def main():
     parser = argparse.ArgumentParser()
@@ -307,19 +301,19 @@ def main():
     estimator = MediaPipe3DPoseEstimator()
     
     try:
-        # Load ground truth data
-        gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args)
-        if gt_poses_3d is None:
-            print("Failed to load ground truth data.")
-            return
-        
-        # Load video frames
-        frames, frame_indices = load_mpi_test_frames(seq_name, args.num_frames)
+        # Load video frames first to get frame indices
+        frames, frame_indices = load_mpi_test_frames(args.sequence_name, args.num_frames)
         if not frames:
             print("No video frames loaded. Exiting.")
             return
         
         print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
+        
+        # Load ground truth data, matching video frame indices
+        gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args, frame_indices)
+        if gt_poses_3d is None:
+            print("Failed to load ground truth data.")
+            return
         
         # Synchronize frames
         num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
@@ -327,7 +321,7 @@ def main():
         end_frame = min(start_frame + args.num_frames, num_frames)
         frames = frames[start_frame:end_frame]
         gt_poses_3d = gt_poses_3d[:, start_frame:end_frame, :]
-        synced_frame_indices = list(range(start_frame + 1, end_frame + 1))
+        synced_frame_indices = frame_indices[start_frame:end_frame]
         min_frames = len(synced_frame_indices)
         
         print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
