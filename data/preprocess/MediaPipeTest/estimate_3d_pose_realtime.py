@@ -154,12 +154,14 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
         if frame is not None:
             frames.append(frame)
             try:
+                # Extract frame index from filename (e.g., 'frame_0001.jpg' -> 1)
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
                 frame_idx = len(frame_indices) + 1
                 frame_indices.append(frame_idx)
     
+    print(f"Video frame filenames: {[os.path.basename(f) for f in image_files[:10]]}")
     return frames, frame_indices
 
 def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
@@ -175,6 +177,7 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
         reverse_augmentation: bool
         out_all: int
         test_batch_size: int
+        subject_id: int  # Added to handle multiple subjects
 
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
@@ -185,15 +188,34 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
         data_augmentation=False,
         reverse_augmentation=False,
         out_all=1,
-        test_batch_size=1
+        test_batch_size=1,
+        subject_id=args.subject_id
     )
     
     dataset = MPI3DHP(dataset_args, train=False)
     
     sequence_data = []
     frame_indices = []
-    valid_frames = []
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
+    
+    # Inspect dataset structure
+    try:
+        data = np.load('../motion3d/data_test_3dhp.npz', allow_pickle=True)['data'].item()
+        print(f"Dataset keys for {target_seq_name}: {data[target_seq_name].keys()}")
+        print(f"GT data shape: {data[target_seq_name]['data_3d'].shape}")
+        print(f"Valid frames shape: {data[target_seq_name]['valid'].shape}")
+        print(f"First 10 valid frame flags: {data[target_seq_name]['valid'][:10]}")
+        if 'frame_indices' in data[target_seq_name]:
+            print(f"Dataset frame indices: {data[target_seq_name]['frame_indices'][:10]}")
+        if 'subject_id' in data[target_seq_name]:
+            print(f"Subject IDs: {data[target_seq_name]['subject_id']}")
+    except Exception as e:
+        print(f"Error inspecting dataset: {e}")
+    
+    best_sequence = None
+    best_matched_frames = 0
+    best_sequence_data = []
+    best_frame_indices = []
     
     for i in range(len(dataset)):
         try:
@@ -202,27 +224,46 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             if seq_name != target_seq_name:
                 continue
             
-            # pose_3d: (T, 17, 3), should be root-relative to joint 14 (hip)
+            # Check subject ID if specified
+            if hasattr(args, 'subject_id') and args.subject_id is not None:
+                try:
+                    data = np.load('../motion3d/data_test_3dhp.npz', allow_pickle=True)['data'].item()
+                    if 'subject_id' in data[target_seq_name] and data[target_seq_name]['subject_id'] != args.subject_id:
+                        continue
+                except:
+                    pass
+            
+            # pose_3d: (T, 17, 3)
             total_frames = pose_3d.shape[0]
-            print(f"Ground truth sequence {seq_name} has {total_frames} frames, selecting up to {num_frames} frames")
+            print(f"Ground truth sequence {seq_name} (index {i}) has {total_frames} frames, selecting up to {num_frames} frames")
             
             # Debugging: Print raw pose for hip joint
             print(f"Raw GT pose (first frame, hip joint 14): {pose_3d[0, 14, :]}")
             
             # Match GT poses to video frame indices
+            sequence_data = []
+            frame_indices = []
             matched_frames = 0
             for frame_idx in range(total_frames):
-                if valid_frame[frame_idx].item() and (frame_idx + 1) in video_frame_indices:
+                dataset_frame_idx = frame_idx + 1  # Assume 1-based indexing
+                if valid_frame[frame_idx].item() and dataset_frame_idx in video_frame_indices:
                     pose = pose_3d[frame_idx].numpy()  # (17, 3)
                     # Explicitly make root-relative to hip (joint 14)
                     pose = pose - pose[14:15, :]
                     sequence_data.append(pose)
-                    frame_indices.append(frame_idx + 1)  # Use dataset frame index (1-based)
-                    valid_frames.append(True)
+                    frame_indices.append(dataset_frame_idx)
                     matched_frames += 1
+                    print(f"Matched GT frame {dataset_frame_idx} to video frame {dataset_frame_idx}")
                 
                 if matched_frames >= num_frames:
                     break
+            
+            # Keep track of the sequence with the most matched frames
+            if matched_frames > best_matched_frames:
+                best_matched_frames = matched_frames
+                best_sequence = i
+                best_sequence_data = sequence_data
+                best_frame_indices = frame_indices
             
             if matched_frames >= num_frames:
                 break
@@ -231,11 +272,11 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             print(f"Error processing sample {i}: {e}")
             continue
     
-    if not sequence_data:
+    if not best_sequence_data:
         print(f"No valid ground truth data found for sequence {target_seq_name}")
         return None, None, None
     
-    sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
+    sequence_3d = np.stack(best_sequence_data, axis=1)  # (17, T, 3)
     
     # Apply camera transformation to align with MediaPipe (Z-up to Y-up)
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
@@ -247,9 +288,9 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
           f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
     
     # Debugging: Print matched frame indices
-    print(f"Matched GT frame indices: {frame_indices[:10]}...")
+    print(f"Matched GT frame indices (sequence {best_sequence}): {best_frame_indices[:10]}...")
     
-    return sequence_3d, target_seq_name, frame_indices
+    return sequence_3d, target_seq_name, best_frame_indices
 
 def main():
     parser = argparse.ArgumentParser()
@@ -258,6 +299,7 @@ def main():
     parser.add_argument('--num-frames', type=int, default=50, help='Number of frames to process')
     parser.add_argument('--save-video', action='store_true', help='Save animation as GIF')
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
+    parser.add_argument('--subject-id', type=int, default=None, help='Subject ID for multi-sequence datasets')
     args = parser.parse_args()
     
     # Define GT joint names for clarity
@@ -356,10 +398,11 @@ def main():
         # Estimate 3D poses
         pred_poses_3d = []
         visibilities = []
-        for frame in frames:
+        for frame_idx, frame in zip(synced_frame_indices, frames):
             pose_3d, visibility = estimator.estimate_3d_pose_from_image(frame)
             pred_poses_3d.append(pose_3d)
             visibilities.append(visibility)
+            print(f"Processed MediaPipe pose for frame {frame_idx}")
         
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
