@@ -148,7 +148,7 @@ def load_mpi_test_frames(sequence_name, frame_indices, num_frames=50, stride=9):
     # Select frames corresponding to ground truth frame indices
     for idx in frame_indices:
         # Adjust for 1-based indexing in filenames
-        frame_filename = os.path.join(video_path, f'frame_{idx:06d}.jpg')  # Adjust format as per dataset
+        frame_filename = os.path.join(video_path, f'img_{idx:06d}.jpg')  # Adjust format as per dataset
         if os.path.exists(frame_filename):
             frame = cv2.imread(frame_filename)
             if frame is not None:
