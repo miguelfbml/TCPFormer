@@ -157,11 +157,12 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
-                frame_indices.append(len(frame_indices) + 1)
+                frame_idx = len(frame_indices) + 1
+                frame_indices.append(frame_idx)
     
     return frames, frame_indices
 
-def load_test_3d_data_from_dataset(args, num_frames):
+def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
     """Load 3D ground truth data from MPI-INF-3DHP dataset using MPI3DHP class"""
     @dataclass
     class DatasetArgs:
@@ -194,7 +195,6 @@ def load_test_3d_data_from_dataset(args, num_frames):
     valid_frames = []
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
-    frame_counter = 1  # Start with 1-based indexing
     for i in range(len(dataset)):
         try:
             pose_2d, pose_3d_normalized, pose_3d, valid_frame, seq_name = dataset[i]
@@ -209,21 +209,22 @@ def load_test_3d_data_from_dataset(args, num_frames):
             # Debugging: Print raw pose for hip joint
             print(f"Raw GT pose (first frame, hip joint 14): {pose_3d[0, 14, :]}")
             
-            # Select sequential frames up to num_frames, respecting valid frames
-            for frame_idx in range(min(total_frames, num_frames)):
-                if valid_frame[frame_idx].item():  # Only include valid frames
+            # Match GT poses to video frame indices
+            matched_frames = 0
+            for frame_idx in range(total_frames):
+                if valid_frame[frame_idx].item() and (frame_idx + 1) in video_frame_indices:
                     pose = pose_3d[frame_idx].numpy()  # (17, 3)
                     # Explicitly make root-relative to hip (joint 14)
                     pose = pose - pose[14:15, :]
                     sequence_data.append(pose)
-                    frame_indices.append(frame_counter)
+                    frame_indices.append(frame_idx + 1)  # Use dataset frame index (1-based)
                     valid_frames.append(True)
-                    frame_counter += 1
+                    matched_frames += 1
                 
-                if len(sequence_data) >= num_frames:
+                if matched_frames >= num_frames:
                     break
             
-            if len(sequence_data) >= num_frames:
+            if matched_frames >= num_frames:
                 break
                 
         except Exception as e:
@@ -237,13 +238,16 @@ def load_test_3d_data_from_dataset(args, num_frames):
     sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
     
     # Apply camera transformation to align with MediaPipe (Z-up to Y-up)
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)  # Original transformation
+    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
     # Debugging: Print pose ranges for GT after transformations
     print(f"GT pose range after transformation (min, max): X={sequence_3d[:, :, 0].min():.2f}, {sequence_3d[:, :, 0].max():.2f}; "
           f"Y={sequence_3d[:, :, 1].min():.2f}, {sequence_3d[:, :, 1].max():.2f}; "
           f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
+    
+    # Debugging: Print matched frame indices
+    print(f"Matched GT frame indices: {frame_indices[:10]}...")
     
     return sequence_3d, target_seq_name, frame_indices
 
@@ -316,9 +320,9 @@ def main():
         
         print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
         
-        # Load ground truth data, matching the number of video frames
+        # Load ground truth data, matching the video frame indices
         num_frames = len(frames)
-        gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args, num_frames)
+        gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args, num_frames, frame_indices)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
             return
@@ -327,13 +331,23 @@ def main():
         num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
         start_frame = args.frame_start
         end_frame = min(start_frame + args.num_frames, num_frames)
-        frames = frames[start_frame:end_frame]
-        gt_poses_3d = gt_poses_3d[:, start_frame:end_frame, :]
-        synced_frame_indices = frame_indices[start_frame:end_frame]
+        
+        # Ensure frame indices match
+        common_indices = sorted(set(frame_indices).intersection(set(gt_frame_indices)))
+        if not common_indices:
+            print("No common frame indices between GT and video frames. Exiting.")
+            return
+        
+        # Filter frames and GT poses to common indices
+        video_frame_mask = [frame_indices[i] in common_indices for i in range(len(frame_indices))]
+        gt_frame_mask = [gt_frame_indices[i] in common_indices for i in range(len(gt_frame_indices))]
+        
+        frames = [frames[i] for i in range(len(frames)) if video_frame_mask[i]]
+        gt_poses_3d = gt_poses_3d[:, gt_frame_mask, :]
+        synced_frame_indices = [frame_indices[i] for i in range(len(frame_indices)) if video_frame_mask[i]]
         min_frames = len(synced_frame_indices)
         
         print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
-        print(f"GT frame indices: {gt_frame_indices[:10]}...")
         
         if min_frames == 0:
             print("No synchronized frames available. Exiting.")
@@ -355,13 +369,14 @@ def main():
               f"Y={pred_poses_3d[:, :, 1].min():.2f}, {pred_poses_3d[:, :, 1].max():.2f}; "
               f"Z={pred_poses_3d[:, :, 2].min():.2f}, {pred_poses_3d[:, :, 2].max():.2f}")
         
-        # Debugging: Print sample poses for hip (joint 14) and head (joint 0) for first frame
-        print(f"Sample poses (first frame, hip joint 14):")
-        print(f"GT: {gt_poses_3d[14, 0, :]}")
-        print(f"MediaPipe: {pred_poses_3d[14, 0, :]}")
-        print(f"Sample poses (first frame, head joint 0):")
-        print(f"GT: {gt_poses_3d[0, 0, :]}")
-        print(f"MediaPipe: {pred_poses_3d[0, 0, :]}")
+        # Debugging: Print sample poses for hip (joint 14) and head (joint 0) for first few frames
+        for t in range(min(min_frames, 3)):  # Print for first 3 frames
+            print(f"Sample poses (frame {synced_frame_indices[t]}, hip joint 14):")
+            print(f"GT: {gt_poses_3d[14, t, :]}")
+            print(f"MediaPipe: {pred_poses_3d[14, t, :]}")
+            print(f"Sample poses (frame {synced_frame_indices[t]}, head joint 0):")
+            print(f"GT: {gt_poses_3d[0, t, :]}")
+            print(f"MediaPipe: {pred_poses_3d[0, t, :]}")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
