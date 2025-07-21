@@ -204,9 +204,9 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
         print(f"Dataset keys for {target_seq_name}: {data[target_seq_name].keys()}")
         print(f"GT data shape: {data[target_seq_name]['data_3d'].shape}")
         print(f"Valid frames shape: {data[target_seq_name]['valid'].shape}")
-        print(f"First 10 valid frame flags: {data[target_seq_name]['valid'][:10]}")
+        print(f"First 20 valid frame flags: {data[target_seq_name]['valid'][:20]}")
         if 'frame_indices' in data[target_seq_name]:
-            print(f"Dataset frame indices: {data[target_seq_name]['frame_indices'][:10]}")
+            print(f"Dataset frame indices: {data[target_seq_name]['frame_indices'][:20]}")
         if 'subject_id' in data[target_seq_name]:
             print(f"Subject IDs: {data[target_seq_name]['subject_id']}")
     except Exception as e:
@@ -240,20 +240,21 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             # Debugging: Print raw pose for hip joint
             print(f"Raw GT pose (first frame, hip joint 14): {pose_3d[0, 14, :]}")
             
-            # Match GT poses to video frame indices
+            # Match GT poses to video frame indices sequentially
             sequence_data = []
             frame_indices = []
             matched_frames = 0
-            for frame_idx in range(total_frames):
-                dataset_frame_idx = frame_idx + 1  # Assume 1-based indexing
-                if valid_frame[frame_idx].item() and dataset_frame_idx in video_frame_indices:
-                    pose = pose_3d[frame_idx].numpy()  # (17, 3)
+            for video_idx, dataset_frame_idx in enumerate(video_frame_indices, 1):
+                if video_idx - 1 >= total_frames:
+                    break
+                if valid_frame[video_idx - 1].item():
+                    pose = pose_3d[video_idx - 1].numpy()  # (17, 3)
                     # Explicitly make root-relative to hip (joint 14)
                     pose = pose - pose[14:15, :]
                     sequence_data.append(pose)
                     frame_indices.append(dataset_frame_idx)
                     matched_frames += 1
-                    print(f"Matched GT frame {dataset_frame_idx} to video frame {dataset_frame_idx}")
+                    print(f"Matched GT frame {video_idx} to video frame {dataset_frame_idx}")
                 
                 if matched_frames >= num_frames:
                     break
@@ -285,10 +286,15 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
     # Debugging: Print pose ranges for GT after transformations
     print(f"GT pose range after transformation (min, max): X={sequence_3d[:, :, 0].min():.2f}, {sequence_3d[:, :, 0].max():.2f}; "
           f"Y={sequence_3d[:, :, 1].min():.2f}, {sequence_3d[:, :, 1].max():.2f}; "
-          f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
+          f"Z={sequence_3d[:, :, 1].min():.2f}, {sequence_3d[:, :, 1].max():.2f}")
     
     # Debugging: Print matched frame indices
-    print(f"Matched GT frame indices (sequence {best_sequence}): {best_frame_indices[:10]}...")
+    print(f"Matched GT frame indices (sequence {best_sequence}): {best_frame_indices}")
+    
+    # Debugging: Print sample poses for all frames
+    for t, frame_idx in enumerate(best_frame_indices):
+        print(f"Sample GT pose (frame {frame_idx}, hip joint 14): {sequence_3d[14, t, :]}")
+        print(f"Sample GT pose (frame {frame_idx}, head joint 0): {sequence_3d[0, t, :]}")
     
     return sequence_3d, target_seq_name, best_frame_indices
 
@@ -389,7 +395,7 @@ def main():
         synced_frame_indices = [frame_indices[i] for i in range(len(frame_indices)) if video_frame_mask[i]]
         min_frames = len(synced_frame_indices)
         
-        print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
+        print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices}")
         
         if min_frames == 0:
             print("No synchronized frames available. Exiting.")
@@ -412,12 +418,12 @@ def main():
               f"Y={pred_poses_3d[:, :, 1].min():.2f}, {pred_poses_3d[:, :, 1].max():.2f}; "
               f"Z={pred_poses_3d[:, :, 2].min():.2f}, {pred_poses_3d[:, :, 2].max():.2f}")
         
-        # Debugging: Print sample poses for hip (joint 14) and head (joint 0) for first few frames
-        for t in range(min(min_frames, 3)):  # Print for first 3 frames
-            print(f"Sample poses (frame {synced_frame_indices[t]}, hip joint 14):")
+        # Debugging: Print sample poses for all frames
+        for t, frame_idx in enumerate(synced_frame_indices):
+            print(f"Sample poses (frame {frame_idx}, hip joint 14):")
             print(f"GT: {gt_poses_3d[14, t, :]}")
             print(f"MediaPipe: {pred_poses_3d[14, t, :]}")
-            print(f"Sample poses (frame {synced_frame_indices[t]}, head joint 0):")
+            print(f"Sample poses (frame {frame_idx}, head joint 0):")
             print(f"GT: {gt_poses_3d[0, t, :]}")
             print(f"MediaPipe: {pred_poses_3d[0, t, :]}")
         
@@ -491,7 +497,7 @@ def main():
                     if valid[connection[0]] and valid[connection[1]]:
                         start = pred_poses_3d[connection[0], frame_idx, :]
                         end = pred_poses_3d[connection[1], frame_idx, :]
-                        ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
+                        ax2.plot([start[0], end[0]], [start[1], end[1], [start[2], end[2]], 
                                  'r-', linewidth=2, alpha=0.8)
                 
                 if valid[14]:
