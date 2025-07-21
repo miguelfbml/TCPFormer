@@ -237,7 +237,7 @@ def load_test_3d_data_from_dataset(args, num_frames):
     sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
     
     # Apply camera transformation to align with MediaPipe (Z-up to Y-up)
-    cam2real = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float32)  # Map Z to Y, Y to -Z
+    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)  # Original transformation
     sequence_3d = sequence_3d @ cam2real
     
     # Debugging: Print pose ranges for GT after transformations
