@@ -96,8 +96,8 @@ class MediaPipe3DPoseEstimator:
                     pose_3d[missing_joint] = np.mean([pose_3d[j] for j in valid_sources], axis=0)
                     visibility[missing_joint] = np.mean([visibility[j] for j in valid_sources])
             
-            # Make root-relative (MPI joint 14)
-            if visibility[14] > 0.1:
+            # Make root-relative (MPI joint 0)
+            if visibility[0] > 0.1:
                 root_pos = pose_3d[14].copy()
                 pose_3d -= root_pos
             
@@ -382,9 +382,9 @@ def main():
                         ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                                  'r-', linewidth=2, alpha=0.8)
                 
-                if valid[14]:
-                    ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
-                               pred_poses_3d[14, frame_idx, 2], c='green', s=120, marker='*', 
+                if valid[0]:
+                    ax2.scatter(pred_poses_3d[0, frame_idx, 0], pred_poses_3d[0, frame_idx, 1], 
+                               pred_poses_3d[0, frame_idx, 2], c='green', s=120, marker='*', 
                                alpha=1.0, edgecolors='darkgreen')
             
             # Update title with MPJPE
