@@ -202,14 +202,19 @@ def load_test_3d_data_from_dataset(args, num_frames):
             if seq_name != target_seq_name:
                 continue
             
-            # pose_3d: (T, 17, 3), already root-relative to joint 14 (hip)
+            # pose_3d: (T, 17, 3), should be root-relative to joint 14 (hip)
             total_frames = pose_3d.shape[0]
             print(f"Ground truth sequence {seq_name} has {total_frames} frames, selecting up to {num_frames} frames")
+            
+            # Debugging: Print raw pose for hip joint
+            print(f"Raw GT pose (first frame, hip joint 14): {pose_3d[0, 14, :]}")
             
             # Select sequential frames up to num_frames, respecting valid frames
             for frame_idx in range(min(total_frames, num_frames)):
                 if valid_frame[frame_idx].item():  # Only include valid frames
                     pose = pose_3d[frame_idx].numpy()  # (17, 3)
+                    # Explicitly make root-relative to hip (joint 14)
+                    pose = pose - pose[14:15, :]
                     sequence_data.append(pose)
                     frame_indices.append(frame_counter)
                     valid_frames.append(True)
@@ -230,10 +235,8 @@ def load_test_3d_data_from_dataset(args, num_frames):
         return None, None, None
     
     sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d @ cam2real
     
-    # Debugging: Print pose ranges for GT
+    # Debugging: Print pose ranges for GT before and after transformations
     print(f"GT pose range (min, max): X={sequence_3d[:, :, 0].min():.2f}, {sequence_3d[:, :, 0].max():.2f}; "
           f"Y={sequence_3d[:, :, 1].min():.2f}, {sequence_3d[:, :, 1].max():.2f}; "
           f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
@@ -348,10 +351,13 @@ def main():
               f"Y={pred_poses_3d[:, :, 1].min():.2f}, {pred_poses_3d[:, :, 1].max():.2f}; "
               f"Z={pred_poses_3d[:, :, 2].min():.2f}, {pred_poses_3d[:, :, 2].max():.2f}")
         
-        # Debugging: Print sample poses for hip (joint 14) for first frame
+        # Debugging: Print sample poses for hip (joint 14) and head (joint 0) for first frame
         print(f"Sample poses (first frame, hip joint 14):")
         print(f"GT: {gt_poses_3d[14, 0, :]}")
         print(f"MediaPipe: {pred_poses_3d[14, 0, :]}")
+        print(f"Sample poses (first frame, head joint 0):")
+        print(f"GT: {gt_poses_3d[0, 0, :]}")
+        print(f"MediaPipe: {pred_poses_3d[0, 0, :]}")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
