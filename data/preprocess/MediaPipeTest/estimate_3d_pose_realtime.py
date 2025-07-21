@@ -187,7 +187,7 @@ def load_test_3d_data_from_dataset(args):
         stride: int
         flip: bool
         test_augmentation: bool
-        data_amentation: bool
+        data_augmentation: bool
         reverse_augmentation: bool
         out_all: int
         test_batch_size: int
