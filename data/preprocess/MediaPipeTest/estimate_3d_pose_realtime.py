@@ -106,7 +106,7 @@ class MediaPipe3DPoseEstimator:
                 pose_3d -= root_pos
             
             # Apply camera transformation to match MPI-INF-3DHP
-            cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+            cam2real = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)  # Adjusted for tilt
             pose_3d = pose_3d @ cam2real
             
             return pose_3d, visibility
@@ -243,9 +243,7 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             sequence_data = []
             frame_indices = []
             matched_frames = 0
-            for frame_idx in range(total_frames):
-                if matched_frames >= num_frames:
-                    break
+            for frame_idx in range(min(total_frames, num_frames)):
                 if valid_frame[frame_idx].item():  # Only use valid frames
                     if (frame_idx + 1) in video_frame_indices:  # Ensure frame index matches video
                         pose = pose_3d[frame_idx].numpy()  # (17, 3)
@@ -255,27 +253,37 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
                         frame_indices.append(frame_idx + 1)  # 1-based indexing
                         matched_frames += 1
                         print(f"Matched GT frame {frame_idx + 1} to video frame {frame_idx + 1}")
+                    else:
+                        print(f"Frame {frame_idx + 1} not in video_frame_indices, skipping")
+                else:
+                    print(f"Frame {frame_idx + 1} is invalid, skipping")
+                
+                if matched_frames >= num_frames:
+                    break
             
             # Keep track of the sequence with the most matched frames
-            if matched_frames > best_matched_frames and matched_frames >= num_frames:
+            if matched_frames > best_matched_frames:
                 best_matched_frames = matched_frames
                 best_sequence = i
                 best_sequence_data = sequence_data
                 best_frame_indices = frame_indices
-                break  # Stop if we have enough frames
             
+            # Stop if we have enough frames
+            if matched_frames >= num_frames:
+                break
+                
         except Exception as e:
             print(f"Error processing sample {i}: {e}")
             continue
     
-    if not best_sequence_data:
-        print(f"No valid ground truth data found for sequence {target_seq_name}")
+    if not best_sequence_data or best_matched_frames < num_frames:
+        print(f"No valid ground truth data found for sequence {target_seq_name}: {best_matched_frames}/{num_frames} frames matched")
         return None, None, None
     
     sequence_3d = np.stack(best_sequence_data, axis=1)  # (17, T, 3)
     
     # Apply camera transformation to align with MediaPipe (Z-up to Y-up)
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+    cam2real = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)  # Adjusted for tilt
     sequence_3d = sequence_3d @ cam2real
     
     # Debugging: Print pose ranges for GT after transformations
