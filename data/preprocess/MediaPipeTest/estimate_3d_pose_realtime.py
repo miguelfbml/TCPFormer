@@ -237,7 +237,7 @@ def load_test_3d_data_from_dataset(args, frame_indices):
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
-    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {matched_frame_indices[:10]}...")
+    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {matched_frame_indices[:15]}...")
     return sequence_3d, target_seq_name, matched_frame_indices
 
 def main():
@@ -307,7 +307,7 @@ def main():
             print("No video frames loaded. Exiting.")
             return
         
-        print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
+        print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:15]}...")
         
         # Load ground truth data, matching video frame indices
         gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args, frame_indices)
