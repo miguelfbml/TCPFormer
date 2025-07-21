@@ -15,11 +15,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from data.const import H36M_TO_MPI
 
-# MPI-INF-3DHP skeleton connections
+# Ground truth skeleton connections (based on GT joint order)
 connections = [
-    (10, 9), (9, 8), (8, 11), (8, 14), (14, 15), (15, 16),
-    (11, 12), (12, 13), (8, 7), (7, 0), (0, 4), (0, 1),
-    (1, 2), (2, 3), (4, 5), (5, 6)
+    (0, 16),    # head top -> head
+    (16, 1),    # head -> neck
+    (1, 2),     # neck -> right arm (shoulder)
+    (2, 3),     # right arm -> right forearm
+    (3, 4),     # right forearm -> right hand
+    (1, 5),     # neck -> left arm (shoulder)
+    (5, 6),     # left arm -> left forearm
+    (6, 7),     # left forearm -> left hand
+    (1, 15),    # neck -> spine
+    (15, 14),   # spine -> hip
+    (14, 8),    # hip -> right up leg (hip)
+    (8, 9),     # right up leg -> right leg
+    (9, 10),    # right leg -> right foot
+    (14, 11),   # hip -> left up leg (hip)
+    (11, 12),   # left up leg -> left leg
+    (12, 13),   # left leg -> left foot
 ]
 
 def convert_h36m_to_mpi_connection():
@@ -41,30 +54,30 @@ class MediaPipe3DPoseEstimator:
             min_tracking_confidence=0.5
         )
         
-        # MediaPipe to MPI joint mapping (aligned with MPI-INF-3DHP)
+        # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
-            0: 10,   # nose -> head
-            7: 9,    # left_ear -> nose
-            8: 9,    # right_ear -> nose
-            11: 11,  # left_shoulder -> left shoulder
-            12: 14,  # right_shoulder -> right shoulder
-            13: 12,  # left_elbow -> left elbow
-            14: 15,  # right_elbow -> right elbow
-            15: 13,  # left_wrist -> left wrist
-            16: 16,  # right_wrist -> right wrist
-            23: 4,   # left_hip -> left hip
-            24: 1,   # right_hip -> right hip
-            25: 5,   # left_knee -> left knee
-            26: 2,   # right_knee -> right knee
-            27: 6,   # left_ankle -> left ankle
-            28: 3,   # right_ankle -> right ankle
+            0: 0,    # nose -> head top
+            7: 16,   # left_ear -> head
+            8: 16,   # right_ear -> head
+            11: 5,   # left_shoulder -> left arm
+            12: 2,   # right_shoulder -> right arm
+            13: 6,   # left_elbow -> left forearm
+            14: 3,   # right_elbow -> right forearm
+            15: 7,   # left_wrist -> left hand
+            16: 4,   # right_wrist -> right hand
+            23: 11,  # left_hip -> left up leg
+            24: 8,   # right_hip -> right up leg
+            25: 12,  # left_knee -> left leg
+            26: 9,   # right_knee -> right leg
+            27: 13,  # left_ankle -> left foot
+            28: 10,  # right_ankle -> right foot
         }
         
         # Estimation for missing joints
         self.missing_joints_estimation = {
-            0: [4, 1],      # root: average of hips
-            7: [0, 8],      # spine: average of root (hips) and thorax
-            8: [11, 14],    # thorax: average of shoulders
+            14: [11, 8],    # hip: average of left up leg (hip) and right up leg (hip)
+            1: [5, 2],      # neck: average of left arm (shoulder) and right arm (shoulder)
+            15: [14, 1],    # spine: average of hip and neck
         }
 
     def estimate_3d_pose_from_image(self, image):
@@ -77,17 +90,17 @@ class MediaPipe3DPoseEstimator:
         if results.pose_world_landmarks:
             landmarks = results.pose_world_landmarks.landmark
             
-            # Map MediaPipe landmarks to MPI joints
+            # Map MediaPipe landmarks to GT joints
             visibility = np.zeros(17)
-            for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
+            for mp_idx, gt_idx in self.mp_to_mpi_mapping.items():
                 if mp_idx < len(landmarks):
                     landmark = landmarks[mp_idx]
-                    pose_3d[mpi_idx] = [
+                    pose_3d[gt_idx] = [
                         landmark.x * 1000,  # Convert meters to mm
                         landmark.y * 1000,
                         landmark.z * 1000
                     ]
-                    visibility[mpi_idx] = landmark.visibility
+                    visibility[gt_idx] = landmark.visibility
             
             # Estimate missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
@@ -96,9 +109,9 @@ class MediaPipe3DPoseEstimator:
                     pose_3d[missing_joint] = np.mean([pose_3d[j] for j in valid_sources], axis=0)
                     visibility[missing_joint] = np.mean([visibility[j] for j in valid_sources])
             
-            # Make root-relative (MPI joint 0: average of hips)
-            if visibility[0] > 0.1:
-                root_pos = pose_3d[0].copy()
+            # Make root-relative (GT joint 14: hip)
+            if visibility[14] > 0.1:
+                root_pos = pose_3d[14].copy()
                 pose_3d -= root_pos
             
             # Apply camera transformation to match MPI-INF-3DHP
@@ -205,7 +218,7 @@ def load_test_3d_data_from_dataset(args):
                 gt_3D = torch.tensor(gt_3D)
                 
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
-            gt_3D[:, :, 14] = 0  # Set root joint to 0
+            gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
             
             # Calculate stride to align with video frame rate
             total_frames += gt_3D.shape[1]
@@ -214,7 +227,7 @@ def load_test_3d_data_from_dataset(args):
             
             for frame_idx in range(0, gt_3D.shape[1], stride):
                 pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]
+                pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
                 if hasattr(pose, 'cpu'):
                     pose = pose.cpu().numpy()
                 sequence_data.append(pose)
@@ -250,27 +263,53 @@ def main():
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
     
+    # Define GT joint names for clarity
+    GT_JOINT_NAMES = {
+        0: "Head Top",
+        1: "Neck",
+        2: "Right Arm",
+        3: "Right Forearm",
+        4: "Right Hand",
+        5: "Left Arm",
+        6: "Left Forearm",
+        7: "Left Hand",
+        8: "Right Up Leg",
+        9: "Right Leg",
+        10: "Right Foot",
+        11: "Left Up Leg",
+        12: "Left Leg",
+        13: "Left Foot",
+        14: "Hip",
+        15: "Spine",
+        16: "Head"
+    }
+    
+    # Print joint mappings for clarity
+    print("Ground Truth Joint Mappings:")
+    for idx, name in GT_JOINT_NAMES.items():
+        print(f"Joint {idx}: {name}")
+    
     # Get connections for ground truth
     gt_connections = convert_h36m_to_mpi_connection()
     
-    # Define MediaPipe connections that directly correspond to ground truth
+    # Define MediaPipe connections to match GT joint order
     mp_connections = [
-        (10, 9),    # head -> nose
-        (9, 8),     # nose -> thorax
-        (8, 11),    # thorax -> left shoulder
-        (8, 14),    # thorax -> right shoulder
-        (11, 12),   # left shoulder -> left elbow
-        (12, 13),   # left elbow -> left wrist
-        (14, 15),   # right shoulder -> right elbow
-        (15, 16),   # right elbow -> right wrist
-        (8, 7),     # thorax -> spine
-        (7, 0),     # spine -> root
-        (0, 4),     # root -> left hip
-        (0, 1),     # root -> right hip
-        (4, 5),     # left hip -> left knee
-        (5, 6),     # left knee -> left ankle
-        (1, 2),     # right hip -> right knee
-        (2, 3),     # right knee -> right ankle
+        (0, 16),    # head top -> head
+        (16, 1),    # head -> neck
+        (1, 2),     # neck -> right arm
+        (2, 3),     # right arm -> right forearm
+        (3, 4),     # right forearm -> right hand
+        (1, 5),     # neck -> left arm
+        (5, 6),     # left arm -> left forearm
+        (6, 7),     # left forearm -> left hand
+        (1, 15),    # neck -> spine
+        (15, 14),   # spine -> hip
+        (14, 8),    # hip -> right up leg
+        (8, 9),     # right up leg -> right leg
+        (9, 10),    # right leg -> right foot
+        (14, 11),   # hip -> left up leg
+        (11, 12),   # left up leg -> left leg
+        (12, 13),   # left leg -> left foot
     ]
     
     estimator = MediaPipe3DPoseEstimator()
@@ -290,7 +329,7 @@ def main():
         
         print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
         
-        # Synchronize frames (mimic compare_gt_pred.py)
+        # Synchronize frames
         num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
         start_frame = args.frame_start
         end_frame = min(start_frame + args.num_frames, num_frames)
@@ -389,9 +428,9 @@ def main():
                         ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                                  'r-', linewidth=2, alpha=0.8)
                 
-                if valid[0]:
-                    ax2.scatter(pred_poses_3d[0, frame_idx, 0], pred_poses_3d[0, frame_idx, 1], 
-                               pred_poses_3d[0, frame_idx, 2], c='green', s=120, marker='*', 
+                if valid[14]:
+                    ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
+                               pred_poses_3d[14, frame_idx, 2], c='green', s=120, marker='*', 
                                alpha=1.0, edgecolors='darkgreen')
                 
                 # Add joint indices for predictions
