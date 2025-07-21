@@ -63,9 +63,8 @@ class MediaPipe3DPoseEstimator:
         # Estimation for missing joints
         self.missing_joints_estimation = {
             0: [4, 1],      # root: average of hips
-            7: [11, 14],    # spine: average of shoulders
+            7: [0, 8],      # spine: average of root (hips) and thorax
             8: [11, 14],    # thorax: average of shoulders
-            9: [0, 8],      # nose: average of root and thorax (new midpoint keypoint)
         }
 
     def estimate_3d_pose_from_image(self, image):
@@ -317,34 +316,6 @@ def main():
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
         
-        # Print keypoint indices for ground truth and MediaPipe predictions
-        print("\nKeypoint Indices (MPI-INF-3DHP mapping):")
-        print("Index | Description")
-        print("------|------------")
-        joint_descriptions = {
-            0: "Root (center of hips)",
-            1: "Right hip",
-            2: "Right knee",
-            3: "Right ankle",
-            4: "Left hip",
-            5: "Left knee",
-            6: "Left ankle",
-            7: "Spine",
-            8: "Thorax (center of shoulders)",
-            9: "Nose (midpoint between root and thorax)",
-            10: "Head",
-            11: "Left shoulder",
-            12: "Left elbow",
-            13: "Left wrist",
-            14: "Right shoulder",
-            15: "Right elbow",
-            16: "Right wrist"
-        }
-        for idx, desc in joint_descriptions.items():
-            print(f"{idx:5d} | {desc}")
-        print("\nGround Truth Keypoints: All indices 0-16 are directly provided by MPI-INF-3DHP dataset.")
-        print("MediaPipe Prediction Keypoints: Indices 0, 7, 8, 9 are estimated (averaged from source joints); others are mapped from MediaPipe landmarks.")
-        
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
         mpjpe = np.zeros(min_frames)
@@ -355,7 +326,7 @@ def main():
                     gt_poses_3d[valid, t, :] - pred_poses_3d[valid, t, :], axis=1))
         
         overall_mpjpe = np.mean(mpjpe[np.isfinite(mpjpe)])
-        print(f"\nOverall MPJPE: {overall_mpjpe:.2f} mm")
+        print(f"Overall MPJPE: {overall_mpjpe:.2f} mm")
         
         # Set up visualization
         valid_gt = gt_poses_3d[~np.isnan(gt_poses_3d) & ~np.isinf(gt_poses_3d)]
@@ -397,6 +368,11 @@ def main():
             ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
+            # Add joint indices for ground truth
+            for i in range(17):
+                if not np.isnan(x_gt[i]) and not np.isinf(x_gt[i]):
+                    ax1.text(x_gt[i], y]gt[i], z_gt[i], str(i), color='black', fontsize=8)
+            
             # Plot prediction
             ax2.set_title(f'MediaPipe Prediction\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
             valid = visibilities[:, frame_idx] > 0.1
@@ -417,6 +393,12 @@ def main():
                     ax2.scatter(pred_poses_3d[0, frame_idx, 0], pred_poses_3d[0, frame_idx, 1], 
                                pred_poses_3d[0, frame_idx, 2], c='green', s=120, marker='*', 
                                alpha=1.0, edgecolors='darkgreen')
+                
+                # Add joint indices for predictions
+                for i in range(17):
+                    if valid[i]:
+                        ax2.text(pred_poses_3d[i, frame_idx, 0], pred_poses_3d[i, frame_idx, 1], 
+                                 pred_poses_3d[i, frame_idx, 2], str(i), color='black', fontsize=8)
             
             # Update title with MPJPE
             fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
