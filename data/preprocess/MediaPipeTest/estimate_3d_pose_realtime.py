@@ -189,6 +189,7 @@ def load_test_3d_data_from_dataset(args):
     frame_indices = []
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
+    frame_counter = 1  # Start with 1-based indexing
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
@@ -211,7 +212,8 @@ def load_test_3d_data_from_dataset(args):
                 if hasattr(pose, 'cpu'):
                     pose = pose.cpu().numpy()
                 sequence_data.append(pose)
-                frame_indices.append(frame_idx + 1)
+                frame_indices.append(frame_counter)
+                frame_counter += 1
                 
                 if len(sequence_data) >= args.num_frames:
                     break
@@ -282,26 +284,18 @@ def main():
         
         print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
         
-        # Synchronize frames
-        common_indices = sorted(set(frame_indices) & set(gt_frame_indices))
-        if not common_indices:
-            print("No common frame indices found for synchronization. Using sequential alignment.")
-            min_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
-            frames = frames[:min_frames]
-            gt_poses_3d = gt_poses_3d[:, :min_frames, :]
-            synced_frame_indices = list(range(1, min_frames + 1))
-        else:
-            common_indices = common_indices[args.frame_start:args.frame_start + args.num_frames]
-            min_frames = min(len(common_indices), args.num_frames)
-            frame_mask = [frame_indices.index(idx) for idx in common_indices if idx in frame_indices]
-            gt_mask = [gt_frame_indices.index(idx) for idx in common_indices if idx in gt_frame_indices]
-            frames = [frames[i] for i in frame_mask]
-            gt_poses_3d = gt_poses_3d[:, gt_mask, :]
-            synced_frame_indices = common_indices[:min_frames]
+        # Synchronize frames (mimic compare_gt_pred.py)
+        num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
+        start_frame = args.frame_start
+        end_frame = min(start_frame + args.num_frames, num_frames)
+        frames = frames[start_frame:end_frame]
+        gt_poses_3d = gt_poses_3d[:, start_frame:end_frame, :]
+        synced_frame_indices = list(range(start_frame + 1, end_frame + 1))
+        min_frames = len(synced_frame_indices)
         
         print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
         
-        if len(frames) == 0 or gt_poses_3d.shape[1] == 0:
+        if min_frames == 0:
             print("No synchronized frames available. Exiting.")
             return
         
