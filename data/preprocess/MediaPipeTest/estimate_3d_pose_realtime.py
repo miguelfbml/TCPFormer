@@ -111,8 +111,8 @@ class MediaPipe3DPoseEstimator:
     def close(self):
         self.pose.close()
 
-def load_mpi_test_frames(sequence_name, num_frames=50):
-    """Load video frames from MPI-INF-3DHP test set"""
+def load_mpi_test_frames(sequence_name, frame_indices, num_frames=50, stride=9):
+    """Load video frames from MPI-INF-3DHP test set, synchronized with ground truth frame indices"""
     mpi_roots = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
         '../motion3d/MPI-INF-3DHP',
@@ -143,19 +143,22 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     
     image_files.sort()
     frames = []
-    frame_indices = []
+    synced_frame_indices = []
     
-    for img_path in image_files[:num_frames]:
-        frame = cv2.imread(img_path)
-        if frame is not None:
-            frames.append(frame)
-            try:
-                frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
-                frame_indices.append(frame_idx)
-            except:
-                frame_indices.append(len(frame_indices) + 1)
+    # Select frames corresponding to ground truth frame indices
+    for idx in frame_indices:
+        # Adjust for 1-based indexing in filenames
+        frame_filename = os.path.join(video_path, f'frame_{idx:06d}.jpg')  # Adjust format as per dataset
+        if os.path.exists(frame_filename):
+            frame = cv2.imread(frame_filename)
+            if frame is not None:
+                frames.append(frame)
+                synced_frame_indices.append(idx)
+        else:
+            print(f"Frame {frame_filename} not found, skipping.")
     
-    return frames, frame_indices
+    print(f"Loaded {len(frames)} video frames for sequence {sequence_name}")
+    return frames, synced_frame_indices
 
 def load_test_3d_data_from_dataset(args):
     """Load 3D ground truth data from MPI-INF-3DHP dataset with frame rate alignment"""
@@ -174,7 +177,7 @@ def load_test_3d_data_from_dataset(args):
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
         n_frames=args.num_frames,
-        stride=1,
+        stride=9,  # Match TCPFormerForked stride
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -189,8 +192,7 @@ def load_test_3d_data_from_dataset(args):
     frame_indices = []
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
-    frame_counter = 1  # Start with 1-based indexing
-    total_frames = 0
+    processed_samples = 0
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
@@ -207,24 +209,23 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            # Calculate stride to align with video frame rate
-            total_frames += gt_3D.shape[1]
-            stride = max(1, gt_3D.shape[1] // args.num_frames) if gt_3D.shape[1] > args.num_frames else 1
-            print(f"Ground truth sequence has {gt_3D.shape[1]} frames, using stride {stride} to align with {args.num_frames} video frames")
+            # Extract center frame to match TCPFormerForked
+            center_frame = gt_3D.shape[1] // 2
+            center_pose = gt_3D[0, center_frame]
+            center_pose = center_pose - center_pose[14:15, :]
             
-            for frame_idx in range(0, gt_3D.shape[1], stride):
-                pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]
-                if hasattr(pose, 'cpu'):
-                    pose = pose.cpu().numpy()
-                sequence_data.append(pose)
-                frame_indices.append(frame_counter)
-                frame_counter += 1
-                
-                if len(sequence_data) >= args.num_frames:
-                    break
+            if hasattr(center_pose, 'cpu'):
+                center_pose = center_pose.cpu().numpy()
+            elif hasattr(center_pose, 'numpy'):
+                center_pose = center_pose.numpy()
+            else:
+                center_pose = np.array(center_pose)
             
-            if len(sequence_data) >= args.num_frames:
+            sequence_data.append(center_pose)
+            frame_indices.append(processed_samples + 1)  # 1-based indexing
+            processed_samples += 1
+            
+            if processed_samples >= args.num_frames:
                 break
                 
         except Exception as e:
@@ -282,28 +283,25 @@ def main():
             print("Failed to load ground truth data.")
             return
         
-        # Load video frames
-        frames, frame_indices = load_mpi_test_frames(seq_name, args.num_frames)
+        # Load video frames, synchronized with ground truth indices
+        frames, synced_frame_indices = load_mpi_test_frames(seq_name, gt_frame_indices, args.num_frames)
         if not frames:
             print("No video frames loaded. Exiting.")
             return
         
-        print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:10]}...")
+        print(f"Loaded {len(frames)} video frames with indices: {synced_frame_indices[:10]}...")
         
-        # Synchronize frames (mimic compare_gt_pred.py)
+        # Ensure exact synchronization
         num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
-        start_frame = args.frame_start
-        end_frame = min(start_frame + args.num_frames, num_frames)
-        frames = frames[start_frame:end_frame]
-        gt_poses_3d = gt_poses_3d[:, start_frame:end_frame, :]
-        synced_frame_indices = list(range(start_frame + 1, end_frame + 1))
-        min_frames = len(synced_frame_indices)
-        
-        print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
-        
-        if min_frames == 0:
+        if num_frames == 0:
             print("No synchronized frames available. Exiting.")
             return
+        
+        frames = frames[:num_frames]
+        gt_poses_3d = gt_poses_3d[:, :num_frames, :]
+        synced_frame_indices = synced_frame_indices[:num_frames]
+        
+        print(f"Synchronized {num_frames} frames with indices: {synced_frame_indices[:10]}...")
         
         # Estimate 3D poses
         pred_poses_3d = []
@@ -318,8 +316,8 @@ def main():
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
-        mpjpe = np.zeros(min_frames)
-        for t in range(min_frames):
+        mpjpe = np.zeros(num_frames)
+        for t in range(num_frames):
             valid = valid_joints[:, t]
             if np.any(valid):
                 mpjpe[t] = np.mean(np.linalg.norm(
@@ -397,9 +395,9 @@ def main():
             return ax1, ax2
         
         # Create animation
-        ani = FuncAnimation(fig, update, frames=range(min_frames), interval=150, repeat=True, blit=False)
+        ani = FuncAnimation(fig, update, frames=range(num_frames), interval=150, repeat=True, blit=False)
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}.gif'
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_synced.gif'
             ani.save(output_path, writer='pillow', fps=8, dpi=100)
             print(f"Comparison GIF saved to: {output_path}")
             
