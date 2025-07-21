@@ -158,7 +158,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     return frames, frame_indices
 
 def load_test_3d_data_from_dataset(args):
-    """Load 3D ground truth data from MPI-INF-3DHP dataset"""
+    """Load 3D ground truth data from MPI-INF-3DHP dataset with frame rate alignment"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -190,6 +190,7 @@ def load_test_3d_data_from_dataset(args):
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
     
     frame_counter = 1  # Start with 1-based indexing
+    total_frames = 0
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
@@ -206,7 +207,12 @@ def load_test_3d_data_from_dataset(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint to 0
             
-            for frame_idx in range(gt_3D.shape[1]):
+            # Calculate stride to align with video frame rate
+            total_frames += gt_3D.shape[1]
+            stride = max(1, gt_3D.shape[1] // args.num_frames) if gt_3D.shape[1] > args.num_frames else 1
+            print(f"Ground truth sequence has {gt_3D.shape[1]} frames, using stride {stride} to align with {args.num_frames} video frames")
+            
+            for frame_idx in range(0, gt_3D.shape[1], stride):
                 pose = gt_3D[0, frame_idx]
                 pose = pose - pose[14:15, :]
                 if hasattr(pose, 'cpu'):
