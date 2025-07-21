@@ -8,6 +8,7 @@ import mediapipe as mp
 from dataclasses import dataclass
 import torch
 import glob
+from scipy.interpolate import interp1d
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
@@ -106,7 +107,7 @@ class MediaPipe3DPoseEstimator:
                 pose_3d -= root_pos
             
             # Apply camera transformation to match MPI-INF-3DHP
-            cam2real = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)  # Adjusted for tilt
+            cam2real = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)  # Identity to test tilt
             pose_3d = pose_3d @ cam2real
             
             return pose_3d, visibility
@@ -164,6 +165,26 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     print(f"Video frame filenames: {[os.path.basename(f) for f in image_files[:10]]}")
     return frames, frame_indices
 
+def interpolate_poses(valid_poses, valid_indices, num_frames):
+    """Interpolate GT poses for all frames based on valid frames"""
+    if len(valid_poses) < 2:
+        print("Not enough valid poses for interpolation")
+        return None, None
+    
+    valid_indices = np.array(valid_indices)
+    valid_poses = np.array(valid_poses)  # Shape: (T_valid, 17, 3)
+    
+    # Create interpolation functions for each joint and coordinate
+    interpolated_poses = np.zeros((num_frames, 17, 3))
+    target_indices = np.arange(1, num_frames + 1)
+    
+    for joint in range(17):
+        for coord in range(3):
+            f = interp1d(valid_indices, valid_poses[:, joint, coord], kind='linear', fill_value='extrapolate')
+            interpolated_poses[:, joint, coord] = f(target_indices)
+    
+    return interpolated_poses.transpose(1, 0, 2), target_indices.tolist()  # (17, T, 3)
+
 def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
     """Load 3D ground truth data from MPI-INF-3DHP dataset using MPI3DHP class"""
     @dataclass
@@ -177,7 +198,7 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
         reverse_augmentation: bool
         out_all: int
         test_batch_size: int
-        subject_id: int  # Added to handle multiple subjects
+        subject_id: int
 
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
@@ -239,11 +260,11 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             # Debugging: Print raw pose for hip joint
             print(f"Raw GT pose (first frame, hip joint 14): {pose_3d[0, 14, :]}")
             
-            # Select GT poses sequentially for valid frames
+            # Collect valid GT poses
             sequence_data = []
             frame_indices = []
             matched_frames = 0
-            for frame_idx in range(min(total_frames, num_frames)):
+            for frame_idx in range(total_frames):
                 if valid_frame[frame_idx].item():  # Only use valid frames
                     if (frame_idx + 1) in video_frame_indices:  # Ensure frame index matches video
                         pose = pose_3d[frame_idx].numpy()  # (17, 3)
@@ -276,14 +297,22 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
             print(f"Error processing sample {i}: {e}")
             continue
     
-    if not best_sequence_data or best_matched_frames < num_frames:
+    if not best_sequence_data:
         print(f"No valid ground truth data found for sequence {target_seq_name}: {best_matched_frames}/{num_frames} frames matched")
         return None, None, None
     
-    sequence_3d = np.stack(best_sequence_data, axis=1)  # (17, T, 3)
+    # Interpolate poses if fewer than num_frames are valid
+    if best_matched_frames < num_frames:
+        print(f"Interpolating GT poses: {best_matched_frames} valid frames found, interpolating to {num_frames}")
+        sequence_3d, frame_indices = interpolate_poses(best_sequence_data, best_frame_indices, num_frames)
+        if sequence_3d is None:
+            print("Interpolation failed due to insufficient valid poses")
+            return None, None, None
+    else:
+        sequence_3d = np.stack(best_sequence_data, axis=1)  # (17, T, 3)
     
-    # Apply camera transformation to align with MediaPipe (Z-up to Y-up)
-    cam2real = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)  # Adjusted for tilt
+    # Apply camera transformation to align with MediaPipe
+    cam2real = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)  # Identity to test tilt
     sequence_3d = sequence_3d @ cam2real
     
     # Debugging: Print pose ranges for GT after transformations
@@ -292,14 +321,14 @@ def load_test_3d_data_from_dataset(args, num_frames, video_frame_indices):
           f"Z={sequence_3d[:, :, 2].min():.2f}, {sequence_3d[:, :, 2].max():.2f}")
     
     # Debugging: Print matched frame indices
-    print(f"Matched GT frame indices (sequence {best_sequence}): {best_frame_indices}")
+    print(f"Matched GT frame indices (sequence {best_sequence}): {frame_indices}")
     
     # Debugging: Print sample poses for all frames
-    for t, frame_idx in enumerate(best_frame_indices):
+    for t, frame_idx in enumerate(frame_indices):
         print(f"Sample GT pose (frame {frame_idx}, hip joint 14): {sequence_3d[14, t, :]}")
         print(f"Sample GT pose (frame {frame_idx}, head joint 0): {sequence_3d[0, t, :]}")
     
-    return sequence_3d, target_seq_name, best_frame_indices
+    return sequence_3d, target_seq_name, frame_indices
 
 def main():
     parser = argparse.ArgumentParser()
