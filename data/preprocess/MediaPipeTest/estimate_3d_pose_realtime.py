@@ -73,12 +73,12 @@ class MediaPipe3DPoseEstimator:
         results = self.pose.process(rgb_image)
         
         pose_3d = np.zeros((17, 3))  # x, y, z
+        visibility = np.zeros(17)
         
         if results.pose_world_landmarks:
             landmarks = results.pose_world_landmarks.landmark
             
             # Map MediaPipe landmarks to MPI joints
-            visibility = np.zeros(17)
             for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
                 if mp_idx < len(landmarks):
                     landmark = landmarks[mp_idx]
@@ -96,9 +96,9 @@ class MediaPipe3DPoseEstimator:
                     pose_3d[missing_joint] = np.mean([pose_3d[j] for j in valid_sources], axis=0)
                     visibility[missing_joint] = np.mean([visibility[j] for j in valid_sources])
             
-            # Make root-relative (MPI joint 0)
-            if visibility[0] > 0.1:
-                root_pos = pose_3d[14].copy()
+            # Make root-relative using center of hips (average of left hip [4] and right hip [1])
+            if visibility[4] > 0.1 and visibility[1] > 0.1:
+                root_pos = np.mean([pose_3d[4], pose_3d[1]], axis=0)
                 pose_3d -= root_pos
             
             # Apply camera transformation to match MPI-INF-3DHP
@@ -111,7 +111,7 @@ class MediaPipe3DPoseEstimator:
     def close(self):
         self.pose.close()
 
-def load_mpi_test_frames(sequence_name, frame_indices, num_frames=50, stride=9):
+def load_mpi_test_frames(sequence_name, frame_indices, num_frames=50):
     """Load video frames from MPI-INF-3DHP test set, synchronized with ground truth frame indices"""
     mpi_roots = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
@@ -145,17 +145,28 @@ def load_mpi_test_frames(sequence_name, frame_indices, num_frames=50, stride=9):
     frames = []
     synced_frame_indices = []
     
-    # Select frames corresponding to ground truth frame indices
+    # Map frame indices to available image files
     for idx in frame_indices:
-        # Adjust for 1-based indexing in filenames
-        frame_filename = os.path.join(video_path, f'img_{idx:06d}.jpg')  # Adjust format as per dataset
-        if os.path.exists(frame_filename):
+        # Try to match frame index to filename (assuming 1-based indexing)
+        frame_filename = None
+        for img_path in image_files:
+            try:
+                file_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
+                if file_idx == idx:
+                    frame_filename = img_path
+                    break
+            except:
+                continue
+        
+        if frame_filename and os.path.exists(frame_filename):
             frame = cv2.imread(frame_filename)
             if frame is not None:
                 frames.append(frame)
                 synced_frame_indices.append(idx)
+            else:
+                print(f"Failed to load frame {frame_filename}, skipping.")
         else:
-            print(f"Frame {frame_filename} not found, skipping.")
+            print(f"Frame {idx} not found, skipping.")
     
     print(f"Loaded {len(frames)} video frames for sequence {sequence_name}")
     return frames, synced_frame_indices
@@ -207,12 +218,15 @@ def load_test_3d_data_from_dataset(args):
                 gt_3D = torch.tensor(gt_3D)
                 
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
-            gt_3D[:, :, 14] = 0  # Set root joint to 0
             
             # Extract center frame to match TCPFormerForked
             center_frame = gt_3D.shape[1] // 2
             center_pose = gt_3D[0, center_frame]
-            center_pose = center_pose - center_pose[14:15, :]
+            
+            # Make root-relative using center of hips (average of left hip [4] and right hip [1])
+            if torch.all(center_pose[4] != 0) and torch.all(center_pose[1] != 0):
+                root_pos = torch.mean(torch.stack([center_pose[4], center_pose[1]]), dim=0)
+                center_pose = center_pose - root_pos
             
             if hasattr(center_pose, 'cpu'):
                 center_pose = center_pose.cpu().numpy()
@@ -222,7 +236,7 @@ def load_test_3d_data_from_dataset(args):
                 center_pose = np.array(center_pose)
             
             sequence_data.append(center_pose)
-            frame_indices.append(processed_samples + 1)  # 1-based indexing
+            frame_indices.append(i + 1)  # Use dataset index as frame index (1-based)
             processed_samples += 1
             
             if processed_samples >= args.num_frames:
@@ -363,7 +377,9 @@ def main():
                          'b-', linewidth=2, alpha=0.8)
             
             ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue')
-            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
+            # Highlight center of hips as root
+            root_pos_gt = np.mean([gt_poses_3d[4, frame_idx], gt_poses_3d[1, frame_idx]], axis=0)
+            ax1.scatter(root_pos_gt[0], root_pos_gt[1], root_pos_gt[2], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
             # Plot prediction
@@ -382,10 +398,11 @@ def main():
                         ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                                  'r-', linewidth=2, alpha=0.8)
                 
-                if valid[0]:
-                    ax2.scatter(pred_poses_3d[0, frame_idx, 0], pred_poses_3d[0, frame_idx, 1], 
-                               pred_poses_3d[0, frame_idx, 2], c='green', s=120, marker='*', 
-                               alpha=1.0, edgecolors='darkgreen')
+                # Highlight center of hips as root
+                if valid[4] and valid[1]:
+                    root_pos_pred = np.mean([pred_poses_3d[4, frame_idx], pred_poses_3d[1, frame_idx]], axis=0)
+                    ax2.scatter(root_pos_pred[0], root_pos_pred[1], root_pos_pred[2], 
+                               c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen')
             
             # Update title with MPJPE
             fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
