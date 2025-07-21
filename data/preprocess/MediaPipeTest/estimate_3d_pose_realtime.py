@@ -159,82 +159,48 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
 
 def load_test_3d_data_from_dataset(args):
     """Load 3D ground truth data from MPI-INF-3DHP dataset with frame rate alignment"""
-    @dataclass
-    class DatasetArgs:
-        data_root: str
-        n_frames: int
-        stride: int
-        flip: bool
-        test_augmentation: bool
-        data_augmentation: bool
-        reverse_augmentation: bool
-        out_all: int
-        test_batch_size: int
-
-    dataset_args = DatasetArgs(
-        data_root='../motion3d/',
-        n_frames=args.num_frames,
-        stride=1,
-        flip=False,
-        test_augmentation=False,
-        data_augmentation=False,
-        reverse_augmentation=False,
-        out_all=1,
-        test_batch_size=1
-    )
+    data_path = os.path.join('../motion3d/', 'data_test_3dhp.npz')
+    data = np.load(data_path, allow_pickle=True)['data'].item()
     
-    dataset = Fusion(dataset_args, train=False)
+    target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
+    
+    if target_seq_name not in data:
+        print(f"Sequence {target_seq_name} not found in test data.")
+        return None, None, None
+    
+    # Load ground truth poses for the target sequence
+    anim = data[target_seq_name]
+    data_3d = anim['data_3d']  # Shape: (T, 17, 3)
+    
+    # Make root-relative (MPI joint 14)
+    data_3d[:, :14] -= data_3d[:, 14:15]
+    data_3d[:, 15:] -= data_3d[:, 14:15]
+    
+    # Subsample to match the number of video frames
+    total_frames = data_3d.shape[0]
+    print(f"Ground truth sequence {target_seq_name} has {total_frames} frames")
+    stride = max(1, total_frames // args.num_frames) if total_frames > args.num_frames else 1
+    print(f"Using stride {stride} to align with {args.num_frames} video frames")
     
     sequence_data = []
     frame_indices = []
-    target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
+    frame_counter = 1
     
-    frame_counter = 1  # Start with 1-based indexing
-    total_frames = 0
-    for i in range(len(dataset)):
-        try:
-            batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
-            
-            current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else str(seq)
-            if current_seq_name != target_seq_name:
-                continue
-            
-            if isinstance(gt_3D, torch.Tensor):
-                gt_3D = gt_3D.clone()
-            else:
-                gt_3D = torch.tensor(gt_3D)
-                
-            gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
-            gt_3D[:, :, 14] = 0  # Set root joint to 0
-            
-            # Calculate stride to align with video frame rate
-            total_frames += gt_3D.shape[1]
-            stride = max(1, gt_3D.shape[1] // args.num_frames) if gt_3D.shape[1] > args.num_frames else 1
-            print(f"Ground truth sequence has {gt_3D.shape[1]} frames, using stride {stride} to align with {args.num_frames} video frames")
-            
-            for frame_idx in range(0, gt_3D.shape[1], stride):
-                pose = gt_3D[0, frame_idx]
-                pose = pose - pose[14:15, :]
-                if hasattr(pose, 'cpu'):
-                    pose = pose.cpu().numpy()
-                sequence_data.append(pose)
-                frame_indices.append(frame_counter)
-                frame_counter += 1
-                
-                if len(sequence_data) >= args.num_frames:
-                    break
-            
-            if len(sequence_data) >= args.num_frames:
-                break
-                
-        except Exception as e:
-            print(f"Error processing sample {i}: {e}")
-            continue
+    for frame_idx in range(0, total_frames, stride):
+        pose = data_3d[frame_idx]
+        sequence_data.append(pose)
+        frame_indices.append(frame_counter)
+        frame_counter += 1
+        if len(sequence_data) >= args.num_frames:
+            break
     
     if not sequence_data:
+        print(f"No ground truth poses loaded for sequence {target_seq_name}.")
         return None, None, None
     
     sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
+    
+    # Apply camera transformation to match MPI-INF-3DHP
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
