@@ -155,15 +155,16 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
         if frame is not None:
             frames.append(frame)
             try:
+                # Extract frame number from filename
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
-                frame_indices.append(len(frame_indices) + 1)
+                frame_indices.append(len(frame_indices))
     
     return frames, frame_indices
 
-def load_test_3d_data_from_dataset(args, frame_indices):
-    """Load 3D ground truth data from MPI-INF-3DHP dataset, matching video frame indices"""
+def load_test_3d_data_from_dataset_synchronized(args):
+    """Load 3D ground truth data exactly like train_3dhp.py evaluation - SYNCHRONIZED"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -176,10 +177,11 @@ def load_test_3d_data_from_dataset(args, frame_indices):
         out_all: int
         test_batch_size: int
 
+    # Use same parameters as train_3dhp.py
     dataset_args = DatasetArgs(
         data_root='../motion3d/',
-        n_frames=args.num_frames,
-        stride=1,
+        n_frames=27,  # Same as your model
+        stride=9,     # Same as your model
         flip=False,
         test_augmentation=False,
         data_augmentation=False,
@@ -191,17 +193,24 @@ def load_test_3d_data_from_dataset(args, frame_indices):
     dataset = Fusion(dataset_args, train=False)
     
     sequence_data = []
-    matched_frame_indices = []
+    sequence_frame_info = []  # Store frame information
     target_seq_name = args.sequence_name or ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6'][args.sequence_number % 6]
+    
+    print(f"Looking for sequence: {target_seq_name}")
+    print(f"Dataset has {len(dataset)} samples")
     
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
             
+            # Extract sequence name
             current_seq_name = seq[0] if isinstance(seq, (list, tuple)) else str(seq)
             if current_seq_name != target_seq_name:
                 continue
             
+            print(f"Found matching sequence: {current_seq_name} (sample {i})")
+            
+            # Process exactly like train_3dhp.py evaluation
             if isinstance(gt_3D, torch.Tensor):
                 gt_3D = gt_3D.clone()
             else:
@@ -210,18 +219,23 @@ def load_test_3d_data_from_dataset(args, frame_indices):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
             
-            # Select GT frames matching video frame indices
-            for frame_idx in frame_indices:
-                if frame_idx - 1 < gt_3D.shape[1]:  # frame_indices are 1-based, gt_3D is 0-based
-                    pose = gt_3D[0, frame_idx - 1]
-                    pose = pose - pose[14:15, :]  # Center around hip (GT joint 14)
-                    if hasattr(pose, 'cpu'):
-                        pose = pose.cpu().numpy()
-                    sequence_data.append(pose)
-                    matched_frame_indices.append(frame_idx)
-                
-                if len(sequence_data) >= args.num_frames:
-                    break
+            # Extract center frame (same as evaluation)
+            center_frame = gt_3D.shape[1] // 2
+            center_pose = gt_3D[0, center_frame]  # (17, 3)
+            
+            # Make root-relative (same as evaluation)
+            center_pose = center_pose - center_pose[14:15, :]
+            
+            # Convert to numpy
+            if hasattr(center_pose, 'cpu'):
+                center_pose = center_pose.cpu().numpy()
+            
+            sequence_data.append(center_pose)
+            sequence_frame_info.append({
+                'sample_idx': i,
+                'center_frame': center_frame,
+                'total_frames': gt_3D.shape[1]
+            })
             
             if len(sequence_data) >= args.num_frames:
                 break
@@ -233,12 +247,53 @@ def load_test_3d_data_from_dataset(args, frame_indices):
     if not sequence_data:
         return None, None, None
     
-    sequence_3d = np.stack(sequence_data, axis=1)  # (17, T, 3)
+    # Stack frames: (17, T, 3)
+    sequence_3d = np.stack(sequence_data, axis=1)
+    
+    # Apply camera transformation
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
-    print(f"Loaded {sequence_3d.shape[1]} ground truth frames with indices: {matched_frame_indices[:15]}...")
-    return sequence_3d, target_seq_name, matched_frame_indices
+    print(f"Loaded {sequence_3d.shape[1]} ground truth frames for sequence: {target_seq_name}")
+    print(f"Frame info: {len(sequence_frame_info)} samples")
+    
+    return sequence_3d, target_seq_name, sequence_frame_info
+
+def synchronize_frames_with_gt(video_frames, video_frame_indices, gt_data, gt_frame_info, args):
+    """Synchronize video frames with ground truth data for proper comparison"""
+    
+    print("Synchronizing video frames with ground truth...")
+    print(f"Video frames: {len(video_frames)}")
+    print(f"GT data: {gt_data.shape[1]} frames")
+    
+    # Strategy: Use every Nth video frame to match GT sampling
+    # Since GT uses stride=9 and n_frames=27, we need to sample video accordingly
+    
+    stride = 9  # Same as dataset
+    n_frames = min(gt_data.shape[1], args.num_frames)
+    
+    synchronized_video_frames = []
+    synchronized_gt_poses = []
+    synchronized_frame_indices = []
+    
+    # Sample video frames with same stride as GT
+    for i in range(n_frames):
+        video_idx = i * stride
+        if video_idx < len(video_frames):
+            synchronized_video_frames.append(video_frames[video_idx])
+            synchronized_gt_poses.append(gt_data[:, i, :])
+            synchronized_frame_indices.append(video_frame_indices[video_idx] if video_idx < len(video_frame_indices) else video_idx)
+    
+    if synchronized_video_frames:
+        synchronized_gt_poses = np.stack(synchronized_gt_poses, axis=1)  # (17, T, 3)
+        
+        print(f"Synchronized {len(synchronized_video_frames)} frame pairs")
+        print(f"Video frame indices: {synchronized_frame_indices[:10]}...")
+        print(f"GT shape: {synchronized_gt_poses.shape}")
+        
+        return synchronized_video_frames, synchronized_gt_poses, synchronized_frame_indices
+    
+    return None, None, None
 
 def main():
     parser = argparse.ArgumentParser()
@@ -251,92 +306,70 @@ def main():
     
     # Define GT joint names for clarity
     GT_JOINT_NAMES = {
-        0: "Head Top",
-        1: "Neck",
-        2: "Right Arm",
-        3: "Right Forearm",
-        4: "Right Hand",
-        5: "Left Arm",
-        6: "Left Forearm",
-        7: "Left Hand",
-        8: "Right Up Leg",
-        9: "Right Leg",
-        10: "Right Foot",
-        11: "Left Up Leg",
-        12: "Left Leg",
-        13: "Left Foot",
-        14: "Hip",
-        15: "Spine",
-        16: "Head"
+        0: "Head Top", 1: "Neck", 2: "Right Arm", 3: "Right Forearm", 4: "Right Hand",
+        5: "Left Arm", 6: "Left Forearm", 7: "Left Hand", 8: "Right Up Leg", 9: "Right Leg",
+        10: "Right Foot", 11: "Left Up Leg", 12: "Left Leg", 13: "Left Foot", 14: "Hip",
+        15: "Spine", 16: "Head"
     }
     
-    # Print joint mappings for clarity
     print("Ground Truth Joint Mappings:")
     for idx, name in GT_JOINT_NAMES.items():
         print(f"Joint {idx}: {name}")
     
-    # Use connections directly for ground truth
-    gt_connections = connections
-    
-    # Define MediaPipe connections to match GT joint order
-    mp_connections = [
-        (0, 16),    # head top -> head
-        (16, 1),    # head -> neck
-        (1, 2),     # neck -> right arm
-        (2, 3),     # right arm -> right forearm
-        (3, 4),     # right forearm -> right hand
-        (1, 5),     # neck -> left arm
-        (5, 6),     # left arm -> left forearm
-        (6, 7),     # left forearm -> left hand
-        (1, 15),    # neck -> spine
-        (15, 14),   # spine -> hip
-        (14, 8),    # hip -> right up leg
-        (8, 9),     # right up leg -> right leg
-        (9, 10),    # right leg -> right foot
-        (14, 11),   # hip -> left up leg
-        (11, 12),   # left up leg -> left leg
-        (12, 13),   # left leg -> left foot
-    ]
-    
     estimator = MediaPipe3DPoseEstimator()
     
     try:
-        # Load video frames first to get frame indices
-        frames, frame_indices = load_mpi_test_frames(args.sequence_name, args.num_frames)
-        if not frames:
-            print("No video frames loaded. Exiting.")
-            return
-        
-        print(f"Loaded {len(frames)} video frames with indices: {frame_indices[:15]}...")
-        
-        # Load ground truth data, matching video frame indices
-        gt_poses_3d, seq_name, gt_frame_indices = load_test_3d_data_from_dataset(args, frame_indices)
+        # Load ground truth data first (this determines the frame sampling)
+        gt_poses_3d, seq_name, gt_frame_info = load_test_3d_data_from_dataset_synchronized(args)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
             return
         
-        # Synchronize frames
-        num_frames = min(len(frames), gt_poses_3d.shape[1], args.num_frames)
-        start_frame = args.frame_start
-        end_frame = min(start_frame + args.num_frames, num_frames)
-        frames = frames[start_frame:end_frame]
-        gt_poses_3d = gt_poses_3d[:, start_frame:end_frame, :]
-        synced_frame_indices = frame_indices[start_frame:end_frame]
-        min_frames = len(synced_frame_indices)
+        # Load video frames
+        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 10)  # Load more frames than needed
+        if not all_video_frames:
+            print("No video frames loaded. Exiting.")
+            return
         
-        print(f"Synchronized {min_frames} frames with indices: {synced_frame_indices[:10]}...")
+        print(f"Loaded {len(all_video_frames)} video frames")
+        
+        # Synchronize frames properly
+        sync_video_frames, sync_gt_poses, sync_frame_indices = synchronize_frames_with_gt(
+            all_video_frames, all_video_frame_indices, gt_poses_3d, gt_frame_info, args
+        )
+        
+        if sync_video_frames is None:
+            print("Failed to synchronize frames.")
+            return
+        
+        # Apply frame start offset
+        start_frame = args.frame_start
+        end_frame = min(start_frame + args.num_frames, len(sync_video_frames))
+        
+        final_video_frames = sync_video_frames[start_frame:end_frame]
+        final_gt_poses = sync_gt_poses[:, start_frame:end_frame, :]
+        final_frame_indices = sync_frame_indices[start_frame:end_frame]
+        min_frames = len(final_video_frames)
+        
+        print(f"Final synchronized frames: {min_frames}")
+        print(f"Frame indices: {final_frame_indices}")
         
         if min_frames == 0:
             print("No synchronized frames available. Exiting.")
             return
         
-        # Estimate 3D poses
+        # Estimate 3D poses for synchronized frames
+        print("Estimating MediaPipe 3D poses...")
         pred_poses_3d = []
         visibilities = []
-        for frame in frames:
+        
+        for i, frame in enumerate(final_video_frames):
             pose_3d, visibility = estimator.estimate_3d_pose_from_image(frame)
             pred_poses_3d.append(pose_3d)
             visibilities.append(visibility)
+            
+            if (i + 1) % 10 == 0:
+                print(f"Processed {i + 1}/{min_frames} frames")
         
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
@@ -344,26 +377,47 @@ def main():
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
         mpjpe = np.zeros(min_frames)
+        valid_frame_count = 0
+        
         for t in range(min_frames):
             valid = valid_joints[:, t]
-            if np.any(valid):
+            if np.sum(valid) > 5:  # Need at least 5 valid joints
                 mpjpe[t] = np.mean(np.linalg.norm(
-                    gt_poses_3d[valid, t, :] - pred_poses_3d[valid, t, :], axis=1))
+                    final_gt_poses[valid, t, :] - pred_poses_3d[valid, t, :], axis=1))
+                valid_frame_count += 1
+            else:
+                mpjpe[t] = np.nan
         
-        overall_mpjpe = np.mean(mpjpe[np.isfinite(mpjpe)])
-        print(f"Overall MPJPE: {overall_mpjpe:.2f} mm")
+        valid_mpjpe = mpjpe[~np.isnan(mpjpe)]
+        if len(valid_mpjpe) > 0:
+            overall_mpjpe = np.mean(valid_mpjpe)
+            print(f"Overall MPJPE: {overall_mpjpe:.2f} mm (computed on {valid_frame_count}/{min_frames} frames)")
+        else:
+            overall_mpjpe = float('inf')
+            print("Could not compute MPJPE - insufficient valid joints")
         
         # Set up visualization
-        valid_gt = gt_poses_3d[~np.isnan(gt_poses_3d) & ~np.isinf(gt_poses_3d)]
-        valid_pred = pred_poses_3d[~np.isnan(pred_poses_3d) & ~np.isinf(pred_poses_3d)]
-        all_poses = np.vstack([valid_gt.reshape(-1, 3), valid_pred.reshape(-1, 3)])
+        all_gt = final_gt_poses.reshape(-1, 3)
+        all_pred = pred_poses_3d.reshape(-1, 3)
+        
+        # Remove invalid values
+        valid_gt = all_gt[~np.isnan(all_gt).any(axis=1) & ~np.isinf(all_gt).any(axis=1)]
+        valid_pred = all_pred[~np.isnan(all_pred).any(axis=1) & ~np.isinf(all_pred).any(axis=1)]
+        
+        if len(valid_gt) > 0 and len(valid_pred) > 0:
+            all_poses = np.vstack([valid_gt, valid_pred])
+        elif len(valid_gt) > 0:
+            all_poses = valid_gt
+        else:
+            all_poses = valid_pred
+            
         min_value = np.min(all_poses, axis=0)
         max_value = np.max(all_poses, axis=0)
         padding = (max_value - min_value) * 0.1
         min_value -= padding
         max_value += padding
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), subplot_kw={'projection': '3d'})
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={'projection': '3d'})
         
         def update(frame_idx):
             ax1.clear()
@@ -378,14 +432,15 @@ def main():
                 ax.set_zlabel('Z (mm)', fontsize=10)
             
             # Plot ground truth
-            ax1.set_title(f'Ground Truth\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
-            x_gt = gt_poses_3d[:, frame_idx, 0]
-            y_gt = gt_poses_3d[:, frame_idx, 1]
-            z_gt = gt_poses_3d[:, frame_idx, 2]
+            ax1.set_title(f'Ground Truth\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=12)
+            x_gt = final_gt_poses[:, frame_idx, 0]
+            y_gt = final_gt_poses[:, frame_idx, 1]
+            z_gt = final_gt_poses[:, frame_idx, 2]
             
-            for connection in gt_connections:
-                start = gt_poses_3d[connection[0], frame_idx, :]
-                end = gt_poses_3d[connection[1], frame_idx, :]
+            # Draw GT skeleton
+            for connection in connections:
+                start = final_gt_poses[connection[0], frame_idx, :]
+                end = final_gt_poses[connection[1], frame_idx, :]
                 ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                          'b-', linewidth=2, alpha=0.8)
             
@@ -393,21 +448,19 @@ def main():
             ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
-            # Add joint indices for ground truth
-            for i in range(17):
-                if not np.isnan(x_gt[i]) and not np.isinf(x_gt[i]):
-                    ax1.text(x_gt[i], y_gt[i], z_gt[i], str(i), color='black', fontsize=8)
-            
-            # Plot prediction
-            ax2.set_title(f'MediaPipe Prediction\n(Frame {synced_frame_indices[frame_idx]})', fontsize=12)
+            # Plot MediaPipe prediction
+            ax2.set_title(f'MediaPipe Prediction\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=12)
             valid = visibilities[:, frame_idx] > 0.1
-            x_pred = pred_poses_3d[valid, frame_idx, 0]
-            y_pred = pred_poses_3d[valid, frame_idx, 1]
-            z_pred = pred_poses_3d[valid, frame_idx, 2]
             
             if np.any(valid):
+                x_pred = pred_poses_3d[valid, frame_idx, 0]
+                y_pred = pred_poses_3d[valid, frame_idx, 1]
+                z_pred = pred_poses_3d[valid, frame_idx, 2]
+                
                 ax2.scatter(x_pred, y_pred, z_pred, c='red', s=60, alpha=0.9, edgecolors='darkred')
-                for connection in mp_connections:
+                
+                # Draw MediaPipe skeleton
+                for connection in connections:
                     if valid[connection[0]] and valid[connection[1]]:
                         start = pred_poses_3d[connection[0], frame_idx, :]
                         end = pred_poses_3d[connection[1], frame_idx, :]
@@ -418,31 +471,33 @@ def main():
                     ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
                                pred_poses_3d[14, frame_idx, 2], c='green', s=120, marker='*', 
                                alpha=1.0, edgecolors='darkgreen')
-                
-                # Add joint indices for predictions
-                for i in range(17):
-                    if valid[i]:
-                        ax2.text(pred_poses_3d[i, frame_idx, 0], pred_poses_3d[i, frame_idx, 1], 
-                                 pred_poses_3d[i, frame_idx, 2], str(i), color='black', fontsize=8)
             
             # Update title with MPJPE
+            frame_error = mpjpe[frame_idx] if not np.isnan(mpjpe[frame_idx]) else 0
             fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
-                        f'Frame {synced_frame_indices[frame_idx]}, MPJPE: {mpjpe[frame_idx]:.1f}mm', 
+                        f'Synchronized Frame {frame_idx+1}/{min_frames} '
+                        f'(Video Frame {final_frame_indices[frame_idx]}) | '
+                        f'MPJPE: {frame_error:.1f}mm | '
+                        f'Valid Joints: {np.sum(valid)}/17', 
                         fontsize=14)
             
             return ax1, ax2
         
         # Create animation
-        ani = FuncAnimation(fig, update, frames=range(min_frames), interval=150, repeat=True, blit=False)
+        ani = FuncAnimation(fig, update, frames=range(min_frames), interval=200, repeat=True, blit=False)
+        
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}.gif'
-            ani.save(output_path, writer='pillow', fps=8, dpi=100)
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_synced.gif'
+            print(f"Saving animation to: {output_path}")
+            ani.save(output_path, writer='pillow', fps=5, dpi=100)
             print(f"Comparison GIF saved to: {output_path}")
             
+            # Save static image
             update(0)
             plt.tight_layout()
-            plt.savefig(output_path.replace('.gif', '.png'), dpi=150, bbox_inches='tight')
-            print(f"Static image saved to: {output_path.replace('.gif', '.png')}")
+            static_path = output_path.replace('.gif', '.png')
+            plt.savefig(static_path, dpi=150, bbox_inches='tight')
+            print(f"Static image saved to: {static_path}")
         
         plt.show()
         
