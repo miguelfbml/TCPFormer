@@ -163,8 +163,8 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     
     return frames, frame_indices
 
-def load_test_3d_data_multiple_samples(args):
-    """Load center frames from multiple GT samples - GIVES MULTIPLE FRAMES"""
+def load_test_3d_data_from_dataset_single_sequence(args):
+    """Load consecutive frames from a single GT sequence - FIXED FOR PROPER SYNC"""
     @dataclass
     class DatasetArgs:
         data_root: str
@@ -197,10 +197,7 @@ def load_test_3d_data_multiple_samples(args):
     print(f"Looking for sequence: {target_seq_name}")
     print(f"Dataset has {len(dataset)} samples")
     
-    # Collect center frames from multiple samples of the same sequence
-    collected_frames = []
-    collected_samples = []
-    
+    # Find the FIRST sample of the target sequence and extract ALL its frames
     for i in range(len(dataset)):
         try:
             batch_cam, gt_3D, input_2D, seq, scale, bb_box = dataset[i]
@@ -221,49 +218,43 @@ def load_test_3d_data_multiple_samples(args):
             gt_3D = gt_3D.view(1, -1, 17, 3)  # (1, T, 17, 3)
             gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
             
-            # Extract center frame from this sample (same as evaluation)
-            center_frame_idx = gt_3D.shape[1] // 2
-            center_frame = gt_3D[0, center_frame_idx]  # (17, 3)
+            # **FIXED**: Extract ALL consecutive frames, not just center frame
+            all_frames = gt_3D[0]  # Shape: (T, 17, 3) where T=27
+            
+            # Limit to requested number of frames
+            num_frames_to_use = min(args.num_frames, all_frames.shape[0])
+            sequence_frames = all_frames[:num_frames_to_use]  # (num_frames, 17, 3)
             
             # Make root-relative (same as evaluation)
-            center_frame = center_frame - center_frame[14:15, :]
+            sequence_frames = sequence_frames - sequence_frames[:, 14:15, :]
             
-            # Convert to numpy
-            if hasattr(center_frame, 'cpu'):
-                center_frame = center_frame.cpu().numpy()
+            # Convert to numpy and transpose to (17, T, 3)
+            if hasattr(sequence_frames, 'cpu'):
+                sequence_frames = sequence_frames.cpu().numpy()
             
-            collected_frames.append(center_frame)
-            collected_samples.append(i)
+            sequence_3d = sequence_frames.transpose(1, 0, 2)  # (17, T, 3)
             
-            # Stop when we have enough frames
-            if len(collected_frames) >= args.num_frames:
-                break
-                
+            # Apply camera transformation
+            cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+            sequence_3d = sequence_3d @ cam2real
+            
+            print(f"Loaded {sequence_3d.shape[1]} consecutive GT frames for sequence: {target_seq_name}")
+            print(f"GT sequence shape: {sequence_3d.shape}")
+            
+            return sequence_3d, target_seq_name
+            
         except Exception as e:
             print(f"Error processing sample {i}: {e}")
             continue
     
-    if not collected_frames:
-        print("No frames collected")
-        return None, None
-    
-    # Stack all center frames: (T, 17, 3) -> (17, T, 3)
-    sequence_3d = np.stack(collected_frames, axis=0).transpose(1, 0, 2)
-    
-    # Apply camera transformation
-    cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
-    sequence_3d = sequence_3d @ cam2real
-    
-    print(f"Loaded {sequence_3d.shape[1]} center frames from samples {collected_samples[:10]}{'...' if len(collected_samples) > 10 else ''}")
-    print(f"GT sequence shape: {sequence_3d.shape}")
-    
-    return sequence_3d, target_seq_name
+    print("No matching sequence found")
+    return None, None
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequence-number', type=int, default=0, help='Sequence index')
     parser.add_argument('--sequence-name', type=str, default=None, help='Sequence name (TS1, TS2, etc.)')
-    parser.add_argument('--num-frames', type=int, default=30, help='Number of frames to process')
+    parser.add_argument('--num-frames', type=int, default=20, help='Number of frames to process')
     parser.add_argument('--save-video', action='store_true', help='Save animation as GIF')
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
@@ -283,49 +274,38 @@ def main():
     estimator = MediaPipe3DPoseEstimator()
     
     try:
-        # Load ground truth data - now multiple center frames
-        gt_poses_3d, seq_name = load_test_3d_data_multiple_samples(args)
+        # Load ground truth data - consecutive frames from single sequence
+        gt_poses_3d, seq_name = load_test_3d_data_from_dataset_single_sequence(args)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
             return
         
-        # Load video frames with stride to match GT sampling pattern
-        stride = 9  # Same as GT dataset stride
-        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * stride + 50)
+        # Load video frames - direct consecutive mapping
+        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 2)
         if not all_video_frames:
             print("No video frames loaded. Exiting.")
             return
         
         print(f"Loaded {len(all_video_frames)} video frames")
         
-        # Sample video frames with stride to match GT sampling
-        sampled_video_frames = []
-        sampled_frame_indices = []
+        # **FIXED**: Direct 1:1 mapping - no stride sampling
+        # Frame 0 -> GT frame 0, Frame 1 -> GT frame 1, etc.
+        num_frames = min(len(all_video_frames), gt_poses_3d.shape[1], args.num_frames)
         
-        for i in range(gt_poses_3d.shape[1]):
-            video_idx = i * stride
-            if video_idx < len(all_video_frames):
-                sampled_video_frames.append(all_video_frames[video_idx])
-                sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
-        
-        # Use available frames
-        num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1])
-        
-        final_video_frames = sampled_video_frames[:num_frames]
+        final_video_frames = all_video_frames[:num_frames]
         final_gt_poses = gt_poses_3d[:, :num_frames, :]
-        final_frame_indices = sampled_frame_indices[:num_frames]
+        final_frame_indices = all_video_frame_indices[:num_frames]
         
-        print(f"Using {num_frames} synchronized frames with stride={stride}")
+        print(f"Using {num_frames} synchronized frames")
         print(f"Video frame indices: {final_frame_indices[:10]}...")
         print(f"GT shape: {final_gt_poses.shape}")
         
-        if num_frames <= 1:
-            print(f"Only {num_frames} frame(s) available. Need more frames for animation.")
-            if num_frames == 0:
-                return
+        if num_frames == 0:
+            print("No frames available. Exiting.")
+            return
         
-        # Estimate 3D poses for synchronized frames
-        print("Estimating MediaPipe 3D poses...")
+        # **FIXED**: Pre-compute ALL MediaPipe poses to avoid processing delays
+        print("Pre-computing MediaPipe 3D poses for all frames...")
         pred_poses_3d = []
         visibilities = []
         
@@ -334,11 +314,13 @@ def main():
             pred_poses_3d.append(pose_3d)
             visibilities.append(visibility)
             
-            if (i + 1) % 10 == 0:
-                print(f"Processed {i + 1}/{num_frames} frames")
+            if (i + 1) % 5 == 0:
+                print(f"Pre-computed {i + 1}/{num_frames} frames")
         
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
+        
+        print("✓ All MediaPipe poses pre-computed - no processing delays in animation")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
@@ -414,7 +396,7 @@ def main():
             ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
-            # Plot MediaPipe prediction
+            # Plot MediaPipe prediction (pre-computed - no delay)
             ax2.set_title(f'MediaPipe Prediction\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=12)
             valid = visibilities[:, frame_idx] > 0.1
             
@@ -441,7 +423,7 @@ def main():
             # Update title with MPJPE
             frame_error = mpjpe[frame_idx] if not np.isnan(mpjpe[frame_idx]) else 0
             fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
-                        f'Frame {frame_idx+1}/{num_frames} '
+                        f'Synchronized Frame {frame_idx+1}/{num_frames} '
                         f'(Video Frame {final_frame_indices[frame_idx]}) | '
                         f'MPJPE: {frame_error:.1f}mm | '
                         f'Valid Joints: {np.sum(valid)}/17', 
@@ -449,14 +431,13 @@ def main():
             
             return ax1, ax2
         
-        # Create animation
-        print(f"Creating animation with {num_frames} frames...")
-        ani = FuncAnimation(fig, update, frames=range(num_frames), interval=200, repeat=True, blit=False)
+        # Create animation with shorter interval for smoother playback
+        ani = FuncAnimation(fig, update, frames=range(num_frames), interval=150, repeat=True, blit=False)
         
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_multi_frames.gif'
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_synchronized.gif'
             print(f"Saving animation to: {output_path}")
-            ani.save(output_path, writer='pillow', fps=5, dpi=100)
+            ani.save(output_path, writer='pillow', fps=7, dpi=100)
             print(f"Comparison GIF saved to: {output_path}")
             
             # Save static image
