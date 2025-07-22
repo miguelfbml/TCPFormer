@@ -199,6 +199,7 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
     
     # Collect multiple samples from the same sequence
     sequence_samples = []
+    sample_info = []  # Store starting frame info for each sample
     
     for i in range(len(dataset)):
         try:
@@ -221,7 +222,7 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
             gt_3D[:, :, 14] = 0  # Set root joint (hip) to 0
             
             # Extract center frame from this sample (same as evaluation)
-            center_frame_idx = gt_3D.shape[1] // 2
+            center_frame_idx = gt_3D.shape[1] // 2  # This is frame 13 (0-indexed) for 27 frames
             center_frame = gt_3D[0, center_frame_idx]  # (17, 3)
             
             # Make root-relative (same as evaluation)
@@ -233,6 +234,12 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
             
             sequence_samples.append(center_frame)
             
+            # Store the center frame index information
+            # Each sample starts at: sample_index * stride + center_offset
+            sample_start_frame = i * dataset_args.stride  # This is just a guess for relative positioning
+            center_frame_absolute = sample_start_frame + center_frame_idx
+            sample_info.append(center_frame_absolute)
+            
             # Stop when we have enough frames
             if len(sequence_samples) >= args.num_frames:
                 break
@@ -242,7 +249,7 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
             continue
     
     if not sequence_samples:
-        return None, None
+        return None, None, None
     
     # Stack all center frames: (T, 17, 3) -> (17, T, 3)
     sequence_3d = np.stack(sequence_samples, axis=0).transpose(1, 0, 2)
@@ -253,8 +260,9 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
     
     print(f"Loaded {sequence_3d.shape[1]} center frames from {len(sequence_samples)} samples for sequence: {target_seq_name}")
     print(f"GT sequence shape: {sequence_3d.shape}")
+    print(f"Center frame is index {27//2} = {27//2} from each 27-frame sample")
     
-    return sequence_3d, target_seq_name
+    return sequence_3d, target_seq_name, sample_info
 
 def main():
     parser = argparse.ArgumentParser()
@@ -281,27 +289,31 @@ def main():
     
     try:
         # Load ground truth data - now multiple samples to get multiple frames
-        gt_poses_3d, seq_name = load_test_3d_data_from_dataset_multiple_samples(args)
+        gt_poses_3d, seq_name, sample_info = load_test_3d_data_from_dataset_multiple_samples(args)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
             return
         
-        # Load video frames - we need frames that correspond to the stride pattern
-        # Since GT uses stride=9, we sample video frames accordingly
-        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 10)
+        # Load video frames
+        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 20)
         if not all_video_frames:
             print("No video frames loaded. Exiting.")
             return
         
         print(f"Loaded {len(all_video_frames)} video frames")
         
-        # Sample video frames with stride=9 to match GT sampling
+        # **FIXED**: Sample video frames to match the center frames from GT samples
+        # Each GT sample uses stride=9 and takes center frame (index 13)
+        # So video frame pattern should be: 0*9+13, 1*9+13, 2*9+13, etc.
         stride = 9
+        center_offset = 13  # Center frame index for 27-frame samples
+        
         sampled_video_frames = []
         sampled_frame_indices = []
         
         for i in range(gt_poses_3d.shape[1]):
-            video_idx = i * stride
+            # Calculate the video frame index that corresponds to this GT center frame
+            video_idx = i * stride + center_offset
             if video_idx < len(all_video_frames):
                 sampled_video_frames.append(all_video_frames[video_idx])
                 sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
@@ -314,7 +326,8 @@ def main():
         final_frame_indices = sampled_frame_indices[:num_frames]
         
         print(f"Using {num_frames} synchronized frames")
-        print(f"Video frame indices (stride={stride}): {final_frame_indices[:10]}...")
+        print(f"Video frame pattern: stride={stride}, center_offset={center_offset}")
+        print(f"Video frame indices: {final_frame_indices[:10]}...")
         print(f"GT shape: {final_gt_poses.shape}")
         
         if num_frames == 0:
@@ -452,7 +465,7 @@ def main():
         ani = FuncAnimation(fig, update, frames=range(num_frames), interval=200, repeat=True, blit=False)
         
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_multi_samples.gif'
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned.gif'
             print(f"Saving animation to: {output_path}")
             ani.save(output_path, writer='pillow', fps=5, dpi=100)
             print(f"Comparison GIF saved to: {output_path}")
