@@ -1,3 +1,10 @@
+'''
+cd preprocess
+
+python3 MediaPipeTest/estimate_3d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
+'''
+
+
 import argparse
 import os
 import cv2
@@ -49,8 +56,8 @@ class MediaPipe3DPoseEstimator:
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
             0: 0,    # nose -> head top
-            #7: 16,   # left_ear -> head
-            #8: 16,   # right_ear -> head
+            7: 16,   # left_ear -> head
+            8: 16,   # right_ear -> head
             11: 5,   # left_shoulder -> left arm
             12: 2,   # right_shoulder -> right arm
             13: 6,   # left_elbow -> left forearm
@@ -70,7 +77,6 @@ class MediaPipe3DPoseEstimator:
             14: [11, 8],    # hip: average of left up leg (hip) and right up leg (hip)
             1: [5, 2],      # neck: average of left arm (shoulder) and right arm (shoulder)
             15: [14, 1],    # spine: average of hip and neck
-            16: [7, 8]
         }
 
     def estimate_3d_pose_from_image(self, image):
@@ -351,7 +357,7 @@ def main():
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
         
-        print("All MediaPipe poses pre-computed - no processing delays in animation")
+        print("✓ All MediaPipe poses pre-computed - no processing delays in animation")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
@@ -396,7 +402,7 @@ def main():
         min_value -= padding
         max_value += padding
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={'projection': '3d'})
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9), subplot_kw={'projection': '3d'})
         
         def update(frame_idx):
             ax1.clear()
@@ -423,7 +429,16 @@ def main():
                 ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                          'b-', linewidth=2, alpha=0.8)
             
+            # Draw GT joints with indices
             ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=60, alpha=0.9, edgecolors='darkblue')
+            
+            # Add joint indices as text labels for GT
+            for joint_idx in range(17):
+                ax1.text(x_gt[joint_idx], y_gt[joint_idx], z_gt[joint_idx], 
+                        str(joint_idx), fontsize=8, color='white', weight='bold',
+                        ha='center', va='center')
+            
+            # Highlight hip (joint 14) for GT
             ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=120, marker='*', 
                        alpha=1.0, edgecolors='darkgreen')
             
@@ -436,7 +451,30 @@ def main():
                 y_pred = pred_poses_3d[valid, frame_idx, 1]
                 z_pred = pred_poses_3d[valid, frame_idx, 2]
                 
-                ax2.scatter(x_pred, y_pred, z_pred, c='red', s=60, alpha=0.9, edgecolors='darkred')
+                # Draw all valid joints for MediaPipe
+                ax2.scatter(pred_poses_3d[:, frame_idx, 0], pred_poses_3d[:, frame_idx, 1], 
+                           pred_poses_3d[:, frame_idx, 2], c='red', s=60, alpha=0.9, 
+                           edgecolors='darkred')
+                
+                # Add joint indices as text labels for MediaPipe (all joints)
+                for joint_idx in range(17):
+                    if valid[joint_idx]:
+                        ax2.text(pred_poses_3d[joint_idx, frame_idx, 0], 
+                                pred_poses_3d[joint_idx, frame_idx, 1], 
+                                pred_poses_3d[joint_idx, frame_idx, 2], 
+                                str(joint_idx), fontsize=8, color='white', weight='bold',
+                                ha='center', va='center')
+                    else:
+                        # Show invalid joints with different color
+                        ax2.scatter(pred_poses_3d[joint_idx, frame_idx, 0], 
+                                   pred_poses_3d[joint_idx, frame_idx, 1], 
+                                   pred_poses_3d[joint_idx, frame_idx, 2], 
+                                   c='gray', s=30, alpha=0.5)
+                        ax2.text(pred_poses_3d[joint_idx, frame_idx, 0], 
+                                pred_poses_3d[joint_idx, frame_idx, 1], 
+                                pred_poses_3d[joint_idx, frame_idx, 2], 
+                                str(joint_idx), fontsize=6, color='gray', weight='normal',
+                                ha='center', va='center')
                 
                 # Draw MediaPipe skeleton
                 for connection in connections:
@@ -446,6 +484,7 @@ def main():
                         ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                                  'r-', linewidth=2, alpha=0.8)
                 
+                # Highlight hip (joint 14) for MediaPipe if valid
                 if valid[14]:
                     ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
                                pred_poses_3d[14, frame_idx, 2], c='green', s=120, marker='*', 
@@ -466,7 +505,7 @@ def main():
         ani = FuncAnimation(fig, update, frames=range(num_frames), interval=200, repeat=True, blit=False)
         
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned.gif'
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices.gif'
             print(f"Saving animation to: {output_path}")
             ani.save(output_path, writer='pillow', fps=5, dpi=100)
             print(f"Comparison GIF saved to: {output_path}")
