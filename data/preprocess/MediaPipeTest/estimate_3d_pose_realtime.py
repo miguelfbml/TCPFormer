@@ -222,18 +222,20 @@ def main():
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
     
-    GT_JOINT_NAMES = {
-        0: "Head Top", 1: "Neck", 2: "Right Arm", 3: "Right Forearm", 4: "Right Hand",
-        5: "Left Arm", 6: "Left Forearm", 7: "Left Hand", 8: "Right Up Leg", 9: "Right Leg",
-        10: "Right Foot", 11: "Left Up Leg", 12: "Left Leg", 13: "Left Foot", 14: "Hip",
-        15: "Spine", 16: "Head"
-    }
-    
-    print("Ground Truth Joint Mappings:")
-    for idx, name in GT_JOINT_NAMES.items():
-        print(f"Joint {idx}: {name}")
-    
-    print("\n⚠️  Updated: Head Top (joint 0) now calculated as midpoint between left and right ears")
+    # Only print joint mappings if saving video (for debugging)
+    if args.save_video:
+        GT_JOINT_NAMES = {
+            0: "Head Top", 1: "Neck", 2: "Right Arm", 3: "Right Forearm", 4: "Right Hand",
+            5: "Left Arm", 6: "Left Forearm", 7: "Left Hand", 8: "Right Up Leg", 9: "Right Leg",
+            10: "Right Foot", 11: "Left Up Leg", 12: "Left Leg", 13: "Left Foot", 14: "Hip",
+            15: "Spine", 16: "Head"
+        }
+        
+        print("Ground Truth Joint Mappings:")
+        for idx, name in GT_JOINT_NAMES.items():
+            print(f"Joint {idx}: {name}")
+        
+        print("\n⚠️  Updated: Head Top (joint 0) now calculated as midpoint between left and right ears")
     
     estimator = MediaPipe3DPoseEstimator()
     
@@ -241,6 +243,12 @@ def main():
         gt_poses_3d, seq_name, sample_info = load_test_3d_data_from_dataset_multiple_samples(args)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
+            return
+        
+        # Only proceed with video processing if save-video flag is set
+        if not args.save_video:
+            print(f"Loaded {gt_poses_3d.shape[1]} GT frames for sequence: {seq_name}")
+            print("Use --save-video flag to create visualization")
             return
         
         all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 20)
@@ -304,6 +312,7 @@ def main():
             overall_mpjpe = float('inf')
             print("Could not compute MPJPE - insufficient valid joints")
         
+        # Only create visualization objects when saving video
         all_gt = final_gt_poses.reshape(-1, 3)
         all_pred = pred_poses_3d.reshape(-1, 3)
         valid_gt = all_gt[~np.isnan(all_gt).any(axis=1) & ~np.isinf(all_gt).any(axis=1)]
@@ -322,6 +331,7 @@ def main():
         min_value -= padding
         max_value += padding
         
+        # Create matplotlib figure only when saving
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), subplot_kw={'projection': '3d'})
         
         def update(frame_idx):
@@ -405,21 +415,25 @@ def main():
             
             return ax1, ax2
         
+        # Create and save animation
+        print("Creating animation...")
         ani = FuncAnimation(fig, update, frames=range(num_frames), interval=300, repeat=True, blit=False)
         
-        if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices_fixed_head.gif'
-            print(f"Saving animation to: {output_path}")
-            ani.save(output_path, writer='pillow', fps=5, dpi=120)
-            print(f"Comparison GIF saved to: {output_path}")
-            
-            update(0)
-            plt.tight_layout()
-            static_path = output_path.replace('.gif', '.png')
-            plt.savefig(static_path, dpi=150, bbox_inches='tight')
-            print(f"Static image saved to: {static_path}")
+        output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices_fixed_head.gif'
+        print(f"Saving animation to: {output_path}")
+        ani.save(output_path, writer='pillow', fps=5, dpi=120)
+        print(f"Comparison GIF saved to: {output_path}")
         
-        plt.show()
+        # Save static image
+        update(0)
+        plt.tight_layout()
+        static_path = output_path.replace('.gif', '.png')
+        plt.savefig(static_path, dpi=150, bbox_inches='tight')
+        print(f"Static image saved to: {static_path}")
+        
+        # Clean up matplotlib objects
+        plt.close(fig)
+        del ani, fig, ax1, ax2
         
     finally:
         estimator.close()
