@@ -50,7 +50,7 @@ class MediaPipe3DPoseEstimator:
             model_complexity=2,
             enable_segmentation=False,
             min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_tracking_confidence=0.3
         )
         
         # MediaPipe to GT joint mapping (aligned with provided GT order)
