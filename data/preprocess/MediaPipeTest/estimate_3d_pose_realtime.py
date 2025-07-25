@@ -107,10 +107,6 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     
     image_files.sort()
     
-    # Limit frames to prevent memory issues
-    if num_frames > 1000:
-        print(f"⚠️  Warning: Requested {num_frames} frames, limiting to 1000 to prevent memory issues")
-        num_frames = 1000
     
     # Load frames in smaller batches to manage memory
     frames = []
