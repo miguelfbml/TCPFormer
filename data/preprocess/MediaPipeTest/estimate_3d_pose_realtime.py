@@ -110,7 +110,7 @@ class MediaPipe3DPoseEstimator:
                 
                 # Calculate head top (joint 0) as midpoint between eyebrows and move it up
                 head_top_x = (left_eyebrow_inner.x + right_eyebrow_inner.x) / 2.0
-                head_top_y = (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0 - 0.05  # Move up by 5cm for head top
+                head_top_y = (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0
                 head_top_z = (left_eyebrow_inner.z + right_eyebrow_inner.z) / 2.0
                 
                 pose_3d[0] = [
