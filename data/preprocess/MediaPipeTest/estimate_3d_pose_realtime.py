@@ -161,25 +161,12 @@ class MediaPipe3DPoseEstimator:
 
 def load_mpi_test_frames(sequence_name, num_frames=50):
     """Load video frames from MPI-INF-3DHP test set"""
-    mpi_roots = [
-        '/nas-ctm01/datasets/public/mpi_inf_3dhp',
-        #'../motion3d/MPI-INF-3DHP',
-        #'../motion3d'
-    ]
+
+
     
-    possible_paths = []
-    for root in mpi_roots:
-        possible_paths.extend([
-            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence',
-            f'{root}/mpi_inf_3dhp_test_set/{sequence_name}/imageFrames',
-            f'{root}/test/{sequence_name}/imageSequence',
-        ])
     
-    video_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            video_path = path
-            break
+    video_path = '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
+    
     
     if video_path is None:
         print("Video frames not found.")
