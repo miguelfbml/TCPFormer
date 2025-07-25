@@ -436,7 +436,7 @@ def main():
             for joint_idx in range(17):
                 # Add text with black outline for better visibility
                 text_obj = ax1.text(x_gt[joint_idx], y_gt[joint_idx], z_gt[joint_idx], 
-                        str(joint_idx), fontsize=12, color='yellow', weight='bold',
+                        str(joint_idx), fontsize=24, color='yellow', weight='bold',
                         ha='center', va='center',
                         bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
             
