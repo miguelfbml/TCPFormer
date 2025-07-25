@@ -165,7 +165,7 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
 
     
     
-    video_path = '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
+    video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
     
     
     if video_path is None:
