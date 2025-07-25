@@ -69,12 +69,16 @@ class MediaPipe3DPoseEstimator:
 
         if results.pose_world_landmarks:
             landmarks = results.pose_world_landmarks.landmark
+            
+            # Map MediaPipe landmarks to GT joints
             for mp_idx, gt_idx in self.mp_to_mpi_mapping.items():
                 if mp_idx < len(landmarks):
                     landmark = landmarks[mp_idx]
+                    # MediaPipe world coordinates are in meters, convert to mm
                     pose_3d[gt_idx] = [landmark.x * 1000, landmark.y * 1000, landmark.z * 1000]
                     visibility[gt_idx] = landmark.visibility
 
+            # Estimate head joints from face landmarks
             if len(landmarks) > 10:
                 left_eyebrow_inner = landmarks[2]
                 right_eyebrow_inner = landmarks[5]
@@ -95,16 +99,22 @@ class MediaPipe3DPoseEstimator:
                 ]
                 visibility[16] = (mouth_left.visibility + mouth_right.visibility) / 2.0
 
+            # Estimate missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
                 valid_sources = [j for j in source_joints if visibility[j] > 0.1]
                 if valid_sources:
                     pose_3d[missing_joint] = np.mean([pose_3d[j] for j in valid_sources], axis=0)
                     visibility[missing_joint] = np.mean([visibility[j] for j in valid_sources])
 
-            if visibility[14] > 0.1:
-                pose_3d -= pose_3d[14]
+            # CRITICAL FIX: Make root-relative BEFORE coordinate transformation
+            if visibility[14] > 0.1:  # Hip joint
+                root_pos = pose_3d[14].copy()
+                pose_3d = pose_3d - root_pos
 
-            cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+            # Apply coordinate transformation to match MPI-INF-3DHP coordinate system
+            # MediaPipe: X=right, Y=down, Z=forward
+            # MPI-INF-3DHP: X=right, Y=up, Z=backward
+            cam2real = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)
             pose_3d = pose_3d @ cam2real
 
         return pose_3d, visibility
@@ -190,7 +200,7 @@ def load_test_3d_data_from_dataset(args):
             if current_seq_name != target_seq_name:
                 continue
             
-            if i % 50 == 0:
+            if i % 100 == 0:
                 print(f"Processing sample {i}: {current_seq_name}")
             
             if isinstance(gt_3D, torch.Tensor):
@@ -199,11 +209,12 @@ def load_test_3d_data_from_dataset(args):
                 gt_3D = torch.tensor(gt_3D)
                 
             gt_3D = gt_3D.view(1, -1, 17, 3)
-            gt_3D[:, :, 14] = 0
             
-            # Extract center frame (same as train_3dhp.py evaluation)
+            # CRITICAL FIX: Extract center frame but preserve original GT processing
             center_frame_idx = gt_3D.shape[1] // 2
-            center_frame = gt_3D[0, center_frame_idx]
+            center_frame = gt_3D[0, center_frame_idx]  # Shape: (17, 3)
+            
+            # Make root-relative (same as train_3dhp.py evaluation)
             center_frame = center_frame - center_frame[14:15, :]
             
             if hasattr(center_frame, 'cpu'):
@@ -225,11 +236,19 @@ def load_test_3d_data_from_dataset(args):
     
     # Stack all center frames
     sequence_3d = np.stack(sequence_samples, axis=0).transpose(1, 0, 2)  # (17, T, 3)
+    
+    # CRITICAL FIX: Apply same coordinate transformation as train_3dhp.py
     cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
     sequence_3d = sequence_3d @ cam2real
     
     print(f"Loaded {sequence_3d.shape[1]} frames for sequence: {target_seq_name}")
     print(f"GT sequence shape: {sequence_3d.shape}")
+    
+    # Debug: Print coordinate ranges
+    print(f"GT coordinate ranges:")
+    print(f"  X: {np.min(sequence_3d[:, :, 0]):.1f} to {np.max(sequence_3d[:, :, 0]):.1f} mm")
+    print(f"  Y: {np.min(sequence_3d[:, :, 1]):.1f} to {np.max(sequence_3d[:, :, 1]):.1f} mm")
+    print(f"  Z: {np.min(sequence_3d[:, :, 2]):.1f} to {np.max(sequence_3d[:, :, 2]):.1f} mm")
     
     return sequence_3d, target_seq_name, sequence_info
 
@@ -322,6 +341,14 @@ def evaluate_mediapipe(pred_poses_3d, gt_poses_3d, visibilities):
     pred_poses = pred_poses_3d.transpose(1, 0, 2)  # (T, 17, 3)
     gt_poses = gt_poses_3d.transpose(1, 0, 2)      # (T, 17, 3)
     
+    # Debug: Print coordinate ranges
+    print(f"MediaPipe coordinate ranges:")
+    valid_pred = pred_poses[~np.isnan(pred_poses) & ~np.isinf(pred_poses)]
+    if len(valid_pred) > 0:
+        print(f"  X: {np.min(pred_poses[:, :, 0]):.1f} to {np.max(pred_poses[:, :, 0]):.1f} mm")
+        print(f"  Y: {np.min(pred_poses[:, :, 1]):.1f} to {np.max(pred_poses[:, :, 1]):.1f} mm")
+        print(f"  Z: {np.min(pred_poses[:, :, 2]):.1f} to {np.max(pred_poses[:, :, 2]):.1f} mm")
+    
     # Filter frames with sufficient valid joints
     valid_frames = []
     valid_pred = []
@@ -342,6 +369,11 @@ def evaluate_mediapipe(pred_poses_3d, gt_poses_3d, visibilities):
     valid_gt = np.stack(valid_gt, axis=0)      # (V, 17, 3)
     
     print(f"Evaluating on {len(valid_frames)}/{num_frames} frames with sufficient valid joints")
+    
+    # Debug: Check if poses are reasonable
+    avg_bone_length_gt = np.mean(np.linalg.norm(valid_gt[:, 2, :] - valid_gt[:, 5, :], axis=1))  # Shoulder distance
+    avg_bone_length_pred = np.mean(np.linalg.norm(valid_pred[:, 2, :] - valid_pred[:, 5, :], axis=1))
+    print(f"Average shoulder distance - GT: {avg_bone_length_gt:.1f}mm, MediaPipe: {avg_bone_length_pred:.1f}mm")
     
     # Initialize metrics
     error_sum = AccumLoss()
