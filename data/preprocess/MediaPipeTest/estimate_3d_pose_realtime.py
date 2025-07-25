@@ -136,8 +136,6 @@ class MediaPipe3DPoseEstimator:
                 # Visibility for head is average of mouth visibilities
                 visibility[16] = (mouth_left.visibility + mouth_right.visibility) / 2.0
                 
-                print(f"Head Top (joint 0) calculated from eyebrows: ({head_top_x:.3f}, {head_top_y:.3f}, {head_top_z:.3f})")
-                print(f"Head (joint 16) calculated from mouth: ({head_x:.3f}, {head_y:.3f}, {head_z:.3f})")
             
             # Estimate other missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
@@ -165,8 +163,8 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
     """Load video frames from MPI-INF-3DHP test set"""
     mpi_roots = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
-        '../motion3d/MPI-INF-3DHP',
-        '../motion3d'
+        #'../motion3d/MPI-INF-3DHP',
+        #'../motion3d'
     ]
     
     possible_paths = []
