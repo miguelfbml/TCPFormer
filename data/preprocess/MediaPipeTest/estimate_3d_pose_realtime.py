@@ -470,7 +470,7 @@ def main():
                                    edgecolors='darkred', linewidth=2)
                         # Enhanced text labels for valid joints
                         text_obj = ax2.text(x_pos, y_pos, z_pos, 
-                                str(joint_idx), fontsize=12, color='yellow', weight='bold',
+                                str(joint_idx), fontsize=24, color='yellow', weight='bold',
                                 ha='center', va='center',
                                 bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
                     else:
