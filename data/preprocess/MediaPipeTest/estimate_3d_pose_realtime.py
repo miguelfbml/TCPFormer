@@ -255,9 +255,22 @@ def main():
             print("Failed to load ground truth data.")
             return
         
-        # Load video frames only if saving video
-        if args.save_video:
-            print("Loading video frames for visualization...")
+        # Initialize variables
+        num_frames = min(gt_poses_3d.shape[1], args.num_frames)
+        final_gt_poses = gt_poses_3d[:, :num_frames, :]
+        final_video_frames = None
+        final_frame_indices = list(range(num_frames))
+        
+        print(f"Using {num_frames} frames")
+        print(f"GT shape: {final_gt_poses.shape}")
+        
+        if num_frames == 0:
+            print("No frames available. Exiting.")
+            return
+        
+        # Load video frames only if needed
+        if args.save_video or not args.save_video:
+            print("Loading video frames...")
             all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 20)
             if not all_video_frames:
                 print("No video frames loaded. Exiting.")
@@ -271,7 +284,7 @@ def main():
             sampled_video_frames = []
             sampled_frame_indices = []
             
-            for i in range(gt_poses_3d.shape[1]):
+            for i in range(num_frames):
                 video_idx = i * stride + center_offset
                 if video_idx < len(all_video_frames):
                     frame = all_video_frames[video_idx]
@@ -283,58 +296,12 @@ def main():
                     sampled_video_frames.append(frame)
                     sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
             
-            num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1], args.num_frames)
             final_video_frames = sampled_video_frames[:num_frames]
             final_frame_indices = sampled_frame_indices[:num_frames]
-        else:
-            # For MPJPE calculation only - create dummy frames
-            num_frames = min(gt_poses_3d.shape[1], args.num_frames)
-            print(f"Creating {num_frames} dummy frames for MPJPE calculation...")
-            # Create minimal dummy frames (just black images)
-            dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            final_video_frames = [dummy_frame.copy() for _ in range(num_frames)]
-            final_frame_indices = list(range(num_frames))
         
-        final_gt_poses = gt_poses_3d[:, :num_frames, :]
-        
-        print(f"Using {num_frames} frames")
-        print(f"GT shape: {final_gt_poses.shape}")
-        
-        if num_frames == 0:
-            print("No frames available. Exiting.")
-            return
-        
-        # Process frames in batches to manage memory
-        batch_size = min(args.batch_size, num_frames)
-        print(f"Processing MediaPipe poses in batches of {batch_size}...")
-        
-        pred_poses_3d = []
-        visibilities = []
-        
-        for batch_start in range(0, num_frames, batch_size):
-            batch_end = min(batch_start + batch_size, num_frames)
-            print(f"Processing batch {batch_start//batch_size + 1}/{(num_frames-1)//batch_size + 1}: frames {batch_start}-{batch_end-1}")
-            
-            # Process batch
-            batch_poses = []
-            batch_vis = []
-            
-            for i in range(batch_start, batch_end):
-                pose_3d, visibility = estimator.estimate_3d_pose_from_image(final_video_frames[i])
-                batch_poses.append(pose_3d)
-                batch_vis.append(visibility)
-            
-            # Add to main arrays
-            pred_poses_3d.extend(batch_poses)
-            visibilities.extend(batch_vis)
-            
-            # Clear batch data to free memory
-            del batch_poses, batch_vis
-            gc.collect()
-        
-        # Convert to numpy arrays
-        pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
-        visibilities = np.stack(visibilities, axis=1)  # (17, T)
+        # Process frames in batches to compute MediaPipe poses
+        print(f"Processing MediaPipe poses in batches of {args.batch_size}...")
+        pred_poses_3d, visibilities = process_frame_batch(estimator, final_video_frames, batch_size=args.batch_size)
         
         print("✓ All MediaPipe poses computed")
         
@@ -371,7 +338,7 @@ def main():
             overall_mpjpe = float('inf')
             print("Could not compute MPJPE - insufficient valid joints")
         
-        # Only create visualization if --save-video flag is set
+        # Create visualization only if --save-video flag is set
         if args.save_video:
             print("\nCreating visualization...")
             
@@ -543,7 +510,7 @@ def main():
         
         # Clean up pose data
         del pred_poses_3d, visibilities, final_gt_poses
-        if args.save_video:
+        if final_video_frames is not None:
             del final_video_frames
         
     finally:
