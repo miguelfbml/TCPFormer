@@ -55,7 +55,7 @@ class MediaPipe3DPoseEstimator:
         
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
-            0: 16,    # nose -> head top (REMOVED - will be calculated)
+            0: 16,    # nose -> head
             11: 5,   # left_shoulder -> left arm
             12: 2,   # right_shoulder -> right arm
             13: 6,   # left_elbow -> left forearm
@@ -118,13 +118,6 @@ class MediaPipe3DPoseEstimator:
                 # Visibility for head top is average of ear visibilities
                 visibility[0] = (left_ear.visibility + right_ear.visibility) / 2.0
                 
-                # Also set joint 16 (head) as the midpoint between ears (no offset)
-                pose_3d[16] = [
-                    head_top_x * 1000,  # Convert to mm
-                    (left_ear.y + right_ear.y) / 2.0 * 1000,  # No vertical offset for head
-                    head_top_z * 1000
-                ]
-                visibility[16] = (left_ear.visibility + right_ear.visibility) / 2.0
             
             # Estimate other missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
