@@ -330,7 +330,7 @@ def main():
             
             for ax in [ax1, ax2]:
                 ax.set_xlim3d([min_value[0], max_value[0]])
-                ax.set_ylim3d([min_value[1], max_value[1])
+                ax.set_ylim3d([min_value[1], max_value[1]])
                 ax.set_zlim3d([min_value[2], max_value[2]])
                 ax.set_xlabel('X (mm)', fontsize=12)
                 ax.set_ylabel('Y (mm)', fontsize=12)
