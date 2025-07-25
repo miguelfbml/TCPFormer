@@ -410,7 +410,7 @@ def main():
         if args.save_video:
             output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices_fixed_head.gif'
             print(f"Saving animation to: {output_path}")
-            ani.save(output_path, writer='pillow', fps=3, dpi=120)
+            ani.save(output_path, writer='pillow', fps=5, dpi=120)
             print(f"Comparison GIF saved to: {output_path}")
             
             update(0)
