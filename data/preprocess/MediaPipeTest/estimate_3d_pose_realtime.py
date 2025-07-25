@@ -49,8 +49,8 @@ class MediaPipe3DPoseEstimator:
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
             0: 0,    # nose -> head top
-            7: 16,   # left_ear -> head
-            8: 16,   # right_ear -> head
+            #7: 16,   # left_ear -> head
+            #8: 16,   # right_ear -> head
             11: 5,   # left_shoulder -> left arm
             12: 2,   # right_shoulder -> right arm
             13: 6,   # left_elbow -> left forearm
@@ -70,6 +70,7 @@ class MediaPipe3DPoseEstimator:
             14: [11, 8],    # hip: average of left up leg (hip) and right up leg (hip)
             1: [5, 2],      # neck: average of left arm (shoulder) and right arm (shoulder)
             15: [14, 1],    # spine: average of hip and neck
+            16: [7, 8]
         }
 
     def estimate_3d_pose_from_image(self, image):
@@ -350,7 +351,7 @@ def main():
         pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
         visibilities = np.stack(visibilities, axis=1)  # (17, T)
         
-        print("✓ All MediaPipe poses pre-computed - no processing delays in animation")
+        print("All MediaPipe poses pre-computed - no processing delays in animation")
         
         # Calculate MPJPE
         valid_joints = visibilities > 0.1
