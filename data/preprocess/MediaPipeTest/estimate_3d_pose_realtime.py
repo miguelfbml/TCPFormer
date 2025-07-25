@@ -1,10 +1,3 @@
-'''
-cd preprocess
-
-python3 MediaPipeTest/estimate_3d_pose_realtime.py --sequence-name TS1 --save-video --num-frames 20
-'''
-
-
 import argparse
 import os
 import cv2
@@ -216,7 +209,7 @@ def process_frame_batch(estimator, frames, batch_size=10):
             pose_3d, visibility = estimator.estimate_3d_pose_from_image(frame)
             pred_poses_3d.append(pose_3d)
             visibilities.append(visibility)
-        gc.collect()  # Clear memory after each batch
+        gc.collect()
         print(f"Processed batch {i//batch_size + 1}/{(len(frames) + batch_size - 1)//batch_size}")
     return np.stack(pred_poses_3d, axis=1), np.stack(visibilities, axis=1)
 
@@ -269,6 +262,9 @@ def main():
                 sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
         
         num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1], args.num_frames)
+        if num_frames < args.num_frames:
+            print(f"Requested {args.num_frames} frames, but only {num_frames} found. Using maximum available frames.")
+        
         final_video_frames = sampled_video_frames[:num_frames]
         final_gt_poses = gt_poses_3d[:, :num_frames, :]
         final_frame_indices = sampled_frame_indices[:num_frames]
@@ -334,7 +330,7 @@ def main():
             
             for ax in [ax1, ax2]:
                 ax.set_xlim3d([min_value[0], max_value[0]])
-                ax.set_ylim3d([min_value[1], max_value[1]])
+                ax.set_ylim3d([min_value[1], max_value[1])
                 ax.set_zlim3d([min_value[2], max_value[2]])
                 ax.set_xlabel('X (mm)', fontsize=12)
                 ax.set_ylabel('Y (mm)', fontsize=12)
