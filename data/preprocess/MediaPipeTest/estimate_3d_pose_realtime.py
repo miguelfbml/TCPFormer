@@ -92,9 +92,13 @@ class MediaPipe3DPoseEstimator:
         self.pose.close()
 
 def load_mpi_test_frames(sequence_name, num_frames=50):
+    """Load video frames from MPI-INF-3DHP test set"""
+    
     video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
+    
+    # Check if the path exists
     if not os.path.exists(video_path):
-        print("Video frames not found.")
+        print(f"Video frames not found at: {video_path}")
         return None, []
     
     image_files = []
@@ -102,19 +106,33 @@ def load_mpi_test_frames(sequence_name, num_frames=50):
         image_files.extend(glob.glob(os.path.join(video_path, ext)))
     
     image_files.sort()
+    
+    # Limit frames to prevent memory issues
+    if num_frames > 1000:
+        print(f"⚠️  Warning: Requested {num_frames} frames, limiting to 1000 to prevent memory issues")
+        num_frames = 1000
+    
+    # Load frames in smaller batches to manage memory
     frames = []
     frame_indices = []
     
-    for img_path in image_files[:num_frames]:
+    print(f"Loading {min(num_frames, len(image_files))} frames...")
+    
+    for i, img_path in enumerate(image_files[:num_frames]):
+        if i % 100 == 0:
+            print(f"  Loaded {i}/{min(num_frames, len(image_files))} frames")
+        
         frame = cv2.imread(img_path)
         if frame is not None:
             frames.append(frame)
             try:
+                # Extract frame number from filename
                 frame_idx = int(os.path.basename(img_path).split('_')[-1].split('.')[0])
                 frame_indices.append(frame_idx)
             except:
                 frame_indices.append(len(frame_indices))
     
+    print(f"✓ Loaded {len(frames)} frames")
     return frames, frame_indices
 
 def load_test_3d_data_from_dataset_multiple_samples(args):
@@ -219,7 +237,14 @@ def main():
     parser.add_argument('--num-frames', type=int, default=20, help='Number of frames to process')
     parser.add_argument('--save-video', action='store_true', help='Save animation as GIF')
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
+    parser.add_argument('--batch-size', type=int, default=50, help='Process frames in batches to manage memory')
+    parser.add_argument('--resize-frames', action='store_true', help='Resize frames to 640x480 to save memory')
     args = parser.parse_args()
+    
+    # Memory management warnings
+    if args.num_frames > 200:
+        print(f"⚠️  Warning: Processing {args.num_frames} frames may use significant memory")
+        print("Consider using --batch-size or --resize-frames to reduce memory usage")
     
     estimator = MediaPipe3DPoseEstimator()
     
@@ -249,7 +274,13 @@ def main():
             for i in range(gt_poses_3d.shape[1]):
                 video_idx = i * stride + center_offset
                 if video_idx < len(all_video_frames):
-                    sampled_video_frames.append(all_video_frames[video_idx])
+                    frame = all_video_frames[video_idx]
+                    
+                    # Resize frames if requested to save memory
+                    if args.resize_frames:
+                        frame = cv2.resize(frame, (640, 480))
+                    
+                    sampled_video_frames.append(frame)
                     sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
             
             num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1], args.num_frames)
@@ -273,18 +304,52 @@ def main():
             print("No frames available. Exiting.")
             return
         
-        # Process MediaPipe poses
-        print("Computing MediaPipe 3D poses...")
-        pred_poses_3d, visibilities = process_frame_batch(estimator, final_video_frames, batch_size=10)
+        # Process frames in batches to manage memory
+        batch_size = min(args.batch_size, num_frames)
+        print(f"Processing MediaPipe poses in batches of {batch_size}...")
+        
+        pred_poses_3d = []
+        visibilities = []
+        
+        for batch_start in range(0, num_frames, batch_size):
+            batch_end = min(batch_start + batch_size, num_frames)
+            print(f"Processing batch {batch_start//batch_size + 1}/{(num_frames-1)//batch_size + 1}: frames {batch_start}-{batch_end-1}")
+            
+            # Process batch
+            batch_poses = []
+            batch_vis = []
+            
+            for i in range(batch_start, batch_end):
+                pose_3d, visibility = estimator.estimate_3d_pose_from_image(final_video_frames[i])
+                batch_poses.append(pose_3d)
+                batch_vis.append(visibility)
+            
+            # Add to main arrays
+            pred_poses_3d.extend(batch_poses)
+            visibilities.extend(batch_vis)
+            
+            # Clear batch data to free memory
+            del batch_poses, batch_vis
+            gc.collect()
+        
+        # Convert to numpy arrays
+        pred_poses_3d = np.stack(pred_poses_3d, axis=1)  # (17, T, 3)
+        visibilities = np.stack(visibilities, axis=1)  # (17, T)
+        
+        print("✓ All MediaPipe poses computed")
         
         # Calculate MPJPE
+        print("Computing MPJPE...")
         valid_joints = visibilities > 0.1
         mpjpe = np.zeros(num_frames, dtype=np.float32)
         valid_frame_count = 0
         
         for t in range(num_frames):
+            if t % 100 == 0:
+                print(f"  MPJPE progress: {t}/{num_frames}")
+            
             valid = valid_joints[:, t]
-            if np.sum(valid) > 5:
+            if np.sum(valid) > 5:  # Need at least 5 valid joints
                 mpjpe[t] = np.mean(np.linalg.norm(
                     final_gt_poses[valid, t, :] - pred_poses_3d[valid, t, :], axis=1))
                 valid_frame_count += 1
@@ -294,14 +359,28 @@ def main():
         valid_mpjpe = mpjpe[~np.isnan(mpjpe)]
         if len(valid_mpjpe) > 0:
             overall_mpjpe = np.mean(valid_mpjpe)
-            print(f"Overall MPJPE: {overall_mpjpe:.2f} mm (computed on {valid_frame_count}/{num_frames} frames)")
+            print(f"\nOverall MPJPE: {overall_mpjpe:.2f} mm (computed on {valid_frame_count}/{num_frames} frames)")
+            
+            # Print per-frame MPJPE statistics
+            print(f"MPJPE Statistics:")
+            print(f"  Mean: {overall_mpjpe:.2f} mm")
+            print(f"  Min:  {np.min(valid_mpjpe):.2f} mm")
+            print(f"  Max:  {np.max(valid_mpjpe):.2f} mm")
+            print(f"  Std:  {np.std(valid_mpjpe):.2f} mm")
         else:
             overall_mpjpe = float('inf')
             print("Could not compute MPJPE - insufficient valid joints")
         
         # Only create visualization if --save-video flag is set
         if args.save_video:
-            print("Creating visualization...")
+            print("\nCreating visualization...")
+            
+            # For very large datasets, ask user if they want visualization
+            if num_frames > 100:
+                response = input(f"Create animation with {num_frames} frames? This may take time and memory (y/n): ")
+                if response.lower() != 'y':
+                    print("Skipping visualization. Results saved.")
+                    return
             
             # Only print joint mappings when creating video
             GT_JOINT_NAMES = {
@@ -349,31 +428,39 @@ def main():
                     ax.set_ylabel('Y (mm)', fontsize=12)
                     ax.set_zlabel('Z (mm)', fontsize=12)
                 
+                # Plot ground truth
                 ax1.set_title(f'Ground Truth\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
                 x_gt = final_gt_poses[:, frame_idx, 0]
                 y_gt = final_gt_poses[:, frame_idx, 1]
                 z_gt = final_gt_poses[:, frame_idx, 2]
                 
+                # Draw GT skeleton
                 for connection in connections:
                     start = final_gt_poses[connection[0], frame_idx, :]
                     end = final_gt_poses[connection[1], frame_idx, :]
                     ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                              'b-', linewidth=3, alpha=0.8)
                 
+                # Draw GT joints with larger markers
                 ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=100, alpha=0.9, edgecolors='darkblue', linewidth=2)
+                
+                # Add joint indices as text labels for GT with enhanced visibility
                 for joint_idx in range(17):
                     ax1.text(x_gt[joint_idx], y_gt[joint_idx], z_gt[joint_idx], 
-                             str(joint_idx), fontsize=24, color='yellow', weight='bold',
-                             ha='center', va='center',
-                             bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
+                            str(joint_idx), fontsize=24, color='yellow', weight='bold',
+                            ha='center', va='center',
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
                 
+                # Highlight hip (joint 14) for GT
                 ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=200, marker='*', 
                            alpha=1.0, edgecolors='darkgreen', linewidth=3)
                 
+                # Plot MediaPipe prediction
                 ax2.set_title(f'MediaPipe Prediction\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
                 valid = visibilities[:, frame_idx] > 0.1
                 
                 if np.any(valid):
+                    # Draw MediaPipe skeleton first
                     for connection in connections:
                         if valid[connection[0]] and valid[connection[1]]:
                             start = pred_poses_3d[connection[0], frame_idx, :]
@@ -381,6 +468,7 @@ def main():
                             ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
                                      'r-', linewidth=3, alpha=0.8)
                     
+                    # Draw all joints for MediaPipe with enhanced visibility
                     for joint_idx in range(17):
                         x_pos = pred_poses_3d[joint_idx, frame_idx, 0]
                         y_pos = pred_poses_3d[joint_idx, frame_idx, 1]
@@ -403,11 +491,13 @@ def main():
                                     ha='center', va='center',
                                     bbox=dict(boxstyle="round,pad=0.2", facecolor='gray', alpha=0.6, edgecolor='black'))
                     
+                    # Highlight hip (joint 14) for MediaPipe if valid
                     if valid[14]:
                         ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
                                    pred_poses_3d[14, frame_idx, 2], c='green', s=200, marker='*', 
                                    alpha=1.0, edgecolors='darkgreen', linewidth=3)
                 
+                # Update main title with MPJPE
                 frame_error = mpjpe[frame_idx] if not np.isnan(mpjpe[frame_idx]) else 0
                 fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
                             f'Frame {frame_idx+1}/{num_frames} '
@@ -418,13 +508,18 @@ def main():
                 
                 return ax1, ax2
             
-            # Create and save animation
-            print("Creating animation...")
-            ani = FuncAnimation(fig, update, frames=range(num_frames), interval=300, repeat=True, blit=False)
+            # Create animation with reduced interval for large datasets
+            interval = 300 if num_frames <= 50 else 100
+            ani = FuncAnimation(fig, update, frames=range(num_frames), interval=interval, repeat=True, blit=False)
             
             output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_mpjpe_{overall_mpjpe:.1f}mm.gif'
             print(f"Saving animation to: {output_path}")
-            ani.save(output_path, writer='pillow', fps=5, dpi=120)
+            
+            # Reduce quality for large animations
+            dpi = 120 if num_frames <= 100 else 80
+            fps = 3 if num_frames <= 100 else 5
+            
+            ani.save(output_path, writer='pillow', fps=fps, dpi=dpi)
             print(f"Comparison GIF saved to: {output_path}")
             
             # Save static image
@@ -443,7 +538,7 @@ def main():
         
         else:
             # No visualization mode
-            print(f"MPJPE calculation completed for sequence {seq_name}")
+            print(f"\nMPJPE calculation completed for sequence {seq_name}")
             print("Use --save-video flag to create visualization")
         
         # Clean up pose data
