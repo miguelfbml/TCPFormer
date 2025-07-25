@@ -56,6 +56,7 @@ class MediaPipe3DPoseEstimator:
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
             # 0: 0,    # nose -> head top (REMOVED - will be calculated)
+            # 16: 16,  # head will be calculated from mouth landmarks
             11: 5,   # left_shoulder -> left arm
             12: 2,   # right_shoulder -> right arm
             13: 6,   # left_elbow -> left forearm
@@ -99,12 +100,14 @@ class MediaPipe3DPoseEstimator:
                     ]
                     visibility[gt_idx] = landmark.visibility
             
-            # Calculate head top (joint 0) as midpoint between left and right ears
-            if len(landmarks) > 8:  # Ensure we have ear landmarks
+            # Calculate head landmarks using ears and mouth
+            if len(landmarks) > 10:  # Ensure we have enough landmarks
                 left_ear = landmarks[7]   # MediaPipe left ear
                 right_ear = landmarks[8]  # MediaPipe right ear
+                mouth_left = landmarks[9]   # MediaPipe mouth left
+                mouth_right = landmarks[10] # MediaPipe mouth right
                 
-                # Calculate exact midpoint between ears and move it up slightly for head top
+                # Calculate head top (joint 0) as midpoint between ears and move it up
                 head_top_x = (left_ear.x + right_ear.x) / 2.0
                 head_top_y = (left_ear.y + right_ear.y) / 2.0 - 0.08  # Move up by 8cm for head top
                 head_top_z = (left_ear.z + right_ear.z) / 2.0
@@ -118,13 +121,21 @@ class MediaPipe3DPoseEstimator:
                 # Visibility for head top is average of ear visibilities
                 visibility[0] = (left_ear.visibility + right_ear.visibility) / 2.0
                 
-                # Also set joint 16 (head) as the midpoint between ears (no offset)
+                # Calculate head (joint 16) as midpoint between mouth landmarks
+                head_x = (mouth_left.x + mouth_right.x) / 2.0
+                head_y = (mouth_left.y + mouth_right.y) / 2.0
+                head_z = (mouth_left.z + mouth_right.z) / 2.0
+                
                 pose_3d[16] = [
-                    head_top_x * 1000,  # Convert to mm
-                    (left_ear.y + right_ear.y) / 2.0 * 1000,  # No vertical offset for head
-                    head_top_z * 1000
+                    head_x * 1000,  # Convert to mm
+                    head_y * 1000,
+                    head_z * 1000
                 ]
-                visibility[16] = (left_ear.visibility + right_ear.visibility) / 2.0
+                
+                # Visibility for head is average of mouth visibilities
+                visibility[16] = (mouth_left.visibility + mouth_right.visibility) / 2.0
+                
+                print(f"Head (joint 16) calculated from mouth: ({head_x:.3f}, {head_y:.3f}, {head_z:.3f})")
             
             # Estimate other missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
