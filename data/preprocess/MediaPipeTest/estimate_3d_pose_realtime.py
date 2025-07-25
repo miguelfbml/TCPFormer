@@ -196,7 +196,6 @@ def load_test_3d_data_from_dataset_multiple_samples(args):
     
     print(f"Loaded {sequence_3d.shape[1]} center frames from {len(sequence_samples)} samples for sequence: {target_seq_name}")
     print(f"GT sequence shape: {sequence_3d.shape}")
-    print(f"Center frame is index {27//2} = {27//2} from each 27-frame sample")
     
     return sequence_3d, target_seq_name, sample_info
 
@@ -222,75 +221,63 @@ def main():
     parser.add_argument('--frame-start', type=int, default=0, help='Starting frame for comparison')
     args = parser.parse_args()
     
-    # Only print joint mappings if saving video (for debugging)
-    if args.save_video:
-        GT_JOINT_NAMES = {
-            0: "Head Top", 1: "Neck", 2: "Right Arm", 3: "Right Forearm", 4: "Right Hand",
-            5: "Left Arm", 6: "Left Forearm", 7: "Left Hand", 8: "Right Up Leg", 9: "Right Leg",
-            10: "Right Foot", 11: "Left Up Leg", 12: "Left Leg", 13: "Left Foot", 14: "Hip",
-            15: "Spine", 16: "Head"
-        }
-        
-        print("Ground Truth Joint Mappings:")
-        for idx, name in GT_JOINT_NAMES.items():
-            print(f"Joint {idx}: {name}")
-        
-        print("\n⚠️  Updated: Head Top (joint 0) now calculated as midpoint between left and right ears")
-    
     estimator = MediaPipe3DPoseEstimator()
     
     try:
+        # Load GT data
         gt_poses_3d, seq_name, sample_info = load_test_3d_data_from_dataset_multiple_samples(args)
         if gt_poses_3d is None:
             print("Failed to load ground truth data.")
             return
         
-        # Only proceed with video processing if save-video flag is set
-        if not args.save_video:
-            print(f"Loaded {gt_poses_3d.shape[1]} GT frames for sequence: {seq_name}")
-            print("Use --save-video flag to create visualization")
-            return
+        # Load video frames only if saving video
+        if args.save_video:
+            print("Loading video frames for visualization...")
+            all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 20)
+            if not all_video_frames:
+                print("No video frames loaded. Exiting.")
+                return
+            
+            print(f"Loaded {len(all_video_frames)} video frames")
+            
+            # Sample video frames with stride pattern
+            stride = 9
+            center_offset = 13
+            sampled_video_frames = []
+            sampled_frame_indices = []
+            
+            for i in range(gt_poses_3d.shape[1]):
+                video_idx = i * stride + center_offset
+                if video_idx < len(all_video_frames):
+                    sampled_video_frames.append(all_video_frames[video_idx])
+                    sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
+            
+            num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1], args.num_frames)
+            final_video_frames = sampled_video_frames[:num_frames]
+            final_frame_indices = sampled_frame_indices[:num_frames]
+        else:
+            # For MPJPE calculation only - create dummy frames
+            num_frames = min(gt_poses_3d.shape[1], args.num_frames)
+            print(f"Creating {num_frames} dummy frames for MPJPE calculation...")
+            # Create minimal dummy frames (just black images)
+            dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            final_video_frames = [dummy_frame.copy() for _ in range(num_frames)]
+            final_frame_indices = list(range(num_frames))
         
-        all_video_frames, all_video_frame_indices = load_mpi_test_frames(seq_name, args.num_frames * 20)
-        if not all_video_frames:
-            print("No video frames loaded. Exiting.")
-            return
-        
-        print(f"Loaded {len(all_video_frames)} video frames")
-        
-        stride = 9
-        center_offset = 13
-        sampled_video_frames = []
-        sampled_frame_indices = []
-        
-        for i in range(gt_poses_3d.shape[1]):
-            video_idx = i * stride + center_offset
-            if video_idx < len(all_video_frames):
-                sampled_video_frames.append(all_video_frames[video_idx])
-                sampled_frame_indices.append(all_video_frame_indices[video_idx] if video_idx < len(all_video_frame_indices) else video_idx)
-        
-        num_frames = min(len(sampled_video_frames), gt_poses_3d.shape[1], args.num_frames)
-        if num_frames < args.num_frames:
-            print(f"Requested {args.num_frames} frames, but only {num_frames} found. Using maximum available frames.")
-        
-        final_video_frames = sampled_video_frames[:num_frames]
         final_gt_poses = gt_poses_3d[:, :num_frames, :]
-        final_frame_indices = sampled_frame_indices[:num_frames]
         
-        print(f"Using {num_frames} synchronized frames")
-        print(f"Video frame pattern: stride={stride}, center_offset={center_offset}")
-        print(f"Video frame indices: {final_frame_indices[:10]}...")
+        print(f"Using {num_frames} frames")
         print(f"GT shape: {final_gt_poses.shape}")
         
         if num_frames == 0:
             print("No frames available. Exiting.")
             return
         
-        print("Pre-computing MediaPipe 3D poses for all frames in batches...")
+        # Process MediaPipe poses
+        print("Computing MediaPipe 3D poses...")
         pred_poses_3d, visibilities = process_frame_batch(estimator, final_video_frames, batch_size=10)
         
-        print("✓ All MediaPipe poses pre-computed - no processing delays in animation")
-        
+        # Calculate MPJPE
         valid_joints = visibilities > 0.1
         mpjpe = np.zeros(num_frames, dtype=np.float32)
         valid_frame_count = 0
@@ -312,128 +299,157 @@ def main():
             overall_mpjpe = float('inf')
             print("Could not compute MPJPE - insufficient valid joints")
         
-        # Only create visualization objects when saving video
-        all_gt = final_gt_poses.reshape(-1, 3)
-        all_pred = pred_poses_3d.reshape(-1, 3)
-        valid_gt = all_gt[~np.isnan(all_gt).any(axis=1) & ~np.isinf(all_gt).any(axis=1)]
-        valid_pred = all_pred[~np.isnan(all_pred).any(axis=1) & ~np.isinf(all_pred).any(axis=1)]
-        
-        if len(valid_gt) > 0 and len(valid_pred) > 0:
-            all_poses = np.vstack([valid_gt, valid_pred])
-        elif len(valid_gt) > 0:
-            all_poses = valid_gt
-        else:
-            all_poses = valid_pred
+        # Only create visualization if --save-video flag is set
+        if args.save_video:
+            print("Creating visualization...")
             
-        min_value = np.min(all_poses, axis=0)
-        max_value = np.max(all_poses, axis=0)
-        padding = (max_value - min_value) * 0.1
-        min_value -= padding
-        max_value += padding
-        
-        # Create matplotlib figure only when saving
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), subplot_kw={'projection': '3d'})
-        
-        def update(frame_idx):
-            ax1.clear()
-            ax2.clear()
+            # Only print joint mappings when creating video
+            GT_JOINT_NAMES = {
+                0: "Head Top", 1: "Neck", 2: "Right Arm", 3: "Right Forearm", 4: "Right Hand",
+                5: "Left Arm", 6: "Left Forearm", 7: "Left Hand", 8: "Right Up Leg", 9: "Right Leg",
+                10: "Right Foot", 11: "Left Up Leg", 12: "Left Leg", 13: "Left Foot", 14: "Hip",
+                15: "Spine", 16: "Head"
+            }
             
-            for ax in [ax1, ax2]:
-                ax.set_xlim3d([min_value[0], max_value[0]])
-                ax.set_ylim3d([min_value[1], max_value[1]])
-                ax.set_zlim3d([min_value[2], max_value[2]])
-                ax.set_xlabel('X (mm)', fontsize=12)
-                ax.set_ylabel('Y (mm)', fontsize=12)
-                ax.set_zlabel('Z (mm)', fontsize=12)
+            print("Ground Truth Joint Mappings:")
+            for idx, name in GT_JOINT_NAMES.items():
+                print(f"Joint {idx}: {name}")
             
-            ax1.set_title(f'Ground Truth\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
-            x_gt = final_gt_poses[:, frame_idx, 0]
-            y_gt = final_gt_poses[:, frame_idx, 1]
-            z_gt = final_gt_poses[:, frame_idx, 2]
+            # Set up visualization bounds
+            all_gt = final_gt_poses.reshape(-1, 3)
+            all_pred = pred_poses_3d.reshape(-1, 3)
+            valid_gt = all_gt[~np.isnan(all_gt).any(axis=1) & ~np.isinf(all_gt).any(axis=1)]
+            valid_pred = all_pred[~np.isnan(all_pred).any(axis=1) & ~np.isinf(all_pred).any(axis=1)]
             
-            for connection in connections:
-                start = final_gt_poses[connection[0], frame_idx, :]
-                end = final_gt_poses[connection[1], frame_idx, :]
-                ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
-                         'b-', linewidth=3, alpha=0.8)
+            if len(valid_gt) > 0 and len(valid_pred) > 0:
+                all_poses = np.vstack([valid_gt, valid_pred])
+            elif len(valid_gt) > 0:
+                all_poses = valid_gt
+            else:
+                all_poses = valid_pred
+                
+            min_value = np.min(all_poses, axis=0)
+            max_value = np.max(all_poses, axis=0)
+            padding = (max_value - min_value) * 0.1
+            min_value -= padding
+            max_value += padding
             
-            ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=100, alpha=0.9, edgecolors='darkblue', linewidth=2)
-            for joint_idx in range(17):
-                ax1.text(x_gt[joint_idx], y_gt[joint_idx], z_gt[joint_idx], 
-                         str(joint_idx), fontsize=24, color='yellow', weight='bold',
-                         ha='center', va='center',
-                         bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
+            # Create matplotlib figure
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), subplot_kw={'projection': '3d'})
             
-            ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=200, marker='*', 
-                       alpha=1.0, edgecolors='darkgreen', linewidth=3)
-            
-            ax2.set_title(f'MediaPipe Prediction\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
-            valid = visibilities[:, frame_idx] > 0.1
-            
-            if np.any(valid):
+            def update(frame_idx):
+                ax1.clear()
+                ax2.clear()
+                
+                for ax in [ax1, ax2]:
+                    ax.set_xlim3d([min_value[0], max_value[0]])
+                    ax.set_ylim3d([min_value[1], max_value[1]])
+                    ax.set_zlim3d([min_value[2], max_value[2]])
+                    ax.set_xlabel('X (mm)', fontsize=12)
+                    ax.set_ylabel('Y (mm)', fontsize=12)
+                    ax.set_zlabel('Z (mm)', fontsize=12)
+                
+                ax1.set_title(f'Ground Truth\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
+                x_gt = final_gt_poses[:, frame_idx, 0]
+                y_gt = final_gt_poses[:, frame_idx, 1]
+                z_gt = final_gt_poses[:, frame_idx, 2]
+                
                 for connection in connections:
-                    if valid[connection[0]] and valid[connection[1]]:
-                        start = pred_poses_3d[connection[0], frame_idx, :]
-                        end = pred_poses_3d[connection[1], frame_idx, :]
-                        ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
-                                 'r-', linewidth=3, alpha=0.8)
+                    start = final_gt_poses[connection[0], frame_idx, :]
+                    end = final_gt_poses[connection[1], frame_idx, :]
+                    ax1.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
+                             'b-', linewidth=3, alpha=0.8)
                 
+                ax1.scatter(x_gt, y_gt, z_gt, c='blue', s=100, alpha=0.9, edgecolors='darkblue', linewidth=2)
                 for joint_idx in range(17):
-                    x_pos = pred_poses_3d[joint_idx, frame_idx, 0]
-                    y_pos = pred_poses_3d[joint_idx, frame_idx, 1]
-                    z_pos = pred_poses_3d[joint_idx, frame_idx, 2]
-                    
-                    if valid[joint_idx]:
-                        ax2.scatter(x_pos, y_pos, z_pos, 
-                                   c='red', s=100, alpha=0.9, 
-                                   edgecolors='darkred', linewidth=2)
-                        ax2.text(x_pos, y_pos, z_pos, 
-                                str(joint_idx), fontsize=24, color='yellow', weight='bold',
-                                ha='center', va='center',
-                                bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
-                    else:
-                        ax2.scatter(x_pos, y_pos, z_pos, 
-                                   c='gray', s=50, alpha=0.5, 
-                                   edgecolors='black', linewidth=1)
-                        ax2.text(x_pos, y_pos, z_pos, 
-                                str(joint_idx), fontsize=10, color='white', weight='normal',
-                                ha='center', va='center',
-                                bbox=dict(boxstyle="round,pad=0.2", facecolor='gray', alpha=0.6, edgecolor='black'))
+                    ax1.text(x_gt[joint_idx], y_gt[joint_idx], z_gt[joint_idx], 
+                             str(joint_idx), fontsize=24, color='yellow', weight='bold',
+                             ha='center', va='center',
+                             bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
                 
-                if valid[14]:
-                    ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
-                               pred_poses_3d[14, frame_idx, 2], c='green', s=200, marker='*', 
-                               alpha=1.0, edgecolors='darkgreen', linewidth=3)
+                ax1.scatter(x_gt[14], y_gt[14], z_gt[14], c='green', s=200, marker='*', 
+                           alpha=1.0, edgecolors='darkgreen', linewidth=3)
+                
+                ax2.set_title(f'MediaPipe Prediction\n(Video Frame {final_frame_indices[frame_idx]})', fontsize=14, pad=20)
+                valid = visibilities[:, frame_idx] > 0.1
+                
+                if np.any(valid):
+                    for connection in connections:
+                        if valid[connection[0]] and valid[connection[1]]:
+                            start = pred_poses_3d[connection[0], frame_idx, :]
+                            end = pred_poses_3d[connection[1], frame_idx, :]
+                            ax2.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], 
+                                     'r-', linewidth=3, alpha=0.8)
+                    
+                    for joint_idx in range(17):
+                        x_pos = pred_poses_3d[joint_idx, frame_idx, 0]
+                        y_pos = pred_poses_3d[joint_idx, frame_idx, 1]
+                        z_pos = pred_poses_3d[joint_idx, frame_idx, 2]
+                        
+                        if valid[joint_idx]:
+                            ax2.scatter(x_pos, y_pos, z_pos, 
+                                       c='red', s=100, alpha=0.9, 
+                                       edgecolors='darkred', linewidth=2)
+                            ax2.text(x_pos, y_pos, z_pos, 
+                                    str(joint_idx), fontsize=24, color='yellow', weight='bold',
+                                    ha='center', va='center',
+                                    bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.7, edgecolor='white'))
+                        else:
+                            ax2.scatter(x_pos, y_pos, z_pos, 
+                                       c='gray', s=50, alpha=0.5, 
+                                       edgecolors='black', linewidth=1)
+                            ax2.text(x_pos, y_pos, z_pos, 
+                                    str(joint_idx), fontsize=10, color='white', weight='normal',
+                                    ha='center', va='center',
+                                    bbox=dict(boxstyle="round,pad=0.2", facecolor='gray', alpha=0.6, edgecolor='black'))
+                    
+                    if valid[14]:
+                        ax2.scatter(pred_poses_3d[14, frame_idx, 0], pred_poses_3d[14, frame_idx, 1], 
+                                   pred_poses_3d[14, frame_idx, 2], c='green', s=200, marker='*', 
+                                   alpha=1.0, edgecolors='darkgreen', linewidth=3)
+                
+                frame_error = mpjpe[frame_idx] if not np.isnan(mpjpe[frame_idx]) else 0
+                fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
+                            f'Frame {frame_idx+1}/{num_frames} '
+                            f'(Video Frame {final_frame_indices[frame_idx]}) | '
+                            f'MPJPE: {frame_error:.1f}mm | '
+                            f'Valid Joints: {np.sum(valid)}/17', 
+                            fontsize=16, y=0.95)
+                
+                return ax1, ax2
             
-            frame_error = mpjpe[frame_idx] if not np.isnan(mpjpe[frame_idx]) else 0
-            fig.suptitle(f'Ground Truth vs MediaPipe - {seq_name}\n'
-                        f'Frame {frame_idx+1}/{num_frames} '
-                        f'(Video Frame {final_frame_indices[frame_idx]}) | '
-                        f'MPJPE: {frame_error:.1f}mm | '
-                        f'Valid Joints: {np.sum(valid)}/17', 
-                        fontsize=16, y=0.95)
+            # Create and save animation
+            print("Creating animation...")
+            ani = FuncAnimation(fig, update, frames=range(num_frames), interval=300, repeat=True, blit=False)
             
-            return ax1, ax2
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_mpjpe_{overall_mpjpe:.1f}mm.gif'
+            print(f"Saving animation to: {output_path}")
+            ani.save(output_path, writer='pillow', fps=5, dpi=120)
+            print(f"Comparison GIF saved to: {output_path}")
+            
+            # Save static image
+            update(0)
+            plt.tight_layout()
+            static_path = output_path.replace('.gif', '.png')
+            plt.savefig(static_path, dpi=150, bbox_inches='tight')
+            print(f"Static image saved to: {static_path}")
+            
+            # Clean up matplotlib objects
+            plt.close(fig)
+            del ani, fig, ax1, ax2
+            
+            # Clean up visualization data
+            del all_gt, all_pred, valid_gt, valid_pred, all_poses
         
-        # Create and save animation
-        print("Creating animation...")
-        ani = FuncAnimation(fig, update, frames=range(num_frames), interval=300, repeat=True, blit=False)
+        else:
+            # No visualization mode
+            print(f"MPJPE calculation completed for sequence {seq_name}")
+            print("Use --save-video flag to create visualization")
         
-        output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices_fixed_head.gif'
-        print(f"Saving animation to: {output_path}")
-        ani.save(output_path, writer='pillow', fps=5, dpi=120)
-        print(f"Comparison GIF saved to: {output_path}")
-        
-        # Save static image
-        update(0)
-        plt.tight_layout()
-        static_path = output_path.replace('.gif', '.png')
-        plt.savefig(static_path, dpi=150, bbox_inches='tight')
-        print(f"Static image saved to: {static_path}")
-        
-        # Clean up matplotlib objects
-        plt.close(fig)
-        del ani, fig, ax1, ax2
+        # Clean up pose data
+        del pred_poses_3d, visibilities, final_gt_poses
+        if args.save_video:
+            del final_video_frames
         
     finally:
         estimator.close()
