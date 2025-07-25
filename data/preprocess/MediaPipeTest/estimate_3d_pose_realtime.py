@@ -55,7 +55,7 @@ class MediaPipe3DPoseEstimator:
         
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
-            0: 0,    # nose -> head top
+            # 0: 0,    # nose -> head top (REMOVED - will be calculated)
             7: 16,   # left_ear -> head
             8: 16,   # right_ear -> head
             11: 5,   # left_shoulder -> left arm
@@ -74,6 +74,7 @@ class MediaPipe3DPoseEstimator:
         
         # Estimation for missing joints
         self.missing_joints_estimation = {
+            0: [7, 8],      # head top: average of left_ear and right_ear (UPDATED)
             14: [11, 8],    # hip: average of left up leg (hip) and right up leg (hip)
             1: [5, 2],      # neck: average of left arm (shoulder) and right arm (shoulder)
             15: [14, 1],    # spine: average of hip and neck
@@ -101,8 +102,30 @@ class MediaPipe3DPoseEstimator:
                     ]
                     visibility[gt_idx] = landmark.visibility
             
-            # Estimate missing joints
+            # Calculate head top (joint 0) as midpoint between left and right ears
+            if len(landmarks) > 8:  # Ensure we have ear landmarks
+                left_ear = landmarks[7]   # MediaPipe left ear
+                right_ear = landmarks[8]  # MediaPipe right ear
+                
+                # Calculate midpoint between ears and move it up slightly for head top
+                head_top_x = (left_ear.x + right_ear.x) / 2
+                head_top_y = (left_ear.y + right_ear.y) / 2 - 0.05  # Move up by 5cm
+                head_top_z = (left_ear.z + right_ear.z) / 2
+                
+                pose_3d[0] = [
+                    head_top_x * 1000,  # Convert to mm
+                    head_top_y * 1000,
+                    head_top_z * 1000
+                ]
+                
+                # Visibility for head top is average of ear visibilities
+                visibility[0] = (left_ear.visibility + right_ear.visibility) / 2
+            
+            # Estimate other missing joints
             for missing_joint, source_joints in self.missing_joints_estimation.items():
+                if missing_joint == 0:  # Skip head top as we calculated it above
+                    continue
+                    
                 valid_sources = [j for j in source_joints if visibility[j] > 0.1]
                 if valid_sources:
                     pose_3d[missing_joint] = np.mean([pose_3d[j] for j in valid_sources], axis=0)
@@ -291,6 +314,8 @@ def main():
     print("Ground Truth Joint Mappings:")
     for idx, name in GT_JOINT_NAMES.items():
         print(f"Joint {idx}: {name}")
+    
+    print("\n⚠️  Updated: Head Top (joint 0) now calculated as midpoint between left and right ears")
     
     estimator = MediaPipe3DPoseEstimator()
     
@@ -505,7 +530,7 @@ def main():
         ani = FuncAnimation(fig, update, frames=range(num_frames), interval=300, repeat=True, blit=False)
         
         if args.save_video:
-            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices.gif'
+            output_path = f'../mpi_mediapipe_comparison_{seq_name.lower()}_center_aligned_with_indices_fixed_head.gif'
             print(f"Saving animation to: {output_path}")
             ani.save(output_path, writer='pillow', fps=3, dpi=120)
             print(f"Comparison GIF saved to: {output_path}")
