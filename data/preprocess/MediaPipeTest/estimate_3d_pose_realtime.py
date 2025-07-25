@@ -55,9 +55,7 @@ class MediaPipe3DPoseEstimator:
         
         # MediaPipe to GT joint mapping (aligned with provided GT order)
         self.mp_to_mpi_mapping = {
-            # 0: 0,    # nose -> head top (REMOVED - will be calculated)
-            7: 16,   # left_ear -> head (RE-ENABLED)
-            8: 16,   # right_ear -> head (RE-ENABLED)
+            0: 16,    # nose -> head top (REMOVED - will be calculated)
             11: 5,   # left_shoulder -> left arm
             12: 2,   # right_shoulder -> right arm
             13: 6,   # left_elbow -> left forearm
@@ -74,7 +72,6 @@ class MediaPipe3DPoseEstimator:
         
         # Estimation for missing joints
         self.missing_joints_estimation = {
-            # 0: [7, 8],      # head top: REMOVED - calculated directly from ears
             14: [11, 8],    # hip: average of left up leg (hip) and right up leg (hip)
             1: [5, 2],      # neck: average of left arm (shoulder) and right arm (shoulder)
             15: [14, 1],    # spine: average of hip and neck
