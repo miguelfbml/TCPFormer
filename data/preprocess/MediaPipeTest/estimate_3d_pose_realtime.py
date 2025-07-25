@@ -100,17 +100,18 @@ class MediaPipe3DPoseEstimator:
                     ]
                     visibility[gt_idx] = landmark.visibility
             
-            # Calculate head landmarks using ears and mouth
+            # Calculate head landmarks using eyebrows and mouth
             if len(landmarks) > 10:  # Ensure we have enough landmarks
-                left_ear = landmarks[7]   # MediaPipe left ear
-                right_ear = landmarks[8]  # MediaPipe right ear
+                # MediaPipe face landmarks indices
+                left_eyebrow_inner = landmarks[2]   # MediaPipe left eyebrow inner
+                right_eyebrow_inner = landmarks[5]  # MediaPipe right eyebrow inner
                 mouth_left = landmarks[9]   # MediaPipe mouth left
                 mouth_right = landmarks[10] # MediaPipe mouth right
                 
-                # Calculate head top (joint 0) as midpoint between ears and move it up
-                head_top_x = (left_ear.x + right_ear.x) / 2.0
-                head_top_y = (left_ear.y + right_ear.y) / 2.0 - 0.08  # Move up by 8cm for head top
-                head_top_z = (left_ear.z + right_ear.z) / 2.0
+                # Calculate head top (joint 0) as midpoint between eyebrows and move it up
+                head_top_x = (left_eyebrow_inner.x + right_eyebrow_inner.x) / 2.0
+                head_top_y = (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0 - 0.05  # Move up by 5cm for head top
+                head_top_z = (left_eyebrow_inner.z + right_eyebrow_inner.z) / 2.0
                 
                 pose_3d[0] = [
                     head_top_x * 1000,  # Convert to mm
@@ -118,8 +119,8 @@ class MediaPipe3DPoseEstimator:
                     head_top_z * 1000
                 ]
                 
-                # Visibility for head top is average of ear visibilities
-                visibility[0] = (left_ear.visibility + right_ear.visibility) / 2.0
+                # Visibility for head top is average of eyebrow visibilities
+                visibility[0] = (left_eyebrow_inner.visibility + right_eyebrow_inner.visibility) / 2.0
                 
                 # Calculate head (joint 16) as midpoint between mouth landmarks
                 head_x = (mouth_left.x + mouth_right.x) / 2.0
@@ -135,6 +136,7 @@ class MediaPipe3DPoseEstimator:
                 # Visibility for head is average of mouth visibilities
                 visibility[16] = (mouth_left.visibility + mouth_right.visibility) / 2.0
                 
+                print(f"Head Top (joint 0) calculated from eyebrows: ({head_top_x:.3f}, {head_top_y:.3f}, {head_top_z:.3f})")
                 print(f"Head (joint 16) calculated from mouth: ({head_x:.3f}, {head_y:.3f}, {head_z:.3f})")
             
             # Estimate other missing joints
