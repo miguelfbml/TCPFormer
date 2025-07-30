@@ -2,6 +2,28 @@
 Calculate metrics for TCPFormer using MediaPipe 2D pose estimation on MPI-INF-3DHP test set
 This evaluates the model's performance when using MediaPipe 2D keypoints instead of ground truth 2D poses
 Usage: python calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_81.yaml --checkpoint checkpoint_mpi --checkpoint-file best_epoch.pth.tr
+
+# Basic evaluation
+python calculate_metrics_mediapipe.py \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
+    --checkpoint-file TCPFormer_mpi_27.pth.tr
+
+# Evaluate specific sequence
+python calculate_metrics_mediapipe.py \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
+    --checkpoint-file TCPFormer_mpi_27.pth.tr \
+    --sequence-name TS1
+
+# Test with limited samples
+python calculate_metrics_mediapipe.py \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
+    --checkpoint-file TCPFormer_mpi_27.pth.tr \
+    --max-samples 100
+
+
 """
 
 import argparse
