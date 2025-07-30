@@ -135,7 +135,7 @@ def compute_pck(pred, gt, torso_diameters, threshold_factor=0.1, fixed_threshold
 
     return pck_results
 
-def compute_auc(pred, gt, max_threshold=500, num_steps=50):
+def compute_auc(pred, gt, max_threshold=150, num_steps=50):
     """
     Compute AUC by evaluating PCK over a range of thresholds.
     Args:
