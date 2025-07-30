@@ -1,25 +1,25 @@
 """
 Calculate metrics for TCPFormer using MediaPipe 2D pose estimation on MPI-INF-3DHP test set
 This evaluates the model's performance when using MediaPipe 2D keypoints instead of ground truth 2D poses
-Usage: python calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_81.yaml --checkpoint checkpoint_mpi --checkpoint-file best_epoch.pth.tr
+Usage: python calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_27.yaml --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr
 
 # Basic evaluation
 python calculate_metrics_mediapipe.py \
-    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint ../../../checkpoint_mpi \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr
 
 # Evaluate specific sequence
 python calculate_metrics_mediapipe.py \
-    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint ../../../checkpoint_mpi \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr \
     --sequence-name TS1
 
 # Test with limited samples
 python calculate_metrics_mediapipe.py \
-    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint ../../../checkpoint_mpi \
+    --config configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr \
     --max-samples 100
 """
@@ -30,17 +30,16 @@ import cv2
 import numpy as np
 import torch
 import mediapipe as mp
-from dataclasses import dataclass
 from tqdm import tqdm
 import glob
 import gc
 
-# FIXED: Navigate to project root correctly
+# Navigate to project root
 import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
 sys.path.insert(0, project_root)
 
-from data.reader.motion_dataset import MPI3DHP, Fusion
+from data.reader.motion_dataset import Fusion
 from utils.tools import get_config
 from utils.learning import load_model_TCPFormer
 from utils.utils_3dhp import *
@@ -51,19 +50,17 @@ class MediaPipe2DPoseEstimator:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=2,
+            model_complexity=1,  # Lighter model for faster processing
             enable_segmentation=False,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        
-        # MediaPipe to MPI-INF-3DHP joint mapping (17 joints)
         self.mp_to_mpi_mapping = {
             0: 16,   # nose -> head
-            11: 5,   # left_shoulder -> left shoulder  
+            11: 5,   # left_shoulder -> left shoulder
             12: 2,   # right_shoulder -> right shoulder
             13: 6,   # left_elbow -> left elbow
-            14: 3,   # right_elbow -> right elbow  
+            14: 3,   # right_elbow -> right elbow
             15: 7,   # left_wrist -> left wrist
             16: 4,   # right_wrist -> right wrist
             23: 11,  # left_hip -> left hip
@@ -73,52 +70,49 @@ class MediaPipe2DPoseEstimator:
             27: 13,  # left_ankle -> left ankle
             28: 10,  # right_ankle -> right ankle
         }
-        
-        # Estimate missing joints from available ones
         self.missing_joints_estimation = {
-            0: [16],     # root from head (will be estimated later)
+            0: [11, 8],  # root from hips
             1: [5, 2],   # neck from shoulders
-            14: [11, 8], # hip from left/right hips  
+            14: [11, 8], # hip from left/right hips
             15: [14, 1], # spine from hip and neck
         }
 
     def estimate_2d_pose_from_image(self, image):
-        """Estimate 2D pose from image, return normalized coordinates [0,1]"""
+        """Estimate 2D pose from image, return normalized coordinates [0,1]."""
+        if image is None:
+            return np.zeros((17, 3), dtype=np.float32)
+        image = cv2.resize(image, (640, 480))  # Resize for faster processing
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb_image)
-        
-        pose_2d = np.zeros((17, 3), dtype=np.float32)  # x, y, confidence
-        
+        pose_2d = np.zeros((17, 3), dtype=np.float32)
+
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
-            
-            # Map MediaPipe landmarks to MPI joints
+            avg_visibility = np.mean([landmarks[i].visibility for i in self.mp_to_mpi_mapping.keys() if i < len(landmarks)])
+            confidence_threshold = max(0.3, avg_visibility * 0.5)
+
             for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
-                if mp_idx < len(landmarks):
-                    landmark = landmarks[mp_idx]
-                    pose_2d[mpi_idx] = [landmark.x, landmark.y, landmark.visibility]
-            
-            # Estimate missing joints
+                if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
+                    pose_2d[mpi_idx] = [landmarks[mp_idx].x, landmarks[mp_idx].y, landmarks[mp_idx].visibility]
+
             for missing_joint, source_joints in self.missing_joints_estimation.items():
-                valid_sources = [j for j in source_joints if pose_2d[j, 2] > 0.1]
+                valid_sources = [j for j in source_joints if pose_2d[j, 2] > confidence_threshold]
                 if valid_sources:
-                    pose_2d[missing_joint, 0] = np.mean([pose_2d[j, 0] for j in valid_sources])
-                    pose_2d[missing_joint, 1] = np.mean([pose_2d[j, 1] for j in valid_sources]) 
-                    pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.8
-            
-            # Special handling for root joint (joint 0) - place between hips
-            if pose_2d[11, 2] > 0.1 and pose_2d[8, 2] > 0.1:  # both hips valid
-                pose_2d[0, 0] = (pose_2d[11, 0] + pose_2d[8, 0]) / 2.0
-                pose_2d[0, 1] = (pose_2d[11, 1] + pose_2d[8, 1]) / 2.0  
+                    pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
+                    pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
+
+            if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
+                pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
+                pose_2d[0, 1] -= 0.05  # Upward offset for root
                 pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
-        
+
         return pose_2d
 
     def close(self):
         self.pose.close()
 
 def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=9):
-    """Load video frames for a single sample to minimize memory usage."""
+    """Load video frames for a single sample."""
     video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
     if not os.path.exists(video_path):
         print(f"Video frames not found at: {video_path}")
@@ -148,33 +142,27 @@ def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=
     return frames if valid_frames >= n_frames // 2 else None
 
 def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
-    """Apply test-time augmentation using MediaPipe 2D poses"""
+    """Apply test-time augmentation using MediaPipe 2D poses."""
     N, T, J, C = input_2D.shape
-    
-    # Create flipped version
     input_2D_flip = input_2D.clone()
-    input_2D_flip[..., 0] = 1.0 - input_2D_flip[..., 0]  # Flip x coordinates
+    input_2D_flip[..., 0] = 1.0 - input_2D_flip[..., 0]
     input_2D_flip[:, :, joints_left + joints_right, :] = input_2D_flip[:, :, joints_right + joints_left, :]
-    
-    # Get predictions from both original and flipped
+
     output_3D_non_flip = model(input_2D)
     output_3D_flip = model(input_2D_flip)
-    
-    # Flip the flipped prediction back
     output_3D_flip[..., 0] *= -1
     output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
-    
-    # Average the predictions
+
     output_3D = (output_3D_non_flip + output_3D_flip) / 2
-    
     return input_2D, output_3D
 
 def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
-    """Evaluate model using MediaPipe 2D poses with batch processing."""
+    """Evaluate model using MediaPipe 2D poses iteratively."""
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
     
+    data_inference = {}
     error_sum_test = AccumLoss()
     pck_results = {
         'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
@@ -183,84 +171,81 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
     auc_sum = 0.0
     valid_samples = 0
 
-    # Process frames in parallel
-    from concurrent.futures import ThreadPoolExecutor
-    def process_frame(frame):
-        return estimator.estimate_2d_pose_from_image(frame)[:, :2] if frame is not None else np.zeros((17, 2))
+    for data in tqdm(test_loader, desc="Evaluating samples"):
+        batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
+        [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
+        N = input_2D.size(0)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        for data in tqdm(test_loader, desc="Processing batches"):
-            batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
-            if torch.cuda.is_available():
-                gt_3D, scale = gt_3D.cuda(), scale.cuda()
+        for i in range(N):
+            if args.sequence_name and seq[i] != args.sequence_name:
+                continue
+            if args.max_samples and valid_samples >= args.max_samples:
+                break
 
-            # Filter sequences
-            batch_indices = [i for i in range(len(seq)) if not args.sequence_name or seq[i] == args.sequence_name]
-            if not batch_indices:
+            frames = load_video_frames_for_sample(seq[i], i, args.n_frames, stride=9)
+            if frames is None:
                 continue
 
-            # Process batch
-            batch_2d_tensors = []
-            for batch_idx in batch_indices:
-                seq_name = seq[batch_idx]
-                frames = load_video_frames_for_sample(seq_name, batch_idx, args.n_frames, stride=9)
-                if frames is None:
-                    continue
+            mediapipe_2d_sequence = []
+            for frame in frames:
+                pose_2d = estimator.estimate_2d_pose_from_image(frame)
+                mediapipe_2d_sequence.append(pose_2d[:, :2])
 
-                # Process frames in parallel
-                mediapipe_2d_sequence = list(executor.map(process_frame, frames))
-                if len(mediapipe_2d_sequence) != args.n_frames:
-                    continue
-
-                mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
-                batch_2d_tensors.append(mediapipe_2d_tensor)
-
-            if not batch_2d_tensors:
+            if len(mediapipe_2d_sequence) != args.n_frames:
                 continue
 
-            # Stack batch tensors
-            mediapipe_2d_tensor = torch.cat(batch_2d_tensors, dim=0)
+            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
+                gt_3D = gt_3D.cuda()
+                scale = scale.cuda()
 
-            # Model inference
+            out_target = gt_3D[i:i+1].clone().view(1, -1, 17, 3)
+            out_target[:, :, 14] = 0
+
             with torch.no_grad():
                 mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
                     mediapipe_2d_tensor, model, joints_left, joints_right)
-                output_3D = output_3D * scale[batch_indices].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
             pad = (args.n_frames - 1) // 2
             pred_out = output_3D[:, pad].unsqueeze(1)
             pred_out[..., 14, :] = 0
-            pred_out = denormalize(pred_out, [seq[i] for i in batch_indices])
-
-            gt_3D_batch = gt_3D[batch_indices].view(-1, args.n_frames, 17, 3)
-            gt_3D_batch[:, :, 14] = 0
+            pred_out = denormalize(pred_out, [seq[i]])
 
             pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            out_target_relative = gt_3D_batch - gt_3D_batch[..., 14:15, :]
+            inference_out = pred_out + out_target[..., 14:15, :]
+            out_target_relative = out_target - out_target[..., 14:15, :]
 
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
-            error_sum_test.update(joint_error_test * len(batch_indices), len(batch_indices))
+            error_sum_test.update(joint_error_test, 1)
 
             pred_frame = pred_out_relative[:, 0].cpu().numpy()
             gt_frame = out_target_relative[:, 0].cpu().numpy()
-            torso_diameters = calculate_torso_diameter(gt_3D_batch.cpu().numpy())
-
+            torso_diameters = calculate_torso_diameter(out_target.cpu().numpy())
             batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
-                pck_results[key] += batch_pck[key] * len(batch_indices)
-            auc_sum += compute_auc(pred_frame, gt_frame) * len(batch_indices)
+                pck_results[key] += batch_pck[key]
+            auc_sum += compute_auc(pred_frame, gt_frame)
 
-            valid_samples += len(batch_indices)
-            torch.cuda.empty_cache()
+            seq_name = seq[i]
+            if seq_name in data_inference:
+                data_inference[seq_name] = np.concatenate(
+                    (data_inference[seq_name], inference_out.cpu().numpy().transpose(2, 1, 0)), axis=2)
+            else:
+                data_inference[seq_name] = inference_out.cpu().numpy().transpose(2, 1, 0)
 
-            if args.max_samples and valid_samples >= args.max_samples:
-                break
+            valid_samples += 1
+            if valid_samples % 50 == 0:
+                torch.cuda.empty_cache()
+                gc.collect()
 
     if valid_samples == 0:
         print("No valid samples processed!")
         return None
+
+    for seq_name in data_inference.keys():
+        data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
     mpjpe_avg = error_sum_test.avg
     for key in pck_results:
@@ -280,112 +265,101 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         'mpjpe': mpjpe_avg,
         'pck_results': pck_results,
         'auc': auc_avg,
-        'valid_samples': valid_samples
+        'valid_samples': valid_samples,
+        'data_inference': data_inference
     }
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to the config file.")
-    parser.add_argument('--checkpoint', type=str, required=True, help='checkpoint directory')
-    parser.add_argument('--checkpoint-file', type=str, default='best_epoch.pth.tr', help="checkpoint file name")
+    parser.add_argument('--checkpoint', type=str, required=True, help='Checkpoint directory')
+    parser.add_argument('--checkpoint-file', type=str, default='best_epoch.pth.tr', help="Checkpoint file name")
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size for processing')
     parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence to test (TS1, TS2, etc.)')
     parser.add_argument('--max-samples', type=int, default=None, help='Maximum samples to process (for testing)')
-    opts = parser.parse_args()
-    return opts
+    return parser.parse_args()
 
 def main():
     opts = parse_args()
-    
-    # Load config
     args = get_config(opts.config)
-    
+    args.sequence_name = opts.sequence_name  # Explicitly add sequence_name to args
+    args.max_samples = opts.max_samples
+    args.batch_size = opts.batch_size
+
     print("TCPFormer Evaluation with MediaPipe 2D Poses")
     print("=" * 60)
     print(f"Config: {opts.config}")
     print(f"Checkpoint: {opts.checkpoint}/{opts.checkpoint_file}")
     print(f"Frames per sample: {args.n_frames}")
     print(f"Stride: 9")
-    
-    # Initialize MediaPipe
+    if args.sequence_name:
+        print(f"Filtering for sequence: {args.sequence_name}")
+
     print("\nInitializing MediaPipe...")
     estimator = MediaPipe2DPoseEstimator()
-    
-    # Load model
+
     print("Loading model...")
     model = load_model_TCPFormer(args)
-    
-    # Load checkpoint
     checkpoint_path = os.path.join(opts.checkpoint, opts.checkpoint_file)
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        
-        # Handle DataParallel wrapper
         if 'module.' in list(checkpoint['model'].keys())[0]:
             model = torch.nn.DataParallel(model)
-        
         model.load_state_dict(checkpoint['model'], strict=True)
         print(f"✓ Loaded checkpoint from {checkpoint_path}")
-        
         if 'min_mpjpe' in checkpoint:
             print(f"  Best MPJPE from training: {checkpoint['min_mpjpe']:.2f} mm")
     else:
         print(f"Error: Checkpoint not found at {checkpoint_path}")
         return
-    
+
     if torch.cuda.is_available():
         if not isinstance(model, torch.nn.DataParallel):
             model = torch.nn.DataParallel(model, device_ids=[0])
         model = model.cuda()
         print("✓ Model moved to GPU")
-    
+
     model.eval()
-    
-    # Create test dataset  
+
     print("Loading test dataset...")
     test_dataset = Fusion(args, train=False)
-    
-    # Filter by sequence if specified
-    if opts.sequence_name:
-        print(f"Filtering for sequence: {opts.sequence_name}")
-    
     from torch.utils.data import DataLoader
-    test_loader = DataLoader(test_dataset, 
-                           shuffle=False, 
-                           batch_size=opts.batch_size,
-                           num_workers=2, 
-                           pin_memory=True)
-    
+    test_loader = DataLoader(test_dataset,
+                             shuffle=False,
+                             batch_size=args.batch_size,
+                             num_workers=2,
+                             pin_memory=True)
+
     print(f"✓ Test dataset loaded: {len(test_dataset)} samples")
-    
+
     try:
-        # Run evaluation
         print("\nStarting evaluation with MediaPipe 2D poses...")
         with torch.no_grad():
             results = evaluate_with_mediapipe_2d(model, test_loader, estimator, args)
-        
+
         if results:
             print("\n✓ Evaluation completed successfully!")
-            
-            # Save results
             import json
             results_path = os.path.join(opts.checkpoint, 'mediapipe_evaluation_results.json')
             with open(results_path, 'w') as f:
-                # Convert numpy values to python types for JSON serialization
-                json_results = {}
-                for key, value in results.items():
-                    if isinstance(value, dict):
-                        json_results[key] = {k: float(v) if hasattr(v, 'item') else v for k, v in value.items()}
-                    else:
-                        json_results[key] = float(value) if hasattr(value, 'item') else value
+                json_results = {
+                    key: float(value) if isinstance(value, (np.floating, np.integer)) else value
+                    for key, value in results.items()
+                    if key != 'data_inference'
+                }
                 json.dump(json_results, f, indent=2)
             print(f"✓ Results saved to: {results_path}")
-        
+
+            import scipy.io as scio
+            mat_path = os.path.join(opts.checkpoint, 'inference_data_mediapipe.mat')
+            scio.savemat(mat_path, results['data_inference'])
+            print(f"✓ Inference data saved to: {mat_path}")
+
     except Exception as e:
         print(f"Error during evaluation: {e}")
         import traceback
         traceback.print_exc()
-    
+
     finally:
         estimator.close()
         print("✓ MediaPipe estimator closed")
