@@ -117,51 +117,35 @@ class MediaPipe2DPoseEstimator:
     def close(self):
         self.pose.close()
 
-def load_video_frames_for_sequence(sequence_name, sample_indices, n_frames=27, stride=9):
-    """Load video frames for specific sample indices"""
+def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=9):
+    """Load video frames for a single sample to minimize memory usage."""
     video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
-    
     if not os.path.exists(video_path):
         print(f"Video frames not found at: {video_path}")
         return None
-    
-    # Get all image files
+
     image_files = []
     for ext in ['*.jpg', '*.jpeg', '*.png']:
         image_files.extend(glob.glob(os.path.join(video_path, ext)))
     image_files.sort()
-    
-    if len(image_files) == 0:
+
+    if not image_files:
         print(f"No image files found in {video_path}")
         return None
-    
-    # Load frames for each sample
-    sample_frames = {}
-    
-    for sample_idx in tqdm(sample_indices, desc=f"Loading frames for {sequence_name}"):
-        # Calculate frame range for this sample (same logic as dataset)
-        center_frame = sample_idx * stride + (n_frames - 1) // 2
-        start_frame = center_frame - (n_frames - 1) // 2
-        end_frame = center_frame + (n_frames - 1) // 2 + 1
-        
-        frames = []
-        valid_frames = 0
-        
-        for frame_idx in range(start_frame, end_frame):
-            if 0 <= frame_idx < len(image_files):
-                frame = cv2.imread(image_files[frame_idx])
-                if frame is not None:
-                    frames.append(frame)
-                    valid_frames += 1
-                else:
-                    frames.append(None)
-            else:
-                frames.append(None)
-        
-        if valid_frames >= n_frames // 2:  # At least half the frames should be valid
-            sample_frames[sample_idx] = frames
-    
-    return sample_frames
+
+    center_frame = sample_idx * stride + (n_frames - 1) // 2
+    start_frame = max(0, center_frame - (n_frames - 1) // 2)
+    end_frame = min(len(image_files), center_frame + (n_frames - 1) // 2 + 1)
+
+    frames = []
+    valid_frames = 0
+    for frame_idx in range(start_frame, end_frame):
+        frame = cv2.imread(image_files[frame_idx]) if frame_idx < len(image_files) else None
+        if frame is not None:
+            valid_frames += 1
+        frames.append(frame)
+
+    return frames if valid_frames >= n_frames // 2 else None
 
 def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
     """Apply test-time augmentation using MediaPipe 2D poses"""
@@ -186,7 +170,7 @@ def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
     return input_2D, output_3D
 
 def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
-    """Evaluate model using MediaPipe 2D poses instead of ground truth"""
+    """Evaluate model using MediaPipe 2D poses with batch processing."""
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
@@ -198,156 +182,100 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
     }
     auc_sum = 0.0
     valid_samples = 0
-    
-    # Group samples by sequence for efficient video loading
-    sequence_samples = {}
-    sample_info = []
-    
-    print("Collecting sample information...")
-    for data in tqdm(test_loader, desc="Analyzing test data"):
-        batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
-        
-        for i in range(len(seq)):
-            seq_name = seq[i]
-            if seq_name not in sequence_samples:
-                sequence_samples[seq_name] = []
-            
-            sample_info.append({
-                'seq_name': seq_name,
-                'batch_data': data,
-                'batch_idx': i,
-                'sample_count': len(sequence_samples[seq_name])
-            })
-            sequence_samples[seq_name].append(len(sample_info) - 1)
-    
-    print(f"Found {len(sample_info)} samples across {len(sequence_samples)} sequences")
-    
-    # Process each sequence
-    for seq_name, sample_indices in sequence_samples.items():
-        print(f"\nProcessing sequence: {seq_name} ({len(sample_indices)} samples)")
-        
-        # Load video frames for this sequence
-        video_frames = load_video_frames_for_sequence(seq_name, 
-                                                     range(len(sample_indices)), 
-                                                     args.n_frames, 
-                                                     stride=9)
-        
-        if video_frames is None:
-            print(f"Skipping sequence {seq_name} - no video frames")
-            continue
-        
-        # Process each sample in this sequence
-        for local_idx, global_idx in enumerate(tqdm(sample_indices, desc=f"Processing {seq_name}")):
-            if local_idx not in video_frames:
+
+    # Process frames in parallel
+    from concurrent.futures import ThreadPoolExecutor
+    def process_frame(frame):
+        return estimator.estimate_2d_pose_from_image(frame)[:, :2] if frame is not None else np.zeros((17, 2))
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for data in tqdm(test_loader, desc="Processing batches"):
+            batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
+            if torch.cuda.is_available():
+                gt_3D, scale = gt_3D.cuda(), scale.cuda()
+
+            # Filter sequences
+            batch_indices = [i for i in range(len(seq)) if not args.sequence_name or seq[i] == args.sequence_name]
+            if not batch_indices:
                 continue
-                
-            info = sample_info[global_idx]
-            batch_cam, gt_3D, input_2D, seq, scale, bb_box = info['batch_data']
-            batch_idx = info['batch_idx']
-            
-            # Get ground truth for this sample
-            gt_3D_sample = gt_3D[batch_idx:batch_idx+1]
-            scale_sample = scale[batch_idx:batch_idx+1] 
-            seq_sample = [seq[batch_idx]]
-            
-            # Process MediaPipe 2D poses for this sample's frames
-            frames = video_frames[local_idx]
-            mediapipe_2d_sequence = []
-            
-            for frame in frames:
-                if frame is not None:
-                    pose_2d = estimator.estimate_2d_pose_from_image(frame)
-                    mediapipe_2d_sequence.append(pose_2d[:, :2])  # Only x, y coordinates
-                else:
-                    # Use previous frame or zeros if no previous frame
-                    if len(mediapipe_2d_sequence) > 0:
-                        mediapipe_2d_sequence.append(mediapipe_2d_sequence[-1])
-                    else:
-                        mediapipe_2d_sequence.append(np.zeros((17, 2)))
-            
-            if len(mediapipe_2d_sequence) != args.n_frames:
+
+            # Process batch
+            batch_2d_tensors = []
+            for batch_idx in batch_indices:
+                seq_name = seq[batch_idx]
+                frames = load_video_frames_for_sample(seq_name, batch_idx, args.n_frames, stride=9)
+                if frames is None:
+                    continue
+
+                # Process frames in parallel
+                mediapipe_2d_sequence = list(executor.map(process_frame, frames))
+                if len(mediapipe_2d_sequence) != args.n_frames:
+                    continue
+
+                mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
+                batch_2d_tensors.append(mediapipe_2d_tensor)
+
+            if not batch_2d_tensors:
                 continue
-                
-            # Convert to tensor format matching original input
-            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float()  # (T, 17, 2)
-            mediapipe_2d_tensor = mediapipe_2d_tensor.unsqueeze(0)  # (1, T, 17, 2)
-            
+
+            # Stack batch tensors
+            mediapipe_2d_tensor = torch.cat(batch_2d_tensors, dim=0)
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
-                gt_3D_sample = gt_3D_sample.cuda()
-                scale_sample = scale_sample.cuda()
-            
-            # Prepare ground truth (same as train_3dhp.py)
-            out_target = gt_3D_sample.clone().view(1, -1, 17, 3)
-            out_target[:, :, 14] = 0
-            
-            # Model inference with MediaPipe 2D poses
-            mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
-                mediapipe_2d_tensor, model, joints_left, joints_right)
-            
-            # Apply scale (same as train_3dhp.py) 
-            output_3D = output_3D * scale_sample.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
-            
-            # Extract center frame
+
+            # Model inference
+            with torch.no_grad():
+                mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
+                    mediapipe_2d_tensor, model, joints_left, joints_right)
+                output_3D = output_3D * scale[batch_indices].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
             pad = (args.n_frames - 1) // 2
             pred_out = output_3D[:, pad].unsqueeze(1)
-            
-            # Post-processing (same as train_3dhp.py)
             pred_out[..., 14, :] = 0
-            pred_out = denormalize(pred_out, seq_sample)
-            
-            # Make root-relative for MPJPE
+            pred_out = denormalize(pred_out, [seq[i] for i in batch_indices])
+
+            gt_3D_batch = gt_3D[batch_indices].view(-1, args.n_frames, 17, 3)
+            gt_3D_batch[:, :, 14] = 0
+
             pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            out_target_relative = out_target - out_target[..., 14:15, :]
-            
-            # Calculate MPJPE  
+            out_target_relative = gt_3D_batch - gt_3D_batch[..., 14:15, :]
+
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
-            error_sum_test.update(joint_error_test, 1)
-            
-            # Calculate additional metrics
-            pred_frame = pred_out_relative[:, 0].cpu().numpy()  # (1, 17, 3)
-            gt_frame = out_target_relative[:, 0].cpu().numpy()  # (1, 17, 3)
-            
-            # Calculate torso diameters
-            torso_diameters = calculate_torso_diameter(gt_frame)
-            
-            # Compute PCK
+            error_sum_test.update(joint_error_test * len(batch_indices), len(batch_indices))
+
+            pred_frame = pred_out_relative[:, 0].cpu().numpy()
+            gt_frame = out_target_relative[:, 0].cpu().numpy()
+            torso_diameters = calculate_torso_diameter(gt_3D_batch.cpu().numpy())
+
             batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
-                pck_results[key] += batch_pck[key]
-            
-            # Compute AUC
-            auc = compute_auc(pred_frame, gt_frame)
-            auc_sum += auc
-            
-            valid_samples += 1
-            
-            # Cleanup
-            del mediapipe_2d_tensor, output_3D, pred_out
-            if valid_samples % 50 == 0:
-                gc.collect()
-    
+                pck_results[key] += batch_pck[key] * len(batch_indices)
+            auc_sum += compute_auc(pred_frame, gt_frame) * len(batch_indices)
+
+            valid_samples += len(batch_indices)
+            torch.cuda.empty_cache()
+
+            if args.max_samples and valid_samples >= args.max_samples:
+                break
+
     if valid_samples == 0:
         print("No valid samples processed!")
         return None
-    
-    # Average metrics
+
     mpjpe_avg = error_sum_test.avg
     for key in pck_results:
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
-    
-    # Print results (same format as train_3dhp.py)
+
     print(f'\n{"="*60}')
     print(f'TCPFormer Results with MediaPipe 2D Input')
-    print(f'{"="*60}')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
     for key, value in pck_results.items():
         print(f'{key}: {value*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
     print(f'Valid samples: {valid_samples}')
     print(f'{"="*60}')
-    
+
     return {
         'mpjpe': mpjpe_avg,
         'pck_results': pck_results,
