@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 data/preprocess/MediaPipeTest/calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_27.yaml --checkpoint ../../../checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr --sequence-name TS1
+python3 data/preprocess/MediaPipeTest/calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_27.yaml --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr --sequence-name TS1
