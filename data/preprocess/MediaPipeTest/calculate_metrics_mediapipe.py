@@ -5,25 +5,23 @@ Usage: python calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_
 
 # Basic evaluation
 python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
+    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint ../../../checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr
 
 # Evaluate specific sequence
 python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
+    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint ../../../checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr \
     --sequence-name TS1
 
 # Test with limited samples
 python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
+    --config ../../../configs/mpi/TCPFormer_mpi_27.yaml \
+    --checkpoint ../../../checkpoint_mpi \
     --checkpoint-file TCPFormer_mpi_27.pth.tr \
     --max-samples 100
-
-
 """
 
 import argparse
@@ -37,8 +35,10 @@ from tqdm import tqdm
 import glob
 import gc
 
+# FIXED: Navigate to project root correctly
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+sys.path.insert(0, project_root)
 
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from utils.tools import get_config
