@@ -174,6 +174,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
     for data in tqdm(test_loader, desc="Evaluating samples"):
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
         [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
+        print(f"gt_3D shape from DataLoader: {gt_3D.shape}")
         N = input_2D.size(0)
 
         for i in range(N):
@@ -204,7 +205,13 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 gt_3D = gt_3D.cuda()
                 scale = scale.cuda()
 
-            out_target = gt_3D[i:i+1].clone()  # (1, 27, 17, 3)
+            # Use center frame of ground truth, matching model output
+            pad = (args.n_frames - 1) // 2
+            if gt_3D.shape[1] < args.n_frames:
+                print(f"Warning: gt_3D has {gt_3D.shape[1]} frames, expected {args.n_frames}. Using center frame.")
+                out_target = gt_3D[i:i+1, 0:1].clone()  # (1, 1, 17, 3)
+            else:
+                out_target = gt_3D[i:i+1, pad:pad+1].clone()  # (1, 1, 17, 3)
             out_target[:, :, 14] = 0
             print(f"Ground truth shape: {out_target.shape}")
 
@@ -214,15 +221,15 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 print(f"Model output shape: {output_3D.shape}")
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
-            pad = (args.n_frames - 1) // 2
             pred_out = output_3D[:, pad].unsqueeze(1)  # (1, 1, 17, 3)
             pred_out[..., 14, :] = 0
             pred_out = denormalize(pred_out, [seq[i]])
 
             pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            inference_out = pred_out + out_target[:, pad:pad+1, 14:15, :]
-            out_target_relative = out_target[:, pad:pad+1] - out_target[:, pad:pad+1, 14:15, :]
+            inference_out = pred_out + out_target[..., 14:15, :]
+            out_target_relative = out_target - out_target[..., 14:15, :]
 
+            print(f"pred_out_relative shape: {pred_out_relative.shape}, out_target_relative shape: {out_target_relative.shape}")
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
             error_sum_test.update(joint_error_test, 1)
 
