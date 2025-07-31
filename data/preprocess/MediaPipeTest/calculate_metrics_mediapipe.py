@@ -174,8 +174,12 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
     for data in tqdm(test_loader, desc="Evaluating samples"):
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
         [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
-        print(f"gt_3D shape from DataLoader: {gt_3D.shape}")
         N = input_2D.size(0)
+
+        # FIXED: Prepare ground truth exactly like train_3dhp.py
+        out_target = gt_3D.clone().view(N, -1, 17, 3)
+        out_target[:, :, 14] = 0
+        gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
 
         for i in range(N):
             if args.sequence_name and seq[i] != args.sequence_name:
@@ -192,84 +196,67 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             mediapipe_2d_sequence = []
             for frame in frames:
                 pose_2d = estimator.estimate_2d_pose_from_image(frame)  # (17, 3) with x, y, confidence
-                # FIXED: Keep all 3 channels (x, y, confidence) for model compatibility
                 mediapipe_2d_sequence.append(pose_2d)  # Use full pose_2d with confidence
 
             if len(mediapipe_2d_sequence) != args.n_frames:
                 print(f"Skipping sample {valid_samples + 1} from {seq[i]}: Incomplete frame sequence")
                 continue
 
-            # FIXED: Convert to tensor format: (1, T, 17, 3) - keep confidence channel
+            # Convert to tensor format: (1, T, 17, 3) - keep confidence channel
             mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
-            print(f"MediaPipe 2D tensor shape: {mediapipe_2d_tensor.shape}")
             
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
-                gt_3D = gt_3D.cuda()
-                scale = scale.cuda()
 
-            # FIXED: Use the original gt_3D structure properly
-            # Extract the sample's ground truth - gt_3D should be (N, T, 17, 3)
-            if gt_3D.shape[1] < args.n_frames:
-                print(f"Warning: gt_3D has {gt_3D.shape[1]} frames, expected {args.n_frames}. Using available frames.")
-                # Use the center frame if available, otherwise first frame
-                center_idx = min(gt_3D.shape[1] // 2, gt_3D.shape[1] - 1)
-                out_target = gt_3D[i:i+1, center_idx:center_idx+1].clone()  # (1, 1, 17, 3)
-            else:
-                # Use center frame from the sequence
-                pad = (args.n_frames - 1) // 2
-                out_target = gt_3D[i:i+1, pad:pad+1].clone()  # (1, 1, 17, 3)
+            # Model inference with MediaPipe 2D poses (same as train_3dhp.py)
+            mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
+                mediapipe_2d_tensor, model, joints_left, joints_right)
+
+            # Apply scale (same as train_3dhp.py)
+            output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
             
-            out_target[:, :, 14] = 0  # Set root joint to origin
-            print(f"Ground truth shape: {out_target.shape}")
-
-            with torch.no_grad():
-                mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
-                    mediapipe_2d_tensor, model, joints_left, joints_right)
-                print(f"Model output shape: {output_3D.shape}")
-                output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-            # Extract center frame prediction
+            # Extract center frame (same as train_3dhp.py)
             pad = (args.n_frames - 1) // 2
-            pred_out = output_3D[:, pad:pad+1]  # (1, 1, 17, 3)
+            pred_out = output_3D[:, pad].unsqueeze(1)
+
+            # Post-processing (same as train_3dhp.py)
             pred_out[..., 14, :] = 0
             pred_out = denormalize(pred_out, [seq[i]])
 
-            # Make root-relative for MPJPE calculation
-            pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            out_target_relative = out_target - out_target[..., 14:15, :]
+            # Make root-relative for MPJPE (same as train_3dhp.py)
+            pred_out = pred_out - pred_out[..., 14:15, :]
+            inference_out = pred_out + out_target[i:i+1, :, 14:15, :]  # For final output
+            out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]  # Root-relative GT
 
-            print(f"pred_out_relative shape: {pred_out_relative.shape}, out_target_relative shape: {out_target_relative.shape}")
-            joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
-            error_sum_test.update(joint_error_test, 1)
+            # Calculate MPJPE (same as train_3dhp.py)
+            joint_error_test = mpjpe_cal(pred_out, out_target_sample).item()
+            error_sum_test.update(joint_error_test * 1, 1)
 
-            # FIXED: Keep as tensors for utility functions that expect PyTorch tensors
-            # Remove the time dimension for PCK/AUC calculations
-            pred_frame = pred_out_relative[:, 0]  # (1, 17, 3) - keep as tensor
-            gt_frame = out_target_relative[:, 0]   # (1, 17, 3) - keep as tensor
+            # FIXED: Calculate torso diameters using the ORIGINAL gt_3D (same as train_3dhp.py)
+            torso_diameters = calculate_torso_diameter(gt_3D[i:i+1])
+
+            # Compute PCK and AUC (same as train_3dhp.py)
+            pred_frame = pred_out[:, 0]  # Shape: (1, 17, 3)
+            gt_frame = out_target_sample[:, 0]  # Shape: (1, 17, 3)
             
-            print(f"pred_frame shape: {pred_frame.shape}, gt_frame shape: {gt_frame.shape}")
-            
-            # Calculate torso diameters - use absolute coordinates (non-root-relative)
-            gt_absolute = out_target[:, 0]  # (1, 17, 3) - keep as tensor
-            torso_diameters = calculate_torso_diameter(gt_absolute)
-            
-            # Compute PCK and AUC - these functions expect tensors
             batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
-                pck_results[key] += batch_pck[key]
-            auc_sum += compute_auc(pred_frame, gt_frame)
+                pck_results[key] += batch_pck[key] * 1
 
-            # Store inference data (non-root-relative for final output)
-            inference_out = pred_out + out_target[..., 14:15, :]  # Add back root position
+            # Compute AUC (same as train_3dhp.py)
+            auc = compute_auc(pred_frame, gt_frame)
+            auc_sum += auc * 1
+
+            valid_samples += 1
+
+            # Store inference data (same as train_3dhp.py)
             seq_name = seq[i]
             if seq_name in data_inference:
                 data_inference[seq_name] = np.concatenate(
-                    (data_inference[seq_name], inference_out.cpu().numpy().transpose(2, 1, 0)), axis=2)
+                    (data_inference[seq_name], inference_out.permute(2, 1, 0).cpu().numpy()), axis=2)
             else:
-                data_inference[seq_name] = inference_out.cpu().numpy().transpose(2, 1, 0)
+                data_inference[seq_name] = inference_out.permute(2, 1, 0).cpu().numpy()
 
-            valid_samples += 1
             if valid_samples % 50 == 0:
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -278,25 +265,21 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         print("No valid samples processed!")
         return None
 
-    # Reshape data_inference to match expected format
+    # FIXED: Reshape data_inference to match expected format (same as train_3dhp.py)
     for seq_name in data_inference.keys():
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
-    # Calculate final averages
+    # Calculate final averages (same as train_3dhp.py)
     mpjpe_avg = error_sum_test.avg
     for key in pck_results:
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
 
-    print(f'\n{"="*60}')
-    print(f'TCPFormer Results with MediaPipe 2D Input')
-    print(f'{"="*60}')
+    # Print results (same format as train_3dhp.py)
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
     for key, value in pck_results.items():
         print(f'{key}: {value*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
-    print(f'Valid samples: {valid_samples}')
-    print(f'{"="*60}')
 
     return {
         'mpjpe': mpjpe_avg,
