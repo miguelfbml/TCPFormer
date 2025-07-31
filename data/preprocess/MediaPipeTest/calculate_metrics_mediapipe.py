@@ -55,6 +55,7 @@ class MediaPipe2DPoseEstimator:
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
+        # FIXED: Use same mapping as estimate_3d_pose_realtime.py
         self.mp_to_mpi_mapping = {
             0: 16,   # nose -> head
             11: 5,   # left_shoulder -> left shoulder
@@ -70,6 +71,7 @@ class MediaPipe2DPoseEstimator:
             27: 13,  # left_ankle -> left ankle
             28: 10,  # right_ankle -> right ankle
         }
+        # FIXED: Use same missing joints estimation as estimate_3d_pose_realtime.py
         self.missing_joints_estimation = {
             0: [11, 8],  # root from hips
             1: [5, 2],   # neck from shoulders
@@ -81,6 +83,8 @@ class MediaPipe2DPoseEstimator:
         """Estimate 2D pose from image, return normalized coordinates [0,1] with confidence."""
         if image is None:
             return np.zeros((17, 3), dtype=np.float32)
+        
+        # FIXED: Process image same as estimate_3d_pose_realtime.py
         image = cv2.resize(image, (640, 480))  # Resize for faster processing
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb_image)
@@ -91,16 +95,41 @@ class MediaPipe2DPoseEstimator:
             avg_visibility = np.mean([landmarks[i].visibility for i in self.mp_to_mpi_mapping.keys() if i < len(landmarks)])
             confidence_threshold = max(0.3, avg_visibility * 0.5)
 
+            # FIXED: Map landmarks same way as estimate_3d_pose_realtime.py
             for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
                 if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
                     pose_2d[mpi_idx] = [landmarks[mp_idx].x, landmarks[mp_idx].y, landmarks[mp_idx].visibility]
 
+            # FIXED: Estimate head joints from face landmarks (same as estimate_3d_pose_realtime.py)
+            if len(landmarks) > 10:
+                # Estimate joint 0 (Head Top) from eyebrow landmarks
+                if len(landmarks) > 5:
+                    left_eyebrow_inner = landmarks[2] if len(landmarks) > 2 else landmarks[0]
+                    right_eyebrow_inner = landmarks[5] if len(landmarks) > 5 else landmarks[0]
+                    pose_2d[0] = [
+                        (left_eyebrow_inner.x + right_eyebrow_inner.x) / 2.0,
+                        (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0,
+                        (left_eyebrow_inner.visibility + right_eyebrow_inner.visibility) / 2.0
+                    ]
+
+                # Estimate joint 16 (Head) from mouth landmarks
+                if len(landmarks) > 10:
+                    mouth_left = landmarks[9] if len(landmarks) > 9 else landmarks[0]
+                    mouth_right = landmarks[10] if len(landmarks) > 10 else landmarks[0]
+                    pose_2d[16] = [
+                        (mouth_left.x + mouth_right.x) / 2.0,
+                        (mouth_left.y + mouth_right.y) / 2.0,
+                        (mouth_left.visibility + mouth_right.visibility) / 2.0
+                    ]
+
+            # FIXED: Estimate missing joints same as estimate_3d_pose_realtime.py
             for missing_joint, source_joints in self.missing_joints_estimation.items():
                 valid_sources = [j for j in source_joints if pose_2d[j, 2] > confidence_threshold]
                 if valid_sources:
                     pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
                     pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
 
+            # FIXED: Root joint estimation same as estimate_3d_pose_realtime.py
             if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
                 pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
                 pose_2d[0, 1] -= 0.05  # Upward offset for root
@@ -209,60 +238,70 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
 
             # Model inference with MediaPipe 2D poses (same as train_3dhp.py)
-            mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
-                mediapipe_2d_tensor, model, joints_left, joints_right)
+            with torch.no_grad():
+                mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
+                    mediapipe_2d_tensor, model, joints_left, joints_right)
 
-            # Apply scale (same as train_3dhp.py)
-            output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
-            
-            # Extract center frame (same as train_3dhp.py)
-            pad = (args.n_frames - 1) // 2
-            pred_out = output_3D[:, pad].unsqueeze(1)
+                # Apply scale (same as train_3dhp.py)
+                output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
+                
+                # Extract center frame (same as train_3dhp.py)
+                pad = (args.n_frames - 1) // 2
+                pred_out = output_3D[:, pad].unsqueeze(1)
 
-            # Post-processing (same as train_3dhp.py)
-            pred_out[..., 14, :] = 0
-            pred_out = denormalize(pred_out, [seq[i]])
+                # Post-processing (same as train_3dhp.py)
+                pred_out[..., 14, :] = 0
+                pred_out = denormalize(pred_out, [seq[i]])
 
-            # Make root-relative for MPJPE (same as train_3dhp.py)
-            pred_out = pred_out - pred_out[..., 14:15, :]
-            inference_out = pred_out + out_target[i:i+1, :, 14:15, :]  # For final output
-            out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]  # Root-relative GT
+                # FIXED: Apply coordinate transformation like estimate_3d_pose_realtime.py
+                # Convert to numpy for transformation
+                pred_out_np = pred_out.cpu().numpy()
+                # Apply same coordinate transformation as estimate_3d_pose_realtime.py
+                cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+                pred_out_np = pred_out_np @ cam2real
+                # Convert back to tensor
+                pred_out = torch.from_numpy(pred_out_np).to(pred_out.device)
 
-            # Calculate MPJPE (same as train_3dhp.py)
-            joint_error_test = mpjpe_cal(pred_out, out_target_sample).item()
-            error_sum_test.update(joint_error_test * 1, 1)
+                # Make root-relative for MPJPE (same as train_3dhp.py)
+                pred_out = pred_out - pred_out[..., 14:15, :]
+                inference_out = pred_out + out_target[i:i+1, :, 14:15, :]  # For final output
+                out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]  # Root-relative GT
 
-            # FIXED: Calculate torso diameters using the ORIGINAL gt_3D (same as train_3dhp.py)
-            torso_diameters = calculate_torso_diameter(gt_3D_original[i:i+1])
+                # Calculate MPJPE (same as train_3dhp.py)
+                joint_error_test = mpjpe_cal(pred_out, out_target_sample).item()
+                error_sum_test.update(joint_error_test * 1, 1)
 
-            # Compute PCK and AUC (same as train_3dhp.py)
-            pred_frame = pred_out[:, 0]  # Shape: (1, 17, 3)
-            gt_frame = out_target_sample[:, 0]  # Shape: (1, 17, 3)
-            
-            batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
-            for key in pck_results:
-                pck_results[key] += batch_pck[key] * 1
+                # FIXED: Calculate torso diameters using the ORIGINAL gt_3D (same as train_3dhp.py)
+                torso_diameters = calculate_torso_diameter(gt_3D_original[i:i+1])
 
-            # Compute AUC (same as train_3dhp.py)
-            auc = compute_auc(pred_frame, gt_frame)
-            auc_sum += auc * 1
+                # Compute PCK and AUC (same as train_3dhp.py)
+                pred_frame = pred_out[:, 0]  # Shape: (1, 17, 3)
+                gt_frame = out_target_sample[:, 0]  # Shape: (1, 17, 3)
+                
+                batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+                for key in pck_results:
+                    pck_results[key] += batch_pck[key] * 1
 
-            valid_samples += 1
+                # Compute AUC (same as train_3dhp.py)
+                auc = compute_auc(pred_frame, gt_frame)
+                auc_sum += auc * 1
 
-            # FIXED: Store inference data (same as train_3dhp.py)
-            seq_name = seq[i]
-            # inference_out shape: (1, 1, 17, 3) -> need (3, 1, 1) format for storage
-            inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()  # (3, 1, 1)
-            
-            if seq_name in data_inference:
-                data_inference[seq_name] = np.concatenate(
-                    (data_inference[seq_name], inference_data), axis=2)
-            else:
-                data_inference[seq_name] = inference_data
+                valid_samples += 1
 
-            if valid_samples % 50 == 0:
-                torch.cuda.empty_cache()
-                gc.collect()
+                # FIXED: Store inference data (same as train_3dhp.py)
+                seq_name = seq[i]
+                # inference_out shape: (1, 1, 17, 3) -> need (3, 1, 1) format for storage
+                inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()  # (3, 1, 1)
+                
+                if seq_name in data_inference:
+                    data_inference[seq_name] = np.concatenate(
+                        (data_inference[seq_name], inference_data), axis=2)
+                else:
+                    data_inference[seq_name] = inference_data
+
+                if valid_samples % 50 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
 
     if valid_samples == 0:
         print("No valid samples processed!")
