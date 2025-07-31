@@ -179,7 +179,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         # FIXED: Prepare ground truth exactly like train_3dhp.py
         out_target = gt_3D.clone().view(N, -1, 17, 3)
         out_target[:, :, 14] = 0
-        gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
+        gt_3D_original = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
 
         for i in range(N):
             if args.sequence_name and seq[i] != args.sequence_name:
@@ -233,7 +233,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             error_sum_test.update(joint_error_test * 1, 1)
 
             # FIXED: Calculate torso diameters using the ORIGINAL gt_3D (same as train_3dhp.py)
-            torso_diameters = calculate_torso_diameter(gt_3D[i:i+1])
+            torso_diameters = calculate_torso_diameter(gt_3D_original[i:i+1])
 
             # Compute PCK and AUC (same as train_3dhp.py)
             pred_frame = pred_out[:, 0]  # Shape: (1, 17, 3)
@@ -249,13 +249,16 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
             valid_samples += 1
 
-            # Store inference data (same as train_3dhp.py)
+            # FIXED: Store inference data (same as train_3dhp.py)
             seq_name = seq[i]
+            # inference_out shape: (1, 1, 17, 3) -> need (3, 1, 1) format for storage
+            inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()  # (3, 1, 1)
+            
             if seq_name in data_inference:
                 data_inference[seq_name] = np.concatenate(
-                    (data_inference[seq_name], inference_out.permute(2, 1, 0).cpu().numpy()), axis=2)
+                    (data_inference[seq_name], inference_data), axis=2)
             else:
-                data_inference[seq_name] = inference_out.permute(2, 1, 0).cpu().numpy()
+                data_inference[seq_name] = inference_data
 
             if valid_samples % 50 == 0:
                 torch.cuda.empty_cache()
