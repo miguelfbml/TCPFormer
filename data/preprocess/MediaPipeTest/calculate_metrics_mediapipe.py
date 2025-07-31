@@ -78,7 +78,7 @@ class MediaPipe2DPoseEstimator:
         }
 
     def estimate_2d_pose_from_image(self, image):
-        """Estimate 2D pose from image, return normalized coordinates [0,1]."""
+        """Estimate 2D pose from image, return normalized coordinates [0,1] with confidence."""
         if image is None:
             return np.zeros((17, 3), dtype=np.float32)
         image = cv2.resize(image, (640, 480))  # Resize for faster processing
@@ -182,19 +182,22 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             if args.max_samples and valid_samples >= args.max_samples:
                 break
 
+            print(f"Processing sample {valid_samples + 1} from sequence {seq[i]}")
             frames = load_video_frames_for_sample(seq[i], i, args.n_frames, stride=9)
             if frames is None:
+                print(f"Skipping sample {i} from {seq[i]}: No valid frames")
                 continue
 
             mediapipe_2d_sequence = []
             for frame in frames:
-                pose_2d = estimator.estimate_2d_pose_from_image(frame)
-                mediapipe_2d_sequence.append(pose_2d[:, :2])
+                pose_2d = estimator.estimate_2d_pose_from_image(frame)  # (17, 3) with x, y, confidence
+                mediapipe_2d_sequence.append(pose_2d)
 
             if len(mediapipe_2d_sequence) != args.n_frames:
+                print(f"Skipping sample {i} from {seq[i]}: Incomplete frame sequence")
                 continue
 
-            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
+            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)  # (1, 27, 17, 3)
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
                 gt_3D = gt_3D.cuda()
@@ -282,7 +285,7 @@ def parse_args():
 def main():
     opts = parse_args()
     args = get_config(opts.config)
-    args.sequence_name = opts.sequence_name  # Explicitly add sequence_name to args
+    args.sequence_name = opts.sequence_name
     args.max_samples = opts.max_samples
     args.batch_size = opts.batch_size
 
