@@ -204,7 +204,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 gt_3D = gt_3D.cuda()
                 scale = scale.cuda()
 
-            out_target = gt_3D[i:i+1].clone().view(1, -1, 17, 3)
+            out_target = gt_3D[i:i+1].clone()  # (1, 27, 17, 3)
             out_target[:, :, 14] = 0
             print(f"Ground truth shape: {out_target.shape}")
 
@@ -215,21 +215,21 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
             pad = (args.n_frames - 1) // 2
-            pred_out = output_3D[:, pad].unsqueeze(1)
+            pred_out = output_3D[:, pad].unsqueeze(1)  # (1, 1, 17, 3)
             pred_out[..., 14, :] = 0
             pred_out = denormalize(pred_out, [seq[i]])
 
             pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            inference_out = pred_out + out_target[..., 14:15, :]
-            out_target_relative = out_target - out_target[..., 14:15, :]
+            inference_out = pred_out + out_target[:, pad:pad+1, 14:15, :]
+            out_target_relative = out_target[:, pad:pad+1] - out_target[:, pad:pad+1, 14:15, :]
 
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
             error_sum_test.update(joint_error_test, 1)
 
-            pred_frame = pred_out_relative[:, 0].cpu().numpy()
-            gt_frame = out_target_relative[:, 0].cpu().numpy()
-            # Keep out_target as tensor for calculate_torso_diameter
+            pred_frame = pred_out_relative[:, 0]
+            gt_frame = out_target_relative[:, 0]
             torso_diameters = calculate_torso_diameter(out_target)
+            print(f"pred_frame shape: {pred_frame.shape}, gt_frame shape: {gt_frame.shape}")
             batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key]
