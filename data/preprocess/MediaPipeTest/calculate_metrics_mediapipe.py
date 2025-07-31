@@ -198,6 +198,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 continue
 
             mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)  # (1, 27, 17, 3)
+            print(f"MediaPipe 2D tensor shape: {mediapipe_2d_tensor.shape}")
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
                 gt_3D = gt_3D.cuda()
@@ -205,10 +206,12 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
             out_target = gt_3D[i:i+1].clone().view(1, -1, 17, 3)
             out_target[:, :, 14] = 0
+            print(f"Ground truth shape: {out_target.shape}")
 
             with torch.no_grad():
                 mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
                     mediapipe_2d_tensor, model, joints_left, joints_right)
+                print(f"Model output shape: {output_3D.shape}")
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
             pad = (args.n_frames - 1) // 2
@@ -225,7 +228,8 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
             pred_frame = pred_out_relative[:, 0].cpu().numpy()
             gt_frame = out_target_relative[:, 0].cpu().numpy()
-            torso_diameters = calculate_torso_diameter(out_target.cpu().numpy())
+            # Keep out_target as tensor for calculate_torso_diameter
+            torso_diameters = calculate_torso_diameter(out_target)
             batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key]
