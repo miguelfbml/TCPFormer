@@ -243,26 +243,22 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
             error_sum_test.update(joint_error_test, 1)
 
-            # FIXED: Convert to correct format for metric calculations
+            # FIXED: Keep as tensors for utility functions that expect PyTorch tensors
             # Remove the time dimension for PCK/AUC calculations
-            pred_frame = pred_out_relative[:, 0]  # (1, 17, 3)
-            gt_frame = out_target_relative[:, 0]   # (1, 17, 3)
+            pred_frame = pred_out_relative[:, 0]  # (1, 17, 3) - keep as tensor
+            gt_frame = out_target_relative[:, 0]   # (1, 17, 3) - keep as tensor
             
-            # FIXED: Convert to numpy and ensure correct format for torso diameter calculation
-            pred_frame_np = pred_frame.cpu().numpy()  # (1, 17, 3)
-            gt_frame_np = gt_frame.cpu().numpy()      # (1, 17, 3)
+            print(f"pred_frame shape: {pred_frame.shape}, gt_frame shape: {gt_frame.shape}")
             
-            print(f"pred_frame shape: {pred_frame_np.shape}, gt_frame shape: {gt_frame_np.shape}")
+            # Calculate torso diameters - use absolute coordinates (non-root-relative)
+            gt_absolute = out_target[:, 0]  # (1, 17, 3) - keep as tensor
+            torso_diameters = calculate_torso_diameter(gt_absolute)
             
-            # Calculate torso diameters - need the non-root-relative version for accurate measurements
-            gt_absolute_np = out_target[:, 0].cpu().numpy()  # (1, 17, 3) - absolute coordinates
-            torso_diameters = calculate_torso_diameter(gt_absolute_np)
-            
-            # Compute PCK and AUC
-            batch_pck = compute_pck(pred_frame_np, gt_frame_np, torso_diameters, fixed_threshold=150.0)
+            # Compute PCK and AUC - these functions expect tensors
+            batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key]
-            auc_sum += compute_auc(pred_frame_np, gt_frame_np)
+            auc_sum += compute_auc(pred_frame, gt_frame)
 
             # Store inference data (non-root-relative for final output)
             inference_out = pred_out + out_target[..., 14:15, :]  # Add back root position
