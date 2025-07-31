@@ -184,35 +184,42 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 break
 
             print(f"Processing sample {valid_samples + 1} from sequence {seq[i]}")
-            frames = load_video_frames_for_sample(seq[i], i, args.n_frames, stride=9)
+            frames = load_video_frames_for_sample(seq[i], valid_samples, args.n_frames, stride=9)
             if frames is None:
-                print(f"Skipping sample {i} from {seq[i]}: No valid frames")
+                print(f"Skipping sample {valid_samples + 1} from {seq[i]}: No valid frames")
                 continue
 
             mediapipe_2d_sequence = []
             for frame in frames:
                 pose_2d = estimator.estimate_2d_pose_from_image(frame)  # (17, 3) with x, y, confidence
-                mediapipe_2d_sequence.append(pose_2d)
+                mediapipe_2d_sequence.append(pose_2d[:, :2])  # Only use x, y coordinates
 
             if len(mediapipe_2d_sequence) != args.n_frames:
-                print(f"Skipping sample {i} from {seq[i]}: Incomplete frame sequence")
+                print(f"Skipping sample {valid_samples + 1} from {seq[i]}: Incomplete frame sequence")
                 continue
 
-            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)  # (1, 27, 17, 3)
+            # Convert to tensor format: (1, T, 17, 2)
+            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
             print(f"MediaPipe 2D tensor shape: {mediapipe_2d_tensor.shape}")
+            
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
                 gt_3D = gt_3D.cuda()
                 scale = scale.cuda()
 
-            # Use center frame of ground truth, matching model output
-            pad = (args.n_frames - 1) // 2
+            # FIXED: Use the original gt_3D structure properly
+            # Extract the sample's ground truth - gt_3D should be (N, T, 17, 3)
             if gt_3D.shape[1] < args.n_frames:
-                print(f"Warning: gt_3D has {gt_3D.shape[1]} frames, expected {args.n_frames}. Using center frame.")
-                out_target = gt_3D[i:i+1, 0:1].clone()  # (1, 1, 17, 3)
+                print(f"Warning: gt_3D has {gt_3D.shape[1]} frames, expected {args.n_frames}. Using available frames.")
+                # Use the center frame if available, otherwise first frame
+                center_idx = min(gt_3D.shape[1] // 2, gt_3D.shape[1] - 1)
+                out_target = gt_3D[i:i+1, center_idx:center_idx+1].clone()  # (1, 1, 17, 3)
             else:
+                # Use center frame from the sequence
+                pad = (args.n_frames - 1) // 2
                 out_target = gt_3D[i:i+1, pad:pad+1].clone()  # (1, 1, 17, 3)
-            out_target[:, :, 14] = 0
+            
+            out_target[:, :, 14] = 0  # Set root joint to origin
             print(f"Ground truth shape: {out_target.shape}")
 
             with torch.no_grad():
@@ -221,27 +228,43 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 print(f"Model output shape: {output_3D.shape}")
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
-            pred_out = output_3D[:, pad].unsqueeze(1)  # (1, 1, 17, 3)
+            # Extract center frame prediction
+            pad = (args.n_frames - 1) // 2
+            pred_out = output_3D[:, pad:pad+1]  # (1, 1, 17, 3)
             pred_out[..., 14, :] = 0
             pred_out = denormalize(pred_out, [seq[i]])
 
+            # Make root-relative for MPJPE calculation
             pred_out_relative = pred_out - pred_out[..., 14:15, :]
-            inference_out = pred_out + out_target[..., 14:15, :]
             out_target_relative = out_target - out_target[..., 14:15, :]
 
             print(f"pred_out_relative shape: {pred_out_relative.shape}, out_target_relative shape: {out_target_relative.shape}")
             joint_error_test = mpjpe_cal(pred_out_relative, out_target_relative).item()
             error_sum_test.update(joint_error_test, 1)
 
-            pred_frame = pred_out_relative[:, 0]
-            gt_frame = out_target_relative[:, 0]
-            torso_diameters = calculate_torso_diameter(out_target)
-            print(f"pred_frame shape: {pred_frame.shape}, gt_frame shape: {gt_frame.shape}")
-            batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+            # FIXED: Convert to correct format for metric calculations
+            # Remove the time dimension for PCK/AUC calculations
+            pred_frame = pred_out_relative[:, 0]  # (1, 17, 3)
+            gt_frame = out_target_relative[:, 0]   # (1, 17, 3)
+            
+            # FIXED: Convert to numpy and ensure correct format for torso diameter calculation
+            pred_frame_np = pred_frame.cpu().numpy()  # (1, 17, 3)
+            gt_frame_np = gt_frame.cpu().numpy()      # (1, 17, 3)
+            
+            print(f"pred_frame shape: {pred_frame_np.shape}, gt_frame shape: {gt_frame_np.shape}")
+            
+            # Calculate torso diameters - need the non-root-relative version for accurate measurements
+            gt_absolute_np = out_target[:, 0].cpu().numpy()  # (1, 17, 3) - absolute coordinates
+            torso_diameters = calculate_torso_diameter(gt_absolute_np)
+            
+            # Compute PCK and AUC
+            batch_pck = compute_pck(pred_frame_np, gt_frame_np, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key]
-            auc_sum += compute_auc(pred_frame, gt_frame)
+            auc_sum += compute_auc(pred_frame_np, gt_frame_np)
 
+            # Store inference data (non-root-relative for final output)
+            inference_out = pred_out + out_target[..., 14:15, :]  # Add back root position
             seq_name = seq[i]
             if seq_name in data_inference:
                 data_inference[seq_name] = np.concatenate(
@@ -258,9 +281,11 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         print("No valid samples processed!")
         return None
 
+    # Reshape data_inference to match expected format
     for seq_name in data_inference.keys():
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
+    # Calculate final averages
     mpjpe_avg = error_sum_test.avg
     for key in pck_results:
         pck_results[key] /= valid_samples
@@ -268,6 +293,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
     print(f'\n{"="*60}')
     print(f'TCPFormer Results with MediaPipe 2D Input')
+    print(f'{"="*60}')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
     for key, value in pck_results.items():
         print(f'{key}: {value*100:.2f}%')
