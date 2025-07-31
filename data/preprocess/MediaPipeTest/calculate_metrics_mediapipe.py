@@ -106,7 +106,7 @@ class MediaPipe2DPoseEstimator:
                 pose_2d[0, 1] -= 0.05  # Upward offset for root
                 pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
 
-        return pose_2d
+        return pose_2d  # Return (17, 3) with x, y, confidence
 
     def close(self):
         self.pose.close()
@@ -192,13 +192,14 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             mediapipe_2d_sequence = []
             for frame in frames:
                 pose_2d = estimator.estimate_2d_pose_from_image(frame)  # (17, 3) with x, y, confidence
-                mediapipe_2d_sequence.append(pose_2d[:, :2])  # Only use x, y coordinates
+                # FIXED: Keep all 3 channels (x, y, confidence) for model compatibility
+                mediapipe_2d_sequence.append(pose_2d)  # Use full pose_2d with confidence
 
             if len(mediapipe_2d_sequence) != args.n_frames:
                 print(f"Skipping sample {valid_samples + 1} from {seq[i]}: Incomplete frame sequence")
                 continue
 
-            # Convert to tensor format: (1, T, 17, 2)
+            # FIXED: Convert to tensor format: (1, T, 17, 3) - keep confidence channel
             mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
             print(f"MediaPipe 2D tensor shape: {mediapipe_2d_tensor.shape}")
             
