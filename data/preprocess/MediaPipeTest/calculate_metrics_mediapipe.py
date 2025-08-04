@@ -81,11 +81,11 @@ class MediaPipe2DPoseEstimator:
 
     def estimate_2d_pose_from_image(self, image):
         """Estimate 2D pose from image, return normalized coordinates [0,1] with confidence."""
-        if image is None:
-            return np.zeros((17, 3), dtype=np.float32)
+        #if image is None:
+        #    return np.zeros((17, 3), dtype=np.float32)
         
         # FIXED: Process image same as estimate_3d_pose_realtime.py
-        image = cv2.resize(image, (640, 480))  # Resize for faster processing
+        #image = cv2.resize(image, (640, 480))  # Resize for faster processing
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb_image)
         pose_2d = np.zeros((17, 3), dtype=np.float32)
