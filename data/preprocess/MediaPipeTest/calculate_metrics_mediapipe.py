@@ -110,7 +110,7 @@ class MediaPipe2DPoseEstimator:
 
 def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=9):
     """Load video frames for a single sample."""
-    video_path = f'/nas-ctm01/homes/mfbrandao/TCPFormerForked/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
+    video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
     if not os.path.exists(video_path):
         print(f"Video frames not found at: {video_path}")
         return None
