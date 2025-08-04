@@ -12,4 +12,3 @@ echo "Running job in reserved partition"
 python3 data/preprocess/MediaPipeTest/compare2d.py \
     --config configs/mpi/TCPFormer_mpi_27.yaml \
     --sequence-name TS1 \
-    --max-samples 500
