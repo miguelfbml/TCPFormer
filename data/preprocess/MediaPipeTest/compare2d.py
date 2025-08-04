@@ -188,8 +188,17 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
                 else:
                     print(f"  No valid MediaPipe detections for this sample")
             
+            # FIXED: Convert MediaPipe [0,1] coordinates to GT coordinate system
+            # MediaPipe outputs normalized [0,1], GT seems to be in [-1,1] or different scale
+            mediapipe_2d_normalized = mediapipe_2d.copy()
+            
+            # FIXED: Transform MediaPipe coordinates to match GT coordinate system
+            # Convert [0,1] to [-1,1] range (common in many pose datasets)
+            mediapipe_2d_normalized[:, 0] = mediapipe_2d_normalized[:, 0] * 2.0 - 1.0  # x: [0,1] -> [-1,1]
+            mediapipe_2d_normalized[:, 1] = mediapipe_2d_normalized[:, 1] * 2.0 - 1.0  # y: [0,1] -> [-1,1]
+            
             # Convert to tensor for comparison
-            mediapipe_2d_tensor = torch.from_numpy(mediapipe_2d[:, :2]).float().unsqueeze(0).unsqueeze(0)  # (1, 1, 17, 2)
+            mediapipe_2d_tensor = torch.from_numpy(mediapipe_2d_normalized[:, :2]).float().unsqueeze(0).unsqueeze(0)  # (1, 1, 17, 2)
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
 
@@ -205,6 +214,11 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
                 if not np.isnan(mpjpe_2d) and not np.isinf(mpjpe_2d):
                     mpjpe_2d_sum += mpjpe_2d
                     valid_2d_samples += 1
+                    
+                    # FIXED: Debug the coordinate transformation
+                    if valid_samples < 5:
+                        print(f"  After normalization - MediaPipe range: x=[{mediapipe_2d_normalized[:, 0].min():.3f}, {mediapipe_2d_normalized[:, 0].max():.3f}], y=[{mediapipe_2d_normalized[:, 1].min():.3f}, {mediapipe_2d_normalized[:, 1].max():.3f}]")
+                        print(f"  MPJPE for this sample: {mpjpe_2d:.4f}")
 
             valid_samples += 1
             processing_times.append(time.time() - start_time)
