@@ -174,20 +174,6 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
             if valid_keypoints == 0:
                 zero_detection_count += 1
             
-            if valid_samples < 10 or valid_samples % 100 == 0:
-                print(f"Sample {valid_samples}: MediaPipe detected {valid_keypoints}/17 keypoints")
-                if valid_keypoints > 0:
-                    valid_poses = mediapipe_2d[mediapipe_2d[:, 2] > 0.1]
-                    print(f"  MediaPipe range: x=[{valid_poses[:, 0].min():.3f}, {valid_poses[:, 0].max():.3f}], y=[{valid_poses[:, 1].min():.3f}, {valid_poses[:, 1].max():.3f}]")
-                    
-                    # FIXED: Show ground truth range for comparison
-                    center_idx = args.n_frames // 2 if input_2D.shape[1] > 1 else 0
-                    gt_center = input_2D[i:i+1, center_idx:center_idx+1, :, :2] if input_2D.shape[1] > center_idx else input_2D[i:i+1, :1, :, :2]
-                    gt_numpy = gt_center.cpu().numpy()
-                    print(f"  GT range: x=[{gt_numpy[0, 0, :, 0].min():.3f}, {gt_numpy[0, 0, :, 0].max():.3f}], y=[{gt_numpy[0, 0, :, 1].min():.3f}, {gt_numpy[0, 0, :, 1].max():.3f}]")
-                else:
-                    print(f"  No valid MediaPipe detections for this sample")
-            
             # FIXED: Convert MediaPipe [0,1] coordinates to GT coordinate system
             # MediaPipe outputs normalized [0,1], GT seems to be in [-1,1] or different scale
             mediapipe_2d_normalized = mediapipe_2d.copy()
@@ -196,6 +182,25 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
             # Convert [0,1] to [-1,1] range (common in many pose datasets)
             mediapipe_2d_normalized[:, 0] = mediapipe_2d_normalized[:, 0] * 2.0 - 1.0  # x: [0,1] -> [-1,1]
             mediapipe_2d_normalized[:, 1] = mediapipe_2d_normalized[:, 1] * 2.0 - 1.0  # y: [0,1] -> [-1,1]
+            
+            if valid_samples < 10 or valid_samples % 100 == 0:
+                print(f"Sample {valid_samples}: MediaPipe detected {valid_keypoints}/17 keypoints")
+                if valid_keypoints > 0:
+                    valid_poses = mediapipe_2d[mediapipe_2d[:, 2] > 0.1]
+                    print(f"  MediaPipe original range: x=[{valid_poses[:, 0].min():.3f}, {valid_poses[:, 0].max():.3f}], y=[{valid_poses[:, 1].min():.3f}, {valid_poses[:, 1].max():.3f}]")
+                    
+                    # Show normalized MediaPipe range
+                    valid_poses_norm = mediapipe_2d_normalized[mediapipe_2d_normalized[:, 2] > 0.1]  # Only valid poses
+                    if len(valid_poses_norm) > 0:
+                        print(f"  MediaPipe normalized range: x=[{valid_poses_norm[:, 0].min():.3f}, {valid_poses_norm[:, 0].max():.3f}], y=[{valid_poses_norm[:, 1].min():.3f}, {valid_poses_norm[:, 1].max():.3f}]")
+                    
+                    # FIXED: Show ground truth range for comparison
+                    center_idx = args.n_frames // 2 if input_2D.shape[1] > 1 else 0
+                    gt_center = input_2D[i:i+1, center_idx:center_idx+1, :, :2] if input_2D.shape[1] > center_idx else input_2D[i:i+1, :1, :, :2]
+                    gt_numpy = gt_center.cpu().numpy()
+                    print(f"  GT range: x=[{gt_numpy[0, 0, :, 0].min():.3f}, {gt_numpy[0, 0, :, 0].max():.3f}], y=[{gt_numpy[0, 0, :, 1].min():.3f}, {gt_numpy[0, 0, :, 1].max():.3f}]")
+                else:
+                    print(f"  No valid MediaPipe detections for this sample")
             
             # Convert to tensor for comparison
             mediapipe_2d_tensor = torch.from_numpy(mediapipe_2d_normalized[:, :2]).float().unsqueeze(0).unsqueeze(0)  # (1, 1, 17, 2)
@@ -215,10 +220,10 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
                     mpjpe_2d_sum += mpjpe_2d
                     valid_2d_samples += 1
                     
-                    # FIXED: Debug the coordinate transformation
+                    # FIXED: Debug the coordinate transformation for first few samples
                     if valid_samples < 5:
-                        print(f"  After normalization - MediaPipe range: x=[{mediapipe_2d_normalized[:, 0].min():.3f}, {mediapipe_2d_normalized[:, 0].max():.3f}], y=[{mediapipe_2d_normalized[:, 1].min():.3f}, {mediapipe_2d_normalized[:, 1].max():.3f}]")
                         print(f"  MPJPE for this sample: {mpjpe_2d:.4f}")
+                        print(f"  MediaPipe tensor shape: {mediapipe_2d_tensor.shape}, GT shape: {gt_center.shape}")
 
             valid_samples += 1
             processing_times.append(time.time() - start_time)
@@ -228,7 +233,7 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
                 gc.collect()
                 avg_time = np.mean(processing_times[-20:]) if len(processing_times) >= 20 else np.mean(processing_times)
                 current_mpjpe = mpjpe_2d_sum / valid_2d_samples if valid_2d_samples > 0 else 0.0
-                print(f"Sample {valid_samples}: MPJPE 2D: {current_mpjpe:.4f}, Avg time: {avg_time:.3f}s, Zero detections: {zero_detection_count}/{valid_samples}")
+                print(f"Sample {valid_samples}: MPJPE 2D: {current_mpjpe:.4f}, Avg time: {avg_time:.3f}s, Zero detections: {zero_detection_count}/{valid_samples}, Valid 2D samples: {valid_2d_samples}")
 
     mpjpe_2d_avg = mpjpe_2d_sum / valid_2d_samples if valid_2d_samples > 0 else 0.0
     avg_processing_time = np.mean(processing_times) if processing_times else 0.0
