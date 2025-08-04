@@ -1,29 +1,3 @@
-"""
-Calculate metrics for TCPFormer using MediaPipe 2D pose estimation on MPI-INF-3DHP test set
-This evaluates the model's performance when using MediaPipe 2D keypoints instead of ground truth 2D poses
-Usage: python calculate_metrics_mediapipe.py --config configs/mpi/TCPFormer_mpi_27.yaml --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr
-
-# Basic evaluation
-python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
-    --checkpoint-file TCPFormer_mpi_27.pth.tr
-
-# Evaluate specific sequence
-python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
-    --checkpoint-file TCPFormer_mpi_27.pth.tr \
-    --sequence-name TS1
-
-# Test with limited samples
-python calculate_metrics_mediapipe.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --checkpoint checkpoint_mpi \
-    --checkpoint-file TCPFormer_mpi_27.pth.tr \
-    --max-samples 100
-"""
-
 import argparse
 import os
 import cv2
@@ -33,6 +7,7 @@ import mediapipe as mp
 from tqdm import tqdm
 import glob
 import gc
+import json
 
 # Navigate to project root
 import sys
@@ -55,7 +30,6 @@ class MediaPipe2DPoseEstimator:
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        # FIXED: Use same mapping as estimate_3d_pose_realtime.py
         self.mp_to_mpi_mapping = {
             0: 16,   # nose -> head
             11: 5,   # left_shoulder -> left shoulder
@@ -71,7 +45,6 @@ class MediaPipe2DPoseEstimator:
             27: 13,  # left_ankle -> left ankle
             28: 10,  # right_ankle -> right ankle
         }
-        # FIXED: Use same missing joints estimation as estimate_3d_pose_realtime.py
         self.missing_joints_estimation = {
             0: [11, 8],  # root from hips
             1: [5, 2],   # neck from shoulders
@@ -81,11 +54,10 @@ class MediaPipe2DPoseEstimator:
 
     def estimate_2d_pose_from_image(self, image):
         """Estimate 2D pose from image, return normalized coordinates [0,1] with confidence."""
-        #if image is None:
-        #    return np.zeros((17, 3), dtype=np.float32)
+        if image is None:
+            return np.zeros((17, 3), dtype=np.float32)
         
-        # FIXED: Process image same as estimate_3d_pose_realtime.py
-        #image = cv2.resize(image, (640, 480))  # Resize for faster processing
+        # Process image at original resolution (removed resizing)
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb_image)
         pose_2d = np.zeros((17, 3), dtype=np.float32)
@@ -95,14 +67,11 @@ class MediaPipe2DPoseEstimator:
             avg_visibility = np.mean([landmarks[i].visibility for i in self.mp_to_mpi_mapping.keys() if i < len(landmarks)])
             confidence_threshold = max(0.3, avg_visibility * 0.5)
 
-            # FIXED: Map landmarks same way as estimate_3d_pose_realtime.py
             for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
                 if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
                     pose_2d[mpi_idx] = [landmarks[mp_idx].x, landmarks[mp_idx].y, landmarks[mp_idx].visibility]
 
-            # FIXED: Estimate head joints from face landmarks (same as estimate_3d_pose_realtime.py)
             if len(landmarks) > 10:
-                # Estimate joint 0 (Head Top) from eyebrow landmarks
                 if len(landmarks) > 5:
                     left_eyebrow_inner = landmarks[2] if len(landmarks) > 2 else landmarks[0]
                     right_eyebrow_inner = landmarks[5] if len(landmarks) > 5 else landmarks[0]
@@ -111,8 +80,6 @@ class MediaPipe2DPoseEstimator:
                         (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0,
                         (left_eyebrow_inner.visibility + right_eyebrow_inner.visibility) / 2.0
                     ]
-
-                # Estimate joint 16 (Head) from mouth landmarks
                 if len(landmarks) > 10:
                     mouth_left = landmarks[9] if len(landmarks) > 9 else landmarks[0]
                     mouth_right = landmarks[10] if len(landmarks) > 10 else landmarks[0]
@@ -122,20 +89,18 @@ class MediaPipe2DPoseEstimator:
                         (mouth_left.visibility + mouth_right.visibility) / 2.0
                     ]
 
-            # FIXED: Estimate missing joints same as estimate_3d_pose_realtime.py
             for missing_joint, source_joints in self.missing_joints_estimation.items():
                 valid_sources = [j for j in source_joints if pose_2d[j, 2] > confidence_threshold]
                 if valid_sources:
                     pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
                     pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
 
-            # FIXED: Root joint estimation same as estimate_3d_pose_realtime.py
             if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
                 pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
-                pose_2d[0, 1] -= 0.05  # Upward offset for root
+                pose_2d[0, 1] -= 0.05
                 pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
 
-        return pose_2d  # Return (17, 3) with x, y, confidence
+        return pose_2d
 
     def close(self):
         self.pose.close()
@@ -185,19 +150,26 @@ def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
     output_3D = (output_3D_non_flip + output_3D_flip) / 2
     return input_2D, output_3D
 
+def compute_2d_mpjpe(mediapipe_2d, gt_2d):
+    """Compute MPJPE between MediaPipe and ground truth 2D poses."""
+    diff = mediapipe_2d[:, :, :2] - gt_2d[:, :, :2]  # (N, T, J, 2)
+    return torch.sqrt(torch.sum(diff ** 2, dim=-1)).mean().item()
+
 def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
-    """Evaluate model using MediaPipe 2D poses iteratively."""
+    """Evaluate model using MediaPipe 2D poses iteratively and compare with ground truth 2D."""
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
     
     data_inference = {}
+    pose_2d_comparison = {}  # Store MediaPipe vs GT 2D poses
     error_sum_test = AccumLoss()
     pck_results = {
         'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
         'PCK@90%_150mm': 0.0, 'PCK@80%_150mm': 0.0, 'PCK@70%_150mm': 0.0
     }
     auc_sum = 0.0
+    mpjpe_2d_sum = 0.0  # Sum of 2D MPJPE
     valid_samples = 0
 
     for data in tqdm(test_loader, desc="Evaluating samples"):
@@ -205,7 +177,6 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
         N = input_2D.size(0)
 
-        # FIXED: Prepare ground truth exactly like train_3dhp.py
         out_target = gt_3D.clone().view(N, -1, 17, 3)
         out_target[:, :, 14] = 0
         gt_3D_original = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
@@ -224,74 +195,71 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
             mediapipe_2d_sequence = []
             for frame in frames:
-                pose_2d = estimator.estimate_2d_pose_from_image(frame)  # (17, 3) with x, y, confidence
-                mediapipe_2d_sequence.append(pose_2d)  # Use full pose_2d with confidence
+                pose_2d = estimator.estimate_2d_pose_from_image(frame)
+                mediapipe_2d_sequence.append(pose_2d)
 
             if len(mediapipe_2d_sequence) != args.n_frames:
                 print(f"Skipping sample {valid_samples + 1} from {seq[i]}: Incomplete frame sequence")
                 continue
 
-            # Convert to tensor format: (1, T, 17, 3) - keep confidence channel
             mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
             
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
 
-            # Model inference with MediaPipe 2D poses (same as train_3dhp.py)
+            # Store 2D pose comparison
+            seq_name = seq[i]
+            if seq_name not in pose_2d_comparison:
+                pose_2d_comparison[seq_name] = {}
+            pose_2d_comparison[seq_name][valid_samples] = {
+                'mediapipe_2d': mediapipe_2d_tensor[0].cpu().numpy().tolist(),
+                'ground_truth_2d': input_2D[i].cpu().numpy().tolist()
+            }
+
+            # Compute 2D MPJPE
+            mpjpe_2d = compute_2d_mpjpe(mediapipe_2d_tensor, input_2D[i:i+1])
+            mpjpe_2d_sum += mpjpe_2d
+
             with torch.no_grad():
                 mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
                     mediapipe_2d_tensor, model, joints_left, joints_right)
 
-                # Apply scale (same as train_3dhp.py)
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
                 
-                # Extract center frame (same as train_3dhp.py)
                 pad = (args.n_frames - 1) // 2
                 pred_out = output_3D[:, pad].unsqueeze(1)
 
-                # Post-processing (same as train_3dhp.py)
                 pred_out[..., 14, :] = 0
                 pred_out = denormalize(pred_out, [seq[i]])
 
-                # FIXED: Apply coordinate transformation like estimate_3d_pose_realtime.py
-                # Convert to numpy for transformation
-                pred_out_np = pred_out.cpu().numpy()
-                # Apply same coordinate transformation as estimate_3d_pose_realtime.py
                 cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+                pred_out_np = pred_out.cpu().numpy()
                 pred_out_np = pred_out_np @ cam2real
-                # Convert back to tensor
                 pred_out = torch.from_numpy(pred_out_np).to(pred_out.device)
 
-                # Make root-relative for MPJPE (same as train_3dhp.py)
                 pred_out = pred_out - pred_out[..., 14:15, :]
-                inference_out = pred_out + out_target[i:i+1, :, 14:15, :]  # For final output
-                out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]  # Root-relative GT
+                inference_out = pred_out + out_target[i:i+1, :, 14:15, :]
+                out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]
 
-                # Calculate MPJPE (same as train_3dhp.py)
                 joint_error_test = mpjpe_cal(pred_out, out_target_sample).item()
                 error_sum_test.update(joint_error_test * 1, 1)
 
-                # FIXED: Calculate torso diameters using the ORIGINAL gt_3D (same as train_3dhp.py)
                 torso_diameters = calculate_torso_diameter(gt_3D_original[i:i+1])
 
-                # Compute PCK and AUC (same as train_3dhp.py)
-                pred_frame = pred_out[:, 0]  # Shape: (1, 17, 3)
-                gt_frame = out_target_sample[:, 0]  # Shape: (1, 17, 3)
+                pred_frame = pred_out[:, 0]
+                gt_frame = out_target_sample[:, 0]
                 
                 batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
                 for key in pck_results:
                     pck_results[key] += batch_pck[key] * 1
 
-                # Compute AUC (same as train_3dhp.py)
                 auc = compute_auc(pred_frame, gt_frame)
                 auc_sum += auc * 1
 
                 valid_samples += 1
 
-                # FIXED: Store inference data (same as train_3dhp.py)
                 seq_name = seq[i]
-                # inference_out shape: (1, 1, 17, 3) -> need (3, 1, 1) format for storage
-                inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()  # (3, 1, 1)
+                inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()
                 
                 if seq_name in data_inference:
                     data_inference[seq_name] = np.concatenate(
@@ -307,28 +275,29 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         print("No valid samples processed!")
         return None
 
-    # FIXED: Reshape data_inference to match expected format (same as train_3dhp.py)
     for seq_name in data_inference.keys():
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
-    # Calculate final averages (same as train_3dhp.py)
     mpjpe_avg = error_sum_test.avg
+    mpjpe_2d_avg = mpjpe_2d_sum / valid_samples if valid_samples > 0 else 0.0
     for key in pck_results:
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
 
-    # Print results (same format as train_3dhp.py)
-    print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
+    print(f'Protocol #1 Error (MPJPE 3D): {mpjpe_avg:.2f} mm')
+    print(f'MPJPE 2D (MediaPipe vs GT): {mpjpe_2d_avg:.4f} (normalized units)')
     for key, value in pck_results.items():
         print(f'{key}: {value*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
 
     return {
         'mpjpe': mpjpe_avg,
+        'mpjpe_2d': mpjpe_2d_avg,
         'pck_results': pck_results,
         'auc': auc_avg,
         'valid_samples': valid_samples,
-        'data_inference': data_inference
+        'data_inference': data_inference,
+        'pose_2d_comparison': pose_2d_comparison
     }
 
 def parse_args():
@@ -401,16 +370,21 @@ def main():
 
         if results:
             print("\n✓ Evaluation completed successfully!")
-            import json
             results_path = os.path.join(opts.checkpoint, 'mediapipe_evaluation_results.json')
             with open(results_path, 'w') as f:
                 json_results = {
                     key: float(value) if isinstance(value, (np.floating, np.integer)) else value
                     for key, value in results.items()
-                    if key != 'data_inference'
+                    if key not in ['data_inference', 'pose_2d_comparison']
                 }
                 json.dump(json_results, f, indent=2)
             print(f"✓ Results saved to: {results_path}")
+
+            # Save 2D pose comparison
+            comparison_path = os.path.join(opts.checkpoint, 'mediapipe_vs_gt_2d.json')
+            with open(comparison_path, 'w') as f:
+                json.dump(results['pose_2d_comparison'], f, indent=2)
+            print(f"✓ 2D pose comparison saved to: {comparison_path}")
 
             import scipy.io as scio
             mat_path = os.path.join(opts.checkpoint, 'inference_data_mediapipe.mat')
