@@ -19,6 +19,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '../../../..'))
 sys.path.insert(0, project_root)
 
+print(f"Project root: {project_root}")
+
 class MediaPipe2DPoseEstimator:
     def __init__(self, resize_resolution=(640, 480)):
         try:
