@@ -57,8 +57,11 @@ class MediaPipe2DPoseEstimator:
         if image is None:
             return np.zeros((17, 3), dtype=np.float32)
         
-        # Process image at original resolution (removed resizing)
+        # Get image dimensions
+        height, width = image.shape[:2]
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Process with image dimensions
         results = self.pose.process(rgb_image)
         pose_2d = np.zeros((17, 3), dtype=np.float32)
 
@@ -107,7 +110,7 @@ class MediaPipe2DPoseEstimator:
 
 def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=9):
     """Load video frames for a single sample."""
-    video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
+    video_path = f'/nas-ctm01/homes/mfbrandao/TCPFormerForked/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
     if not os.path.exists(video_path):
         print(f"Video frames not found at: {video_path}")
         return None
@@ -152,6 +155,9 @@ def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
 
 def compute_2d_mpjpe(mediapipe_2d, gt_2d):
     """Compute MPJPE between MediaPipe and ground truth 2D poses."""
+    if mediapipe_2d.shape[2] != gt_2d.shape[2]:
+        print(f"Warning: Joint dimension mismatch - MediaPipe: {mediapipe_2d.shape[2]}, Ground Truth: {gt_2d.shape[2]}")
+        return None
     diff = mediapipe_2d[:, :, :2] - gt_2d[:, :, :2]  # (N, T, J, 2)
     return torch.sqrt(torch.sum(diff ** 2, dim=-1)).mean().item()
 
@@ -162,14 +168,15 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
     joints_right = [2, 3, 4, 8, 9, 10]
     
     data_inference = {}
-    pose_2d_comparison = {}  # Store MediaPipe vs GT 2D poses
+    pose_2d_comparison = {}
     error_sum_test = AccumLoss()
     pck_results = {
         'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
         'PCK@90%_150mm': 0.0, 'PCK@80%_150mm': 0.0, 'PCK@70%_150mm': 0.0
     }
     auc_sum = 0.0
-    mpjpe_2d_sum = 0.0  # Sum of 2D MPJPE
+    mpjpe_2d_sum = 0.0
+    valid_2d_samples = 0
     valid_samples = 0
 
     for data in tqdm(test_loader, desc="Evaluating samples"):
@@ -207,18 +214,24 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
 
+            # Log shapes for debugging
+            print(f"MediaPipe 2D shape: {mediapipe_2d_tensor.shape}")
+            print(f"Ground Truth 2D shape: {input_2D[i:i+1].shape}")
+
             # Store 2D pose comparison
             seq_name = seq[i]
             if seq_name not in pose_2d_comparison:
                 pose_2d_comparison[seq_name] = {}
             pose_2d_comparison[seq_name][valid_samples] = {
                 'mediapipe_2d': mediapipe_2d_tensor[0].cpu().numpy().tolist(),
-                'ground_truth_2d': input_2D[i].cpu().numpy().tolist()
+                'ground_truth_2d': input_2D[i:i+1].cpu().numpy().tolist()
             }
 
             # Compute 2D MPJPE
             mpjpe_2d = compute_2d_mpjpe(mediapipe_2d_tensor, input_2D[i:i+1])
-            mpjpe_2d_sum += mpjpe_2d
+            if mpjpe_2d is not None:
+                mpjpe_2d_sum += mpjpe_2d
+                valid_2d_samples += 1
 
             with torch.no_grad():
                 mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
@@ -279,10 +292,10 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
     mpjpe_avg = error_sum_test.avg
-    mpjpe_2d_avg = mpjpe_2d_sum / valid_samples if valid_samples > 0 else 0.0
+    mpjpe_2d_avg = mpjpe_2d_sum / valid_2d_samples if valid_2d_samples > 0 else 0.0
     for key in pck_results:
-        pck_results[key] /= valid_samples
-    auc_avg = auc_sum / valid_samples
+        pck_results[key] /= valid_samples if valid_samples > 0 else 1
+    auc_avg = auc_sum / valid_samples if valid_samples > 0 else 0.0
 
     print(f'Protocol #1 Error (MPJPE 3D): {mpjpe_avg:.2f} mm')
     print(f'MPJPE 2D (MediaPipe vs GT): {mpjpe_2d_avg:.4f} (normalized units)')
@@ -380,7 +393,6 @@ def main():
                 json.dump(json_results, f, indent=2)
             print(f"✓ Results saved to: {results_path}")
 
-            # Save 2D pose comparison
             comparison_path = os.path.join(opts.checkpoint, 'mediapipe_vs_gt_2d.json')
             with open(comparison_path, 'w') as f:
                 json.dump(results['pose_2d_comparison'], f, indent=2)
