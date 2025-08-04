@@ -4,17 +4,6 @@ This visualizes both side-by-side to verify the conversion is correct
 
 Usage:
 python compare_gt_mediapipe_2d.py --sequence TS1 --num-frames 10
-
-cd ~/TCPFormerForked/data/preprocess/MediaPipeTest/2d
-
-# Interactive comparison
-python compare_gt_mediapipe_2d.py --sequence TS1 --num-frames 20
-
-# Save as GIF with analysis
-python compare_gt_mediapipe_2d.py --sequence TS1 --num-frames 50 --save-video --save-analysis
-
-# Compare different sequence
-python compare_gt_mediapipe_2d.py --sequence TS2 --num-frames 30 --save-video
 """
 
 import argparse
@@ -74,6 +63,29 @@ def load_datasets():
     
     return gt_data, mp_data
 
+def normalize_gt_coordinates(gt_poses_2d, seq_name):
+    """Normalize GT coordinates to [-1, 1] range for fair comparison"""
+    print(f"\nNormalizing GT coordinates for {seq_name}...")
+    
+    # Get image dimensions for this sequence
+    # TS5 and TS6 use 1920x1080, others use 2048x2048
+    if seq_name in ['TS5', 'TS6']:
+        width, height = 1920, 1080
+    else:
+        width, height = 2048, 2048
+    
+    print(f"Using image dimensions: {width}x{height}")
+    
+    # Normalize to [-1, 1] range
+    normalized_gt = gt_poses_2d.copy()
+    normalized_gt[:, :, 0] = (gt_poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
+    normalized_gt[:, :, 1] = (gt_poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
+    
+    print(f"Original GT range: X[{np.min(gt_poses_2d[:, :, 0]):.3f}, {np.max(gt_poses_2d[:, :, 0]):.3f}], Y[{np.min(gt_poses_2d[:, :, 1]):.3f}, {np.max(gt_poses_2d[:, :, 1]):.3f}]")
+    print(f"Normalized GT range: X[{np.min(normalized_gt[:, :, 0]):.3f}, {np.max(normalized_gt[:, :, 0]):.3f}], Y[{np.min(normalized_gt[:, :, 1]):.3f}, {np.max(normalized_gt[:, :, 1]):.3f}]")
+    
+    return normalized_gt
+
 def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
     """Analyze coordinate ranges for both datasets"""
     print(f"\nCoordinate analysis for {seq_name}:")
@@ -124,7 +136,7 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         avg_frame_error = np.mean(frame_errors)
         joint_errors /= valid_frame_count
         
-        print(f"\nComparison Metrics:")
+        print(f"\nComparison Metrics (after normalization):")
         print(f"Valid frames: {valid_frame_count}/{min_frames}")
         print(f"Average frame error: {avg_frame_error:.4f}")
         print(f"Joint errors (top 5):")
@@ -137,10 +149,10 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
             print(f"  {name} (joint {joint_idx}): {error:.4f}")
         
         return {
-            'avg_frame_error': avg_frame_error,
-            'joint_errors': joint_errors,
-            'valid_frames': valid_frame_count,
-            'total_frames': min_frames
+            'avg_frame_error': float(avg_frame_error),
+            'joint_errors': [float(x) for x in joint_errors],  # Convert to list for JSON
+            'valid_frames': int(valid_frame_count),
+            'total_frames': int(min_frames)
         }
     else:
         print("No valid frames found for comparison!")
@@ -196,11 +208,11 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             ax.set_ylim(y_max, y_min)  # Flip Y axis for image coordinates
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
+            ax.set_xlabel('X (normalized)')
+            ax.set_ylabel('Y (normalized)')
         
         # Plot Ground Truth
-        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
+        ax1.set_title(f'Ground Truth (Normalized)\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
         gt_frame = gt_poses[frame_idx]
         
         # Check if frame has valid data
@@ -219,7 +231,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             for joint_idx, (x, y) in enumerate(gt_frame):
                 if not (x == 0 and y == 0):
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
-                    ax1.text(x, y, str(joint_idx), fontsize=8, ha='center', va='bottom', color='white', weight='bold')
+                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', color='white', weight='bold')
         else:
             ax1.text(0, 0, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
         
@@ -243,7 +255,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             for joint_idx, (x, y) in enumerate(mp_frame):
                 if not (x == 0 and y == 0):
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
-                    ax2.text(x, y, str(joint_idx), fontsize=8, ha='center', va='bottom', color='white', weight='bold')
+                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', color='white', weight='bold')
         else:
             ax2.text(0, 0, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
         
@@ -265,8 +277,8 @@ def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
     """Save detailed comparison analysis to JSON"""
     analysis = {
         'sequence_name': seq_name,
-        'gt_shape': gt_data[seq_name]['data_2d'].shape,
-        'mp_shape': mp_data[seq_name]['data_2d'].shape,
+        'gt_shape': list(gt_data[seq_name]['data_2d'].shape),  # Convert to list for JSON
+        'mp_shape': list(mp_data[seq_name]['data_2d'].shape),  # Convert to list for JSON
         'gt_coordinate_range': {
             'x_min': float(np.min(gt_data[seq_name]['data_2d'][:, :, 0])),
             'x_max': float(np.max(gt_data[seq_name]['data_2d'][:, :, 0])),
@@ -327,27 +339,30 @@ def main():
         return
     
     # Extract 2D poses
-    gt_poses_2d = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     mp_poses_2d = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     
     print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d)}, MP frames: {len(mp_poses_2d)}")
+    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d)}")
     
-    # Analyze coordinate ranges
-    analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, args.sequence)
+    # Analyze coordinate ranges before normalization
+    analyze_coordinate_ranges(gt_poses_2d_orig, mp_poses_2d, args.sequence)
     
-    # Compute comparison metrics
-    metrics = compute_comparison_metrics(gt_poses_2d, mp_poses_2d)
+    # Normalize GT coordinates to [-1, 1] for fair comparison
+    gt_poses_2d_norm = normalize_gt_coordinates(gt_poses_2d_orig, args.sequence)
+    
+    # Compute comparison metrics on normalized data
+    metrics = compute_comparison_metrics(gt_poses_2d_norm, mp_poses_2d)
     
     # Save analysis if requested
     if args.save_analysis and metrics:
         save_comparison_analysis(gt_data, mp_data, args.sequence, metrics, args.output_dir)
     
-    # Create visualization
+    # Create visualization using normalized GT data
     print(f"\nCreating visualization...")
     try:
         update_func, fig, min_frames = create_comparison_visualization(
-            gt_poses_2d, mp_poses_2d, args.sequence, args)
+            gt_poses_2d_norm, mp_poses_2d, args.sequence, args)
         
         if args.save_video:
             print("Creating animation...")
