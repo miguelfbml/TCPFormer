@@ -145,7 +145,7 @@ def load_ground_truth_dataset_structure():
         # Create a minimal config to load the dataset
         class DatasetArgs:
             def __init__(self):
-                self.data_root = '../motion3d/'
+                self.data_root = 'data/motion3d/'
                 self.n_frames = 27
                 self.stride = 9
                 self.flip = False
