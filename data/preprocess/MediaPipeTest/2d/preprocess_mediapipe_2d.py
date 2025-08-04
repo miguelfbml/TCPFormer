@@ -19,7 +19,7 @@ import gc
 
 # Navigate to project root
 import sys
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../..'))
 sys.path.insert(0, project_root)
 
 from data.reader.motion_dataset import Fusion
