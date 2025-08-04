@@ -216,14 +216,34 @@ def compare_mediapipe_2d_ultrafast(test_loader, estimator, args):
                 diff = mediapipe_2d_tensor - gt_center
                 mpjpe_2d = torch.sqrt(torch.sum(diff ** 2, dim=-1)).mean().item()
                 
+                # FIXED: Add detailed debugging for MPJPE calculation
+                if valid_samples < 5:
+                    print(f"  DEBUG MPJPE calculation:")
+                    print(f"    MediaPipe tensor shape: {mediapipe_2d_tensor.shape}, GT shape: {gt_center.shape}")
+                    print(f"    Diff shape: {diff.shape}")
+                    print(f"    Diff range: [{diff.min().item():.3f}, {diff.max().item():.3f}]")
+                    print(f"    Diff squared sum: {torch.sum(diff ** 2, dim=-1)}")
+                    print(f"    MPJPE before mean: {torch.sqrt(torch.sum(diff ** 2, dim=-1))}")
+                    print(f"    Raw MPJPE: {mpjpe_2d}")
+                    print(f"    Is NaN: {np.isnan(mpjpe_2d)}, Is Inf: {np.isinf(mpjpe_2d)}")
+                
                 if not np.isnan(mpjpe_2d) and not np.isinf(mpjpe_2d):
                     mpjpe_2d_sum += mpjpe_2d
                     valid_2d_samples += 1
                     
                     # FIXED: Debug the coordinate transformation for first few samples
                     if valid_samples < 5:
-                        print(f"  MPJPE for this sample: {mpjpe_2d:.4f}")
-                        print(f"  MediaPipe tensor shape: {mediapipe_2d_tensor.shape}, GT shape: {gt_center.shape}")
+                        print(f"    ✓ Valid MPJPE for sample {valid_samples}: {mpjpe_2d:.4f}")
+                else:
+                    if valid_samples < 5:
+                        print(f"    ✗ Invalid MPJPE for sample {valid_samples}: {mpjpe_2d} (NaN: {np.isnan(mpjpe_2d)}, Inf: {np.isinf(mpjpe_2d)})")
+            else:
+                if valid_samples < 5:
+                    print(f"  DEBUG: Skipping MPJPE calculation")
+                    print(f"    Shape match: {mediapipe_2d_tensor.shape[-1] == gt_center.shape[-1]}")
+                    print(f"    Valid keypoints: {valid_keypoints > 0} (count: {valid_keypoints})")
+                    print(f"    MediaPipe tensor shape: {mediapipe_2d_tensor.shape}")
+                    print(f"    GT center shape: {gt_center.shape}")
 
             valid_samples += 1
             processing_times.append(time.time() - start_time)
@@ -257,7 +277,7 @@ def parse_args():
     parser.add_argument('--config', type=str, required=True, help='Path to the config file.')
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save results')
     parser.add_argument('--sequence-name', type=str, default='TS1', help='Specific sequence to test (e.g., TS1)')
-    parser.add_argument('--max-samples', type=int, default=100, help='Maximum samples to process')  # FIXED: Smaller default for testing
+    parser.add_argument('--max-samples', type=int, default=10, help='Maximum samples to process')  # FIXED: Very small for debugging
     parser.add_argument('--resize-resolution', type=int, nargs=2, default=[480, 360], help='Resize images to W H')  # FIXED: Larger default
     return parser.parse_args()
 
