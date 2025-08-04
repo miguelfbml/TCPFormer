@@ -8,6 +8,7 @@ from tqdm import tqdm
 import glob
 import gc
 import json
+import time
 
 # Navigate to project root
 import sys
@@ -21,15 +22,16 @@ from utils.utils_3dhp import *
 from utils.data import denormalize
 
 class MediaPipe2DPoseEstimator:
-    def __init__(self):
+    def __init__(self, resize_resolution=None):
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1,  # Lighter model for faster processing
+            model_complexity=1,
             enable_segmentation=False,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
+        self.resize_resolution = resize_resolution
         self.mp_to_mpi_mapping = {
             0: 16,   # nose -> head
             11: 5,   # left_shoulder -> left shoulder
@@ -57,11 +59,12 @@ class MediaPipe2DPoseEstimator:
         if image is None:
             return np.zeros((17, 3), dtype=np.float32)
         
-        # Get image dimensions
+        # Optional resizing
+        if self.resize_resolution:
+            image = cv2.resize(image, self.resize_resolution, interpolation=cv2.INTER_AREA)
         height, width = image.shape[:2]
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Process with image dimensions
         results = self.pose.process(rgb_image)
         pose_2d = np.zeros((17, 3), dtype=np.float32)
 
@@ -124,6 +127,7 @@ def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=
         print(f"No image files found in {video_path}")
         return None
 
+    print(f"Found {len(image_files)} image files in {video_path}")
     center_frame = sample_idx * stride + (n_frames - 1) // 2
     start_frame = max(0, center_frame - (n_frames - 1) // 2)
     end_frame = min(len(image_files), center_frame + (n_frames - 1) // 2 + 1)
@@ -138,9 +142,12 @@ def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=
 
     return frames if valid_frames >= n_frames // 2 else None
 
-def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right):
+def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right, use_augmentation=True):
     """Apply test-time augmentation using MediaPipe 2D poses."""
     N, T, J, C = input_2D.shape
+    if not use_augmentation:
+        return input_2D, model(input_2D)
+
     input_2D_flip = input_2D.clone()
     input_2D_flip[..., 0] = 1.0 - input_2D_flip[..., 0]
     input_2D_flip[:, :, joints_left + joints_right, :] = input_2D_flip[:, :, joints_right + joints_left, :]
@@ -194,6 +201,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             if args.max_samples and valid_samples >= args.max_samples:
                 break
 
+            start_time = time.time()
             print(f"Processing sample {valid_samples + 1} from sequence {seq[i]}")
             frames = load_video_frames_for_sample(seq[i], valid_samples, args.n_frames, stride=9)
             if frames is None:
@@ -214,11 +222,9 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
             if torch.cuda.is_available():
                 mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
 
-            # Log shapes for debugging
             print(f"MediaPipe 2D shape: {mediapipe_2d_tensor.shape}")
             print(f"Ground Truth 2D shape: {input_2D[i:i+1].shape}")
 
-            # Store 2D pose comparison
             seq_name = seq[i]
             if seq_name not in pose_2d_comparison:
                 pose_2d_comparison[seq_name] = {}
@@ -227,7 +233,6 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 'ground_truth_2d': input_2D[i:i+1].cpu().numpy().tolist()
             }
 
-            # Compute 2D MPJPE
             mpjpe_2d = compute_2d_mpjpe(mediapipe_2d_tensor, input_2D[i:i+1])
             if mpjpe_2d is not None:
                 mpjpe_2d_sum += mpjpe_2d
@@ -235,7 +240,7 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
 
             with torch.no_grad():
                 mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
-                    mediapipe_2d_tensor, model, joints_left, joints_right)
+                    mediapipe_2d_tensor, model, joints_left, joints_right, use_augmentation=args.use_augmentation)
 
                 output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
                 
@@ -280,9 +285,11 @@ def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
                 else:
                     data_inference[seq_name] = inference_data
 
-                if valid_samples % 50 == 0:
+                if valid_samples % 10 == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
+
+            print(f"Sample {valid_samples} processing time: {time.time() - start_time:.2f} seconds")
 
     if valid_samples == 0:
         print("No valid samples processed!")
@@ -321,6 +328,9 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size for processing')
     parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence to test (TS1, TS2, etc.)')
     parser.add_argument('--max-samples', type=int, default=None, help='Maximum samples to process (for testing)')
+    parser.add_argument('--resize-resolution', type=int, nargs=2, default=None, help='Resize images to W H (e.g., 1280 720)')
+    parser.add_argument('--no-augmentation', action='store_false', dest='use_augmentation', help='Disable test-time augmentation')
+    parser.set_defaults(use_augmentation=True)
     return parser.parse_args()
 
 def main():
@@ -329,6 +339,7 @@ def main():
     args.sequence_name = opts.sequence_name
     args.max_samples = opts.max_samples
     args.batch_size = opts.batch_size
+    args.use_augmentation = opts.use_augmentation
 
     print("TCPFormer Evaluation with MediaPipe 2D Poses")
     print("=" * 60)
@@ -338,9 +349,12 @@ def main():
     print(f"Stride: 9")
     if args.sequence_name:
         print(f"Filtering for sequence: {args.sequence_name}")
+    if opts.resize_resolution:
+        print(f"Resizing images to: {opts.resize_resolution}")
+    print(f"Test-time augmentation: {'Enabled' if args.use_augmentation else 'Disabled'}")
 
     print("\nInitializing MediaPipe...")
-    estimator = MediaPipe2DPoseEstimator()
+    estimator = MediaPipe2DPoseEstimator(resize_resolution=opts.resize_resolution)
 
     print("Loading model...")
     model = load_model_TCPFormer(args)
@@ -371,7 +385,7 @@ def main():
     test_loader = DataLoader(test_dataset,
                              shuffle=False,
                              batch_size=args.batch_size,
-                             num_workers=2,
+                             num_workers=4,
                              pin_memory=True)
 
     print(f"✓ Test dataset loaded: {len(test_dataset)} samples")
