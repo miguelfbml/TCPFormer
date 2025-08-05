@@ -64,54 +64,59 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def denormalize_poses_2d_root_relative(poses_2d, seq_name):
+def denormalize_poses_2d_correct(poses_2d, seq_name):
     """
-    Denormalize 2D poses from [-1,1] to pixel coordinates relative to root joint
-    The root joint (14) will be at [0,0] and other joints relative to it
-    [-1,-1] maps to [-image_size, -image_size] 
-    [1,1] maps to [image_size, image_size]
+    Denormalize 2D poses from [-1,1] to pixel coordinates
+    Based on the normalization in data/reader/motion_dataset.py:
+    normalized[..., :2] = normalized[..., :2] / width * 2 - [1, height / width]
+    
+    So denormalization is:
+    denorm[..., :2] = (normalized[..., :2] + [1, height / width]) * width / 2
     """
-    print(f"\nDenormalizing {seq_name} from [-1,1] to root-relative pixel coordinates...")
+    print(f"\nDenormalizing {seq_name} from [-1,1] to pixel coordinates...")
     
     # Get image dimensions for this sequence
     if seq_name in ['TS5', 'TS6']:
-        res_w, res_h = 1920, 1080
+        width, height = 1920, 1080
     else:
-        res_w, res_h = 2048, 2048
+        width, height = 2048, 2048
     
-    print(f"Using image dimensions: {res_w}x{res_h}")
+    print(f"Using image dimensions: {width}x{height}")
     
     denorm_poses = poses_2d.copy()
     
-    # First, denormalize all coordinates from [-1,1] to pixel space
-    # X coordinates: [-1,1] -> [-res_w, res_w]
-    denorm_poses[:, :, 0] = poses_2d[:, :, 0] * res_w
-    # Y coordinates: [-1,1] -> [-res_h, res_h] 
-    denorm_poses[:, :, 1] = poses_2d[:, :, 1] * res_h
+    # Apply correct denormalization based on motion_dataset.py
+    # X coordinates: denorm_x = (norm_x + 1) * width / 2
+    denorm_poses[:, :, 0] = (poses_2d[:, :, 0] + 1.0) * width / 2.0
     
-    # Now make all poses relative to root joint (14) - subtract root position from all joints
-    for frame_idx in range(denorm_poses.shape[0]):
-        frame = denorm_poses[frame_idx]  # (17, 2)
+    # Y coordinates: denorm_y = (norm_y + height/width) * width / 2
+    denorm_poses[:, :, 1] = (poses_2d[:, :, 1] + height / width) * width / 2.0
+    
+    print(f"Denormalized coordinate ranges:")
+    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}] pixels")
+    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}] pixels")
+    
+    return denorm_poses
+
+def make_root_relative_2d_pixel(poses_2d, root_joint_idx=14):
+    """
+    Make poses root-relative by subtracting root joint position from all joints
+    Root joint will be at (0, 0) in pixel coordinates
+    """
+    root_relative_poses = poses_2d.copy()
+    
+    for frame_idx in range(poses_2d.shape[0]):
+        frame = poses_2d[frame_idx]  # (17, 2)
+        root_pos = frame[root_joint_idx]  # (2,)
         
         # Check if this frame has valid data (not all zeros)
         if not np.all(frame == 0):
-            root_pos = frame[14]  # Root joint position (2,)
             # Make all joints relative to root
-            denorm_poses[frame_idx] = frame - root_pos[np.newaxis, :]
-            # Root joint is now at exactly (0, 0)
-            denorm_poses[frame_idx, 14] = [0.0, 0.0]
+            root_relative_poses[frame_idx] = frame - root_pos[np.newaxis, :]
+            # Set root joint to exactly (0, 0)
+            root_relative_poses[frame_idx, root_joint_idx] = [0.0, 0.0]
     
-    print(f"Denormalized coordinate ranges (root-relative):")
-    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}]")
-    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}]")
-    
-    # Verify root joint is at origin
-    non_zero_frames = ~np.all(denorm_poses == 0, axis=(1, 2))
-    if np.any(non_zero_frames):
-        sample_root = denorm_poses[np.where(non_zero_frames)[0][0], 14]
-        print(f"Sample root joint after making relative: [{sample_root[0]:.1f}, {sample_root[1]:.1f}] (should be [0.0, 0.0])")
-    
-    return denorm_poses
+    return root_relative_poses
 
 def compute_mpjpe_2d(gt_poses_2d, mp_poses_2d):
     """
@@ -209,7 +214,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics,
     fig.suptitle(f'2D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Pixels)\nAvg MPJPE: {avg_mpjpe:.1f} pixels', 
                  fontsize=16)
     
-    # Calculate dynamic limits based on the data (root joint is at 0,0)
+    # Calculate dynamic limits based on the data (excluding root which is at 0,0)
     all_gt_non_root = gt_poses[:, :, :].reshape(-1, 2)
     all_mp_non_root = mp_poses[:, :, :].reshape(-1, 2)
     
@@ -263,7 +268,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics,
                     x2, y2 = gt_frame[joint2]
                     ax1.plot([x1, x2], [y1, y2], 'b-', linewidth=2, alpha=0.7)
             
-            # Draw joints (root joint is already marked at origin)
+            # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(gt_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
@@ -289,7 +294,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics,
                     x2, y2 = mp_frame[joint2]
                     ax2.plot([x1, x2], [y1, y2], 'r-', linewidth=2, alpha=0.7)
             
-            # Draw joints (root joint is already marked at origin)
+            # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(mp_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
@@ -366,25 +371,22 @@ def main():
     print(f"\n✓ Loaded sequence {args.sequence}")
     print(f"GT frames: {len(gt_poses_2d_norm)}, MP frames: {len(mp_poses_2d_norm)}")
     
-    # Denormalize both datasets from [-1,1] to root-relative pixel coordinates
-    print(f"\nDenormalizing poses to root-relative pixel coordinates...")
-    gt_poses_2d_pixel = denormalize_poses_2d_root_relative(gt_poses_2d_norm, args.sequence)
-    mp_poses_2d_pixel = denormalize_poses_2d_root_relative(mp_poses_2d_norm, args.sequence)
+    # Denormalize both datasets from [-1,1] to pixel coordinates using correct function
+    print(f"\nDenormalizing poses to pixel coordinates...")
+    gt_poses_2d_pixel = denormalize_poses_2d_correct(gt_poses_2d_norm, args.sequence)
+    mp_poses_2d_pixel = denormalize_poses_2d_correct(mp_poses_2d_norm, args.sequence)
     
-    # Note: Since we denormalized to root-relative coordinates, root joint (14) should already be at origin
-    # But let's verify this by checking root joint positions
-    print(f"\nVerifying root joint positions after denormalization:")
-    gt_root_sample = gt_poses_2d_pixel[0, 14]  # Sample root position
-    mp_root_sample = mp_poses_2d_pixel[0, 14]  # Sample root position
-    print(f"GT root joint sample: [{gt_root_sample[0]:.1f}, {gt_root_sample[1]:.1f}]")
-    print(f"MP root joint sample: [{mp_root_sample[0]:.1f}, {mp_root_sample[1]:.1f}]")
+    # Make both datasets root-relative (root joint at origin in pixel coordinates)
+    print(f"\nMaking both datasets root-relative in pixel domain...")
+    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+    mp_poses_2d_root_rel = make_root_relative_2d_pixel(mp_poses_2d_pixel, root_joint_idx=14)
     
     # Analyze coordinate ranges
-    analyze_coordinate_ranges(gt_poses_2d_pixel, mp_poses_2d_pixel, args.sequence)
+    analyze_coordinate_ranges(gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence)
     
-    # Compute MPJPE in pixel coordinates (already root-relative)
+    # Compute MPJPE in pixel coordinates
     print(f"\nComputing MPJPE in pixel domain...")
-    metrics = compute_mpjpe_2d(gt_poses_2d_pixel, mp_poses_2d_pixel)
+    metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
     
     # Save analysis if requested
     if args.save_analysis and metrics:
@@ -394,7 +396,7 @@ def main():
     print(f"\nCreating visualization...")
     try:
         result = create_comparison_visualization(
-            gt_poses_2d_pixel, mp_poses_2d_pixel, args.sequence, metrics, args)
+            gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence, metrics, args)
         
         if result[0] is None:
             return
