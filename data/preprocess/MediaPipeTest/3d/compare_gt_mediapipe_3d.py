@@ -99,8 +99,8 @@ def apply_upright_correction(poses_3d):
     # This will rotate Y->Z and Z->-Y, making figures stand upright
     rotation_x_90 = np.array([
         [1,  0,  0],   # X stays the same
-        [0,  0, -1],   # Y becomes -Z (up becomes forward)
-        [0,  1,  0]    # Z becomes Y (forward becomes up)
+        [0,  0, 1],   # Y becomes Z 
+        [0,  -1,  0]    # Z becomes -Y 
     ], dtype=np.float32)
     
     # Apply rotation to all poses
