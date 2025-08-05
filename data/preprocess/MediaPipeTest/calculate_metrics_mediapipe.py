@@ -159,7 +159,7 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
     gt_poses = gt_poses_pixel[:min_frames]
     mp_poses = mp_poses_pixel[:min_frames]
     
-    frame_errors = []
+    frame_mpjpe_errors = []  # Store MPJPE per frame in pixels
     joint_errors = np.zeros(17)
     valid_frame_count = 0
     
@@ -174,13 +174,13 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
         if gt_valid and mp_valid:
             # Compute L2 distance per joint in pixels
             joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)
-            frame_error = np.mean(joint_diffs)
-            frame_errors.append(frame_error)
+            frame_mpjpe = np.mean(joint_diffs)  # MPJPE for this frame in pixels
+            frame_mpjpe_errors.append(frame_mpjpe)
             joint_errors += joint_diffs
             valid_frame_count += 1
     
     if valid_frame_count > 0:
-        avg_mpjpe = np.mean(frame_errors)
+        avg_mpjpe = np.mean(frame_mpjpe_errors)  # Average MPJPE across all frames
         joint_errors /= valid_frame_count
         
         print(f"\n2D MPJPE Results (pixel coordinates):")
@@ -200,7 +200,7 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
             'joint_errors': [float(x) for x in joint_errors],
             'valid_frames': int(valid_frame_count),
             'total_frames': int(min_frames),
-            'frame_errors': frame_errors  # Keep individual frame errors for visualization
+            'frame_mpjpe_errors': frame_mpjpe_errors  # Individual frame MPJPE errors in pixels
         }
     else:
         print("No valid frames found for comparison!")
@@ -324,9 +324,6 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
     
     # Set up the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                f'Overall 2D MPJPE: {metrics["mpjpe_2d"]:.2f}px | Valid frames: {metrics["valid_frames"]}/{metrics["total_frames"]}', 
-                fontsize=16)
     
     def update(frame_idx):
         ax1.clear()
@@ -397,18 +394,20 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
             ax2.text(img_width//2, img_height//2, 'No MediaPipe Data', ha='center', va='center', 
                     fontsize=16, color='red')
         
-        # Compute and display frame MPJPE (pixel error) - NOT frame error
+        # Compute and display frame MPJPE (pixel error)
         if gt_valid and mp_valid:
+            # Calculate frame MPJPE in pixels
             frame_mpjpe = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            mpjpe_text = f'Frame 2D MPJPE: {frame_mpjpe:.2f} pixels'
+            mpjpe_text = f'Frame MPJPE: {frame_mpjpe:.2f} pixels'
         else:
-            mpjpe_text = 'Frame 2D MPJPE: N/A'
+            mpjpe_text = 'Frame MPJPE: N/A'
         
         # Create comprehensive title with all metrics
         pck_text = " | ".join([f"{k}: {v:.1f}%" for k, v in metrics['pck_results'].items()])
         
+        # Enhanced title showing both overall and frame-specific MPJPE in pixels
         fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                    f'Overall 2D MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
+                    f'Average MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
                     f'{pck_text} | Valid: {metrics["valid_frames"]}/{metrics["total_frames"]} frames', 
                     fontsize=14, y=0.95)
         
@@ -504,21 +503,21 @@ def main():
     
     print(f"\n✓ Metrics saved to: {metrics_path}")
     
-    # Print final summary
+    # Print final summary with AVERAGE MPJPE prominently displayed
     print(f"\n{'='*60}")
     print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence}")
     print(f"{'='*60}")
-    print(f"2D MPJPE: {metrics['mpjpe_2d']:.2f} pixels")
-    print(f"2D AUC:   {metrics['auc_2d']:.4f}")
-    print(f"2D PCK Results:")
+    print(f"🎯 AVERAGE 2D MPJPE: {metrics['mpjpe_2d']:.2f} PIXELS")
+    print(f"📊 2D AUC:           {metrics['auc_2d']:.4f}")
+    print(f"✅ 2D PCK Results:")
     for threshold, pck in pck_results.items():
-        print(f"  {threshold}: {pck:.2f}%")
-    print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+        print(f"   {threshold}: {pck:.2f}%")
+    print(f"📋 Valid frames:     {metrics['valid_frames']}/{metrics['total_frames']}")
     print(f"{'='*60}")
     
     # Create visualization if requested
     if args.save_video:
-        print(f"\nCreating visualization...")
+        print(f"\nCreating visualization with MPJPE error in pixels...")
         
         # Load video frames for background
         frames = load_video_frames_for_visualization(args.sequence, args.num_frames)
@@ -532,18 +531,18 @@ def main():
                 
             update_func, fig, min_frames = result
             
-            print("Creating animation...")
+            print("Creating animation with pixel error display...")
             ani = FuncAnimation(fig, update_func, frames=min_frames, 
                               interval=500, repeat=True, blit=False)
             
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics_comparison.gif')
+            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison.gif')
             
             ani.save(output_path, writer='pillow', fps=2, dpi=100)
-            print(f"✓ Animation saved to: {output_path}")
+            print(f"✓ Animation with MPJPE pixel errors saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics_comparison_static.png')
+            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_static.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
             
