@@ -67,12 +67,16 @@ class MediaPipe2DPoseEstimator:
             15: [14, 1], # spine from hip and neck
         }
 
-    def estimate_2d_pose_from_image(self, image):
-        """Estimate 2D pose from image, return coordinates in [-1, 1] range"""
+    def estimate_2d_pose_from_image(self, image, original_width, original_height):
+        """Estimate 2D pose from image, return coordinates in original image pixel coordinates"""
         if image is None:
             return np.zeros((17, 3), dtype=np.float32)
         
         try:
+            # Store original dimensions
+            orig_h, orig_w = image.shape[:2]
+            
+            # Resize for MediaPipe processing if specified
             if self.resize_resolution:
                 image = cv2.resize(image, self.resize_resolution, interpolation=cv2.INTER_AREA)
                 
@@ -87,10 +91,25 @@ class MediaPipe2DPoseEstimator:
                 # Map MediaPipe landmarks to MPI joints
                 for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
                     if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
-                        # Convert [0,1] to [-1,1] range to match ground truth format
-                        x_norm = landmarks[mp_idx].x * 2.0 - 1.0
-                        y_norm = landmarks[mp_idx].y * 2.0 - 1.0
-                        pose_2d[mpi_idx] = [x_norm, y_norm, landmarks[mp_idx].visibility]
+                        # Convert MediaPipe normalized coordinates [0,1] to original image pixel coordinates
+                        # MediaPipe gives coordinates relative to the processed (possibly resized) image
+                        # We need to map them back to the original image coordinates
+                        
+                        if self.resize_resolution:
+                            # MediaPipe coordinates are relative to resized image
+                            # First convert to resized image pixels
+                            x_resized_pixel = landmarks[mp_idx].x * self.resize_resolution[0]
+                            y_resized_pixel = landmarks[mp_idx].y * self.resize_resolution[1]
+                            
+                            # Then scale back to original image dimensions
+                            x_orig_pixel = x_resized_pixel * (original_width / self.resize_resolution[0])
+                            y_orig_pixel = y_resized_pixel * (original_height / self.resize_resolution[1])
+                        else:
+                            # No resizing, direct conversion
+                            x_orig_pixel = landmarks[mp_idx].x * original_width
+                            y_orig_pixel = landmarks[mp_idx].y * original_height
+                        
+                        pose_2d[mpi_idx] = [x_orig_pixel, y_orig_pixel, landmarks[mp_idx].visibility]
 
                 # Estimate missing joints
                 for missing_joint, source_joints in self.missing_joints_estimation.items():
@@ -102,7 +121,8 @@ class MediaPipe2DPoseEstimator:
                 # Root joint from hips
                 if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
                     pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
-                    pose_2d[0, 1] -= 0.1
+                    # Adjust root position slightly down (in pixel coordinates)
+                    pose_2d[0, 1] += original_height * 0.02  # 2% of image height down
                     pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
 
             return pose_2d
@@ -114,6 +134,14 @@ class MediaPipe2DPoseEstimator:
     def close(self):
         if hasattr(self, 'pose'):
             self.pose.close()
+
+def get_sequence_image_dimensions(sequence_name):
+    """Get the original image dimensions for a sequence"""
+    # TS5 and TS6 use 1920x1080, others use 2048x2048
+    if sequence_name in ['TS5', 'TS6']:
+        return 1920, 1080
+    else:
+        return 2048, 2048
 
 def load_original_dataset():
     """Load the original MPI-INF-3DHP test dataset"""
@@ -171,6 +199,10 @@ def create_mediapipe_dataset(original_data, estimator, output_path):
     for seq_name, seq_data in original_data.items():
         print(f"\nProcessing sequence: {seq_name}")
         
+        # Get original image dimensions for this sequence
+        orig_width, orig_height = get_sequence_image_dimensions(seq_name)
+        print(f"  Original image dimensions: {orig_width}x{orig_height}")
+        
         # Load images for this sequence
         image_files = load_sequence_images(seq_name)
         if image_files is None:
@@ -191,6 +223,12 @@ def create_mediapipe_dataset(original_data, estimator, output_path):
         print(f"  Original 2D shape: {original_2d.shape}")
         print(f"  Processing {num_frames} frames...")
         
+        # Check original coordinate range for reference
+        if original_2d.size > 0:
+            print(f"  Original GT coordinate range:")
+            print(f"    X: [{np.min(original_2d[:, :, 0]):.1f}, {np.max(original_2d[:, :, 0]):.1f}]")
+            print(f"    Y: [{np.min(original_2d[:, :, 1]):.1f}, {np.max(original_2d[:, :, 1]):.1f}]")
+        
         # Process images with MediaPipe
         mediapipe_poses_2d = []
         
@@ -201,8 +239,8 @@ def create_mediapipe_dataset(original_data, estimator, output_path):
                 image = cv2.imread(image_path)
                 
                 if image is not None:
-                    # Get MediaPipe 2D pose
-                    pose_2d = estimator.estimate_2d_pose_from_image(image)
+                    # Get MediaPipe 2D pose in original pixel coordinates
+                    pose_2d = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
                     mediapipe_poses_2d.append(pose_2d[:, :2])  # Only x, y coordinates
                 else:
                     # Use zero pose for missing image
@@ -215,6 +253,18 @@ def create_mediapipe_dataset(original_data, estimator, output_path):
         mediapipe_seq_data['data_2d'] = np.array(mediapipe_poses_2d, dtype=np.float32)
         
         print(f"  ✓ MediaPipe 2D shape: {mediapipe_seq_data['data_2d'].shape}")
+        
+        # Check MediaPipe coordinate range
+        if mediapipe_seq_data['data_2d'].size > 0:
+            # Filter out zero poses for coordinate range analysis
+            non_zero_mask = ~np.all(mediapipe_seq_data['data_2d'] == 0, axis=(1, 2))
+            if np.any(non_zero_mask):
+                valid_poses = mediapipe_seq_data['data_2d'][non_zero_mask]
+                print(f"  MediaPipe coordinate range (valid poses only):")
+                print(f"    X: [{np.min(valid_poses[:, :, 0]):.1f}, {np.max(valid_poses[:, :, 0]):.1f}]")
+                print(f"    Y: [{np.min(valid_poses[:, :, 1]):.1f}, {np.max(valid_poses[:, :, 1]):.1f}]")
+            else:
+                print(f"  WARNING: All MediaPipe poses are zero for {seq_name}")
         
         # Verify shapes match
         assert mediapipe_seq_data['data_2d'].shape[:2] == original_2d.shape[:2], \
@@ -271,6 +321,7 @@ def main():
     print("=" * 60)
     print(f"Output path: {args.output_path}")
     print(f"Resize resolution: {args.resize_resolution}")
+    print(f"Note: Coordinates will be stored in original image pixel coordinates")
     
     # Load original dataset
     original_data = load_original_dataset()
@@ -289,6 +340,9 @@ def main():
         verify_dataset(original_data, mediapipe_data)
         
         print(f"\n✓ Success! MediaPipe dataset saved to: {args.output_path}")
+        print(f"\nCoordinate format: Original image pixel coordinates")
+        print(f"- TS1-TS4: 2048x2048 pixel coordinates")
+        print(f"- TS5-TS6: 1920x1080 pixel coordinates")
         print(f"\nTo use in training/evaluation:")
         print(f"1. Modify data_root in config to point to the new dataset")
         print(f"2. Or rename the file to replace the original")
