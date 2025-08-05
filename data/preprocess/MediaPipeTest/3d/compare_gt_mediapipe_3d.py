@@ -45,8 +45,8 @@ JOINT_NAMES = [
 
 def load_datasets():
     """Load both ground truth and MediaPipe 3D datasets"""
-    gt_path = project_root + '/data/motion3d/data_test_3dhp.npz'
-    mp_path = project_root + '/data/motion3d/data_test_3dhp_mediapipe_3d.npz'
+    gt_path = project_root + 'data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp.npz'
+    mp_path = project_root + 'data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp_mediapipe_3d.npz'
 
     print("Loading datasets...")
     
