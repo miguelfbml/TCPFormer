@@ -1,6 +1,6 @@
 """
-Compare Ground Truth 2D poses with MediaPipe 2D estimations
-This visualizes both side-by-side to verify the conversion is correct
+Compare Ground Truth 2D poses with MediaPipe 2D estimations in pixel coordinates
+This visualizes both side-by-side and computes MPJPE in pixel domain
 
 Usage:
 python compare_gt_mediapipe_2d.py --sequence TS1 --num-frames 10
@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import json
 from tqdm import tqdm
+import torch
 
 # Navigate to project root
 import sys
@@ -63,65 +64,42 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
-    """Normalize any coordinate system to [-1, 1] range"""
-    print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
+def denormalize_poses_2d(poses_2d, seq_name):
+    """
+    Denormalize 2D poses from [-1,1] back to pixel coordinates
+    Based on the denormalize function in utils/data.py and train_3dhp.py
+    """
+    print(f"\nDenormalizing {seq_name} from [-1,1] to pixel coordinates...")
     
     # Get image dimensions for this sequence
     if seq_name in ['TS5', 'TS6']:
-        width, height = 1920, 1080
+        res_w, res_h = 1920, 1080
     else:
-        width, height = 2048, 2048
+        res_w, res_h = 2048, 2048
     
-    print(f"Using image dimensions: {width}x{height}")
+    print(f"Using image dimensions: {res_w}x{res_h}")
     
-    # Analyze current coordinate range
-    print(f"Original {data_type} range:")
-    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
+    # Convert from [-1,1] normalized to pixel coordinates
+    # Based on utils/data.py denormalize function
+    denorm_poses = poses_2d.copy()
     
-    normalized_poses = poses_2d.copy()
+    # X coordinates: [-1,1] -> [0, res_w]
+    denorm_poses[:, :, 0] = (poses_2d[:, :, 0] + 1.0) * res_w / 2.0
     
-    # Detect coordinate system and normalize accordingly
-    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
-    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
+    # Y coordinates: [-1,1] -> [0, res_h] (accounting for aspect ratio)
+    denorm_poses[:, :, 1] = (poses_2d[:, :, 1] + res_h / res_w) * res_w / 2.0
     
-    if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
-        # MediaPipe [0,1] format - convert to [-1,1]
-        print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
-        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
-        
-    elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
-        # Pixel coordinates - convert to [-1,1]
-        print(f"  Detected pixel coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
-        
-    elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
-        # Already in [-1,1] format
-        print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
-        normalized_poses = poses_2d.copy()
-        
-    else:
-        # Unknown format - try to detect if it's extended pixel coordinates
-        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
-        # Assume it's some form of pixel/camera coordinates
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
+    print(f"Denormalized coordinate ranges:")
+    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}]")
+    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}]")
     
-    # Verify final range
-    final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
-    final_y_min, final_y_max = np.min(normalized_poses[:, :, 1]), np.max(normalized_poses[:, :, 1])
-    
-    print(f"Final {data_type} range:")
-    print(f"  X: [{final_x_min:.3f}, {final_x_max:.3f}]")
-    print(f"  Y: [{final_y_min:.3f}, {final_y_max:.3f}]")
-    
-    return normalized_poses
+    return denorm_poses
 
-def make_root_relative_2d(poses_2d, root_joint_idx=14):
-    """Make poses root-relative by subtracting root joint position from all joints"""
+def make_root_relative_2d_pixel(poses_2d, root_joint_idx=14):
+    """
+    Make poses root-relative by subtracting root joint position from all joints
+    Root joint will be at (0, 0) in pixel coordinates
+    """
     root_relative_poses = poses_2d.copy()
     
     for frame_idx in range(poses_2d.shape[0]):
@@ -137,33 +115,17 @@ def make_root_relative_2d(poses_2d, root_joint_idx=14):
     
     return root_relative_poses
 
-def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
-    """Analyze coordinate ranges for both datasets"""
-    print(f"\nCoordinate analysis for {seq_name}:")
-    print(f"Ground Truth 2D:")
-    print(f"  Shape: {gt_poses_2d.shape}")
-    print(f"  X range: [{np.min(gt_poses_2d[:, :, 0]):.3f}, {np.max(gt_poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y range: [{np.min(gt_poses_2d[:, :, 1]):.3f}, {np.max(gt_poses_2d[:, :, 1]):.3f}]")
-    
-    print(f"MediaPipe 2D:")
-    print(f"  Shape: {mp_poses_2d.shape}")
-    print(f"  X range: [{np.min(mp_poses_2d[:, :, 0]):.3f}, {np.max(mp_poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y range: [{np.min(mp_poses_2d[:, :, 1]):.3f}, {np.max(mp_poses_2d[:, :, 1]):.3f}]")
-    
-    # Check for zero poses
-    gt_zeros = np.sum(np.all(gt_poses_2d == 0, axis=(1, 2)))
-    mp_zeros = np.sum(np.all(mp_poses_2d == 0, axis=(1, 2)))
-    print(f"Zero poses: GT={gt_zeros}/{len(gt_poses_2d)}, MP={mp_zeros}/{len(mp_poses_2d)}")
-
-def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
-    """Compute comparison metrics between GT and MediaPipe poses"""
+def compute_mpjpe_2d(gt_poses_2d, mp_poses_2d):
+    """
+    Compute MPJPE between GT and MediaPipe 2D poses in pixel coordinates
+    """
     # Ensure same number of frames
     min_frames = min(len(gt_poses_2d), len(mp_poses_2d))
     gt_poses = gt_poses_2d[:min_frames]
     mp_poses = mp_poses_2d[:min_frames]
     
     # Compute frame-wise differences
-    frame_errors = []
+    frame_mpjpe = []
     joint_errors = np.zeros(17)
     valid_frame_count = 0
     
@@ -176,20 +138,22 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         mp_valid = not np.all(mp_frame == 0)
         
         if gt_valid and mp_valid:
-            # Compute L2 distance per joint
+            # Compute L2 distance per joint (MPJPE in pixels)
             joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)
             frame_error = np.mean(joint_diffs)
-            frame_errors.append(frame_error)
+            frame_mpjpe.append(frame_error)
             joint_errors += joint_diffs
             valid_frame_count += 1
+        else:
+            frame_mpjpe.append(np.nan)
     
     if valid_frame_count > 0:
-        avg_frame_error = np.mean(frame_errors)
+        avg_mpjpe = np.mean([e for e in frame_mpjpe if not np.isnan(e)])
         joint_errors /= valid_frame_count
         
-        print(f"\nComparison Metrics (root-relative in [-1,1] coordinates):")
+        print(f"\n2D MPJPE Results (in pixels, root-relative):")
         print(f"Valid frames: {valid_frame_count}/{min_frames}")
-        print(f"Average frame error: {avg_frame_error:.4f}")
+        print(f"Average MPJPE: {avg_mpjpe:.1f} pixels")
         print(f"Joint errors (top 5):")
         
         # Sort joints by error
@@ -197,20 +161,39 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
         
         for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
-            print(f"  {name} (joint {joint_idx}): {error:.4f}")
+            print(f"  {name} (joint {joint_idx}): {error:.1f} pixels")
         
         return {
-            'avg_frame_error': float(avg_frame_error),
+            'avg_mpjpe': float(avg_mpjpe),
+            'frame_mpjpe': frame_mpjpe,
             'joint_errors': [float(x) for x in joint_errors],
             'valid_frames': int(valid_frame_count),
             'total_frames': int(min_frames)
         }
     else:
-        print("No valid frames found for comparison!")
+        print("No valid frames found for MPJPE calculation!")
         return None
 
-def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
-    """Create side-by-side comparison visualization"""
+def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
+    """Analyze coordinate ranges for both datasets"""
+    print(f"\nCoordinate analysis for {seq_name}:")
+    print(f"Ground Truth 2D:")
+    print(f"  Shape: {gt_poses_2d.shape}")
+    print(f"  X range: [{np.min(gt_poses_2d[:, :, 0]):.1f}, {np.max(gt_poses_2d[:, :, 0]):.1f}] pixels")
+    print(f"  Y range: [{np.min(gt_poses_2d[:, :, 1]):.1f}, {np.max(gt_poses_2d[:, :, 1]):.1f}] pixels")
+    
+    print(f"MediaPipe 2D:")
+    print(f"  Shape: {mp_poses_2d.shape}")
+    print(f"  X range: [{np.min(mp_poses_2d[:, :, 0]):.1f}, {np.max(mp_poses_2d[:, :, 0]):.1f}] pixels")
+    print(f"  Y range: [{np.min(mp_poses_2d[:, :, 1]):.1f}, {np.max(mp_poses_2d[:, :, 1]):.1f}] pixels")
+    
+    # Check for zero poses
+    gt_zeros = np.sum(np.all(gt_poses_2d == 0, axis=(1, 2)))
+    mp_zeros = np.sum(np.all(mp_poses_2d == 0, axis=(1, 2)))
+    print(f"Zero poses: GT={gt_zeros}/{len(gt_poses_2d)}, MP={mp_zeros}/{len(mp_poses_2d)}")
+
+def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics, args):
+    """Create side-by-side comparison visualization with MPJPE"""
     min_frames = min(len(gt_poses_2d), len(mp_poses_2d), args.num_frames)
     
     if min_frames == 0:
@@ -220,16 +203,19 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
     # Limit frames
     gt_poses = gt_poses_2d[:min_frames]
     mp_poses = mp_poses_2d[:min_frames]
+    frame_mpjpe = metrics['frame_mpjpe'][:min_frames] if metrics else [np.nan] * min_frames
     
     # Set up the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name} (Root-Relative)', fontsize=16)
+    avg_mpjpe = metrics['avg_mpjpe'] if metrics else 0
+    fig.suptitle(f'2D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Pixels)\nAvg MPJPE: {avg_mpjpe:.1f} pixels', 
+                 fontsize=16)
     
     # Calculate dynamic limits based on the data (excluding root which is at 0,0)
     all_gt_non_root = gt_poses[:, :, :].reshape(-1, 2)
     all_mp_non_root = mp_poses[:, :, :].reshape(-1, 2)
     
-    # Remove zero points and root positions for limit calculation
+    # Remove zero points for limit calculation
     valid_gt = all_gt_non_root[~np.all(all_gt_non_root == 0, axis=1)]
     valid_mp = all_mp_non_root[~np.all(all_mp_non_root == 0, axis=1)]
     
@@ -241,8 +227,8 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
         x_min, x_max = -max_range, max_range
         y_min, y_max = -max_range, max_range
     else:
-        x_min, x_max = -0.5, 0.5
-        y_min, y_max = -0.5, 0.5
+        x_min, x_max = -500, 500  # Default pixel range
+        y_min, y_max = -500, 500
     
     def update(frame_idx):
         ax1.clear()
@@ -254,16 +240,17 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             ax.set_ylim(y_max, y_min)  # Flip Y axis for image coordinates
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
-            ax.set_xlabel('X (root-relative, normalized)')
-            ax.set_ylabel('Y (root-relative, normalized)')
+            ax.set_xlabel('X (pixels, root-relative)')
+            ax.set_ylabel('Y (pixels, root-relative)')
             
             # Add origin markers for root joint
             ax.scatter(0, 0, c='green', s=100, marker='*', alpha=1.0, 
                       edgecolors='darkgreen', linewidth=2, zorder=10)
-            ax.text(0.02, 0.02, 'Root(14)', fontsize=10, ha='left', va='bottom', 
+            ax.text(20, 20, 'Root(14)', fontsize=10, ha='left', va='bottom', 
                    color='green', weight='bold')
         
         # Plot Ground Truth
+        current_mpjpe = frame_mpjpe[frame_idx] if not np.isnan(frame_mpjpe[frame_idx]) else 0
         ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
         gt_frame = gt_poses[frame_idx]
         
@@ -276,22 +263,21 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
                 if joint1 < len(gt_frame) and joint2 < len(gt_frame):
                     x1, y1 = gt_frame[joint1]
                     x2, y2 = gt_frame[joint2]
-                    # Don't skip connections just because one joint is at origin
                     ax1.plot([x1, x2], [y1, y2], 'b-', linewidth=2, alpha=0.7)
             
             # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(gt_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
-                    # Changed text color to black for better visibility
-                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=10, ha='left', va='bottom', 
+                    ax1.text(x+15, y+15, str(joint_idx), fontsize=9, ha='left', va='bottom', 
                             color='black', weight='bold',
                             bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
         else:
-            ax1.text(0, 0.1, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
+            ax1.text(0, 50, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
         
         # Plot MediaPipe
-        ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
+        ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames}\nMPJPE: {current_mpjpe:.1f} pixels', 
+                     fontsize=14)
         mp_frame = mp_poses[frame_idx]
         
         # Check if frame has valid data
@@ -303,29 +289,17 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
                 if joint1 < len(mp_frame) and joint2 < len(mp_frame):
                     x1, y1 = mp_frame[joint1]
                     x2, y2 = mp_frame[joint2]
-                    # Don't skip connections just because one joint is at origin
                     ax2.plot([x1, x2], [y1, y2], 'r-', linewidth=2, alpha=0.7)
             
             # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(mp_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
-                    # Changed text color to black for better visibility
-                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=10, ha='left', va='bottom', 
+                    ax2.text(x+15, y+15, str(joint_idx), fontsize=9, ha='left', va='bottom', 
                             color='black', weight='bold',
                             bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
         else:
-            ax2.text(0, 0.1, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
-        
-        # Compute and display frame error
-        if gt_valid and mp_valid:
-            frame_error = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            error_text = f'Frame Error: {frame_error:.4f} (root-relative)'
-        else:
-            error_text = 'Frame Error: N/A'
-        
-        fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name} (Root-Relative)\n{error_text}', 
-                    fontsize=16)
+            ax2.text(0, 50, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
         
         plt.tight_layout()
         return [ax1, ax2]
@@ -338,25 +312,14 @@ def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
         'sequence_name': seq_name,
         'gt_shape': list(gt_data[seq_name]['data_2d'].shape),
         'mp_shape': list(mp_data[seq_name]['data_2d'].shape),
-        'gt_coordinate_range': {
-            'x_min': float(np.min(gt_data[seq_name]['data_2d'][:, :, 0])),
-            'x_max': float(np.max(gt_data[seq_name]['data_2d'][:, :, 0])),
-            'y_min': float(np.min(gt_data[seq_name]['data_2d'][:, :, 1])),
-            'y_max': float(np.max(gt_data[seq_name]['data_2d'][:, :, 1]))
-        },
-        'mp_coordinate_range': {
-            'x_min': float(np.min(mp_data[seq_name]['data_2d'][:, :, 0])),
-            'x_max': float(np.max(mp_data[seq_name]['data_2d'][:, :, 0])),
-            'y_min': float(np.min(mp_data[seq_name]['data_2d'][:, :, 1])),
-            'y_max': float(np.max(mp_data[seq_name]['data_2d'][:, :, 1]))
-        },
-        'comparison_metrics': metrics,
+        'mpjpe_results': metrics,
         'joint_names': JOINT_NAMES,
-        'note': 'All poses are root-relative (root joint at origin)'
+        'coordinate_system': 'pixel_coordinates_root_relative',
+        'note': 'All poses are root-relative (root joint at origin) in pixel coordinates'
     }
     
     os.makedirs(output_dir, exist_ok=True)
-    analysis_path = os.path.join(output_dir, f'{seq_name}_comparison_analysis.json')
+    analysis_path = os.path.join(output_dir, f'{seq_name}_mpjpe_analysis.json')
     
     with open(analysis_path, 'w') as f:
         json.dump(analysis, f, indent=2)
@@ -364,7 +327,7 @@ def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
     print(f"✓ Analysis saved to: {analysis_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Compare Ground Truth and MediaPipe 2D poses')
+    parser = argparse.ArgumentParser(description='Compare Ground Truth and MediaPipe 2D poses with MPJPE in pixel domain')
     parser.add_argument('--sequence', type=str, default='TS1', 
                        help='Sequence to compare (TS1, TS2, TS3, TS4, TS5, TS6)')
     parser.add_argument('--num-frames', type=int, default=50,
@@ -377,8 +340,8 @@ def main():
                        help='Directory to save outputs')
     args = parser.parse_args()
     
-    print("Ground Truth vs MediaPipe 2D Pose Comparison (Root-Relative)")
-    print("=" * 60)
+    print("Ground Truth vs MediaPipe 2D Pose Comparison with MPJPE (Pixel Domain)")
+    print("=" * 70)
     print(f"Sequence: {args.sequence}")
     print(f"Frames to visualize: {args.num_frames}")
     
@@ -398,45 +361,39 @@ def main():
         print(f"Available sequences: {list(mp_data.keys())}")
         return
     
-    # Extract 2D poses
-    gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    mp_poses_2d_orig = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    # Extract 2D poses (assuming they are in [-1,1] normalized coordinates)
+    gt_poses_2d_norm = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    mp_poses_2d_norm = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     
     print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
+    print(f"GT frames: {len(gt_poses_2d_norm)}, MP frames: {len(mp_poses_2d_norm)}")
     
-    # Analyze coordinate ranges before normalization
-    analyze_coordinate_ranges(gt_poses_2d_orig, mp_poses_2d_orig, args.sequence)
+    # Denormalize both datasets from [-1,1] to pixel coordinates
+    print(f"\nDenormalizing poses to pixel coordinates...")
+    gt_poses_2d_pixel = denormalize_poses_2d(gt_poses_2d_norm, args.sequence)
+    mp_poses_2d_pixel = denormalize_poses_2d(mp_poses_2d_norm, args.sequence)
     
-    # Normalize BOTH datasets to [-1, 1] for fair comparison
-    gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
-    mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
+    # Make both datasets root-relative (root joint at origin in pixel coordinates)
+    print(f"\nMaking both datasets root-relative in pixel domain...")
+    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+    mp_poses_2d_root_rel = make_root_relative_2d_pixel(mp_poses_2d_pixel, root_joint_idx=14)
     
-    # Make both datasets root-relative (root joint at origin)
-    print(f"\nMaking both datasets root-relative...")
-    gt_poses_2d_root_rel = make_root_relative_2d(gt_poses_2d_norm, root_joint_idx=14)
-    mp_poses_2d_root_rel = make_root_relative_2d(mp_poses_2d_norm, root_joint_idx=14)
+    # Analyze coordinate ranges
+    analyze_coordinate_ranges(gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence)
     
-    print(f"Root-relative GT range:")
-    print(f"  X: [{np.min(gt_poses_2d_root_rel[:, :, 0]):.3f}, {np.max(gt_poses_2d_root_rel[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(gt_poses_2d_root_rel[:, :, 1]):.3f}, {np.max(gt_poses_2d_root_rel[:, :, 1]):.3f}]")
-    
-    print(f"Root-relative MP range:")
-    print(f"  X: [{np.min(mp_poses_2d_root_rel[:, :, 0]):.3f}, {np.max(mp_poses_2d_root_rel[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(mp_poses_2d_root_rel[:, :, 1]):.3f}, {np.max(mp_poses_2d_root_rel[:, :, 1]):.3f}]")
-    
-    # Compute comparison metrics on root-relative data
-    metrics = compute_comparison_metrics(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
+    # Compute MPJPE in pixel coordinates
+    print(f"\nComputing MPJPE in pixel domain...")
+    metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
     
     # Save analysis if requested
     if args.save_analysis and metrics:
         save_comparison_analysis(gt_data, mp_data, args.sequence, metrics, args.output_dir)
     
-    # Create visualization using root-relative data
+    # Create visualization using root-relative pixel coordinates
     print(f"\nCreating visualization...")
     try:
         result = create_comparison_visualization(
-            gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence, args)
+            gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence, metrics, args)
         
         if result[0] is None:
             return
@@ -449,16 +406,21 @@ def main():
                               interval=300, repeat=True, blit=False)
             
             os.makedirs(args.output_dir, exist_ok=True)
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d.gif')
+            avg_mpjpe = metrics['avg_mpjpe'] if metrics else 0
+            output_path = os.path.join(args.output_dir, 
+                                     f'{args.sequence}_gt_vs_mediapipe_2d_mpjpe_{avg_mpjpe:.1f}px.gif')
             
             ani.save(output_path, writer='pillow', fps=3, dpi=100)
             print(f"✓ Animation saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d.png')
+            static_path = os.path.join(args.output_dir, 
+                                     f'{args.sequence}_gt_vs_mediapipe_2d_mpjpe_{avg_mpjpe:.1f}px.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
+            
+            plt.close(fig)
         else:
             # Interactive visualization
             print("Showing interactive visualization...")
