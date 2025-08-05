@@ -283,8 +283,10 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             for joint_idx, (x, y) in enumerate(gt_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
-                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', 
-                            color='white', weight='bold')
+                    # Changed text color to black for better visibility
+                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=10, ha='left', va='bottom', 
+                            color='black', weight='bold',
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
         else:
             ax1.text(0, 0.1, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
         
@@ -308,8 +310,10 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             for joint_idx, (x, y) in enumerate(mp_frame):
                 if joint_idx != 14:  # Skip root joint
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
-                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', 
-                            color='white', weight='bold')
+                    # Changed text color to black for better visibility
+                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=10, ha='left', va='bottom', 
+                            color='black', weight='bold',
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
         else:
             ax2.text(0, 0.1, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
         
