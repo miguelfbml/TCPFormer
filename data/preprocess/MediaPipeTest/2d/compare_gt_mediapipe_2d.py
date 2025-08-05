@@ -120,6 +120,23 @@ def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
     
     return normalized_poses
 
+def make_root_relative_2d(poses_2d, root_joint_idx=14):
+    """Make poses root-relative by subtracting root joint position from all joints"""
+    root_relative_poses = poses_2d.copy()
+    
+    for frame_idx in range(poses_2d.shape[0]):
+        frame = poses_2d[frame_idx]  # (17, 2)
+        root_pos = frame[root_joint_idx]  # (2,)
+        
+        # Check if this frame has valid data (not all zeros)
+        if not np.all(frame == 0):
+            # Make all joints relative to root
+            root_relative_poses[frame_idx] = frame - root_pos[np.newaxis, :]
+            # Set root joint to exactly (0, 0)
+            root_relative_poses[frame_idx, root_joint_idx] = [0.0, 0.0]
+    
+    return root_relative_poses
+
 def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
     """Analyze coordinate ranges for both datasets"""
     print(f"\nCoordinate analysis for {seq_name}:")
@@ -170,7 +187,7 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         avg_frame_error = np.mean(frame_errors)
         joint_errors /= valid_frame_count
         
-        print(f"\nComparison Metrics (both in [-1,1] coordinates):")
+        print(f"\nComparison Metrics (root-relative in [-1,1] coordinates):")
         print(f"Valid frames: {valid_frame_count}/{min_frames}")
         print(f"Average frame error: {avg_frame_error:.4f}")
         print(f"Joint errors (top 5):")
@@ -206,11 +223,26 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
     
     # Set up the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}', fontsize=16)
+    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name} (Root-Relative)', fontsize=16)
     
-    # Use fixed limits since both are now in [-1,1] range
-    x_min, x_max = -1.2, 1.2
-    y_min, y_max = -1.2, 1.2
+    # Calculate dynamic limits based on the data (excluding root which is at 0,0)
+    all_gt_non_root = gt_poses[:, :, :].reshape(-1, 2)
+    all_mp_non_root = mp_poses[:, :, :].reshape(-1, 2)
+    
+    # Remove zero points and root positions for limit calculation
+    valid_gt = all_gt_non_root[~np.all(all_gt_non_root == 0, axis=1)]
+    valid_mp = all_mp_non_root[~np.all(all_mp_non_root == 0, axis=1)]
+    
+    if len(valid_gt) > 0 and len(valid_mp) > 0:
+        all_points = np.vstack([valid_gt, valid_mp])
+        x_range = np.max(np.abs(all_points[:, 0]))
+        y_range = np.max(np.abs(all_points[:, 1]))
+        max_range = max(x_range, y_range) * 1.1
+        x_min, x_max = -max_range, max_range
+        y_min, y_max = -max_range, max_range
+    else:
+        x_min, x_max = -0.5, 0.5
+        y_min, y_max = -0.5, 0.5
     
     def update(frame_idx):
         ax1.clear()
@@ -222,8 +254,14 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             ax.set_ylim(y_max, y_min)  # Flip Y axis for image coordinates
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
-            ax.set_xlabel('X (normalized [-1,1])')
-            ax.set_ylabel('Y (normalized [-1,1])')
+            ax.set_xlabel('X (root-relative, normalized)')
+            ax.set_ylabel('Y (root-relative, normalized)')
+            
+            # Add origin markers for root joint
+            ax.scatter(0, 0, c='green', s=100, marker='*', alpha=1.0, 
+                      edgecolors='darkgreen', linewidth=2, zorder=10)
+            ax.text(0.02, 0.02, 'Root(14)', fontsize=10, ha='left', va='bottom', 
+                   color='green', weight='bold')
         
         # Plot Ground Truth
         ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
@@ -238,16 +276,17 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
                 if joint1 < len(gt_frame) and joint2 < len(gt_frame):
                     x1, y1 = gt_frame[joint1]
                     x2, y2 = gt_frame[joint2]
-                    if not (x1 == 0 and y1 == 0) and not (x2 == 0 and y2 == 0):
-                        ax1.plot([x1, x2], [y1, y2], 'b-', linewidth=2, alpha=0.7)
+                    # Don't skip connections just because one joint is at origin
+                    ax1.plot([x1, x2], [y1, y2], 'b-', linewidth=2, alpha=0.7)
             
-            # Draw joints
+            # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(gt_frame):
-                if not (x == 0 and y == 0):
+                if joint_idx != 14:  # Skip root joint
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
-                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', color='white', weight='bold')
+                    ax1.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', 
+                            color='white', weight='bold')
         else:
-            ax1.text(0, 0, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
+            ax1.text(0, 0.1, 'No GT Data', ha='center', va='center', fontsize=16, color='red')
         
         # Plot MediaPipe
         ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
@@ -262,25 +301,27 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
                 if joint1 < len(mp_frame) and joint2 < len(mp_frame):
                     x1, y1 = mp_frame[joint1]
                     x2, y2 = mp_frame[joint2]
-                    if not (x1 == 0 and y1 == 0) and not (x2 == 0 and y2 == 0):
-                        ax2.plot([x1, x2], [y1, y2], 'r-', linewidth=2, alpha=0.7)
+                    # Don't skip connections just because one joint is at origin
+                    ax2.plot([x1, x2], [y1, y2], 'r-', linewidth=2, alpha=0.7)
             
-            # Draw joints
+            # Draw joints (excluding root which is already marked)
             for joint_idx, (x, y) in enumerate(mp_frame):
-                if not (x == 0 and y == 0):
+                if joint_idx != 14:  # Skip root joint
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
-                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', color='white', weight='bold')
+                    ax2.text(x+0.02, y+0.02, str(joint_idx), fontsize=8, ha='left', va='bottom', 
+                            color='white', weight='bold')
         else:
-            ax2.text(0, 0, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
+            ax2.text(0, 0.1, 'No MediaPipe Data', ha='center', va='center', fontsize=16, color='red')
         
         # Compute and display frame error
         if gt_valid and mp_valid:
             frame_error = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            error_text = f'Frame Error: {frame_error:.4f}'
+            error_text = f'Frame Error: {frame_error:.4f} (root-relative)'
         else:
             error_text = 'Frame Error: N/A'
         
-        fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n{error_text}', fontsize=16)
+        fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name} (Root-Relative)\n{error_text}', 
+                    fontsize=16)
         
         plt.tight_layout()
         return [ax1, ax2]
@@ -306,7 +347,8 @@ def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
             'y_max': float(np.max(mp_data[seq_name]['data_2d'][:, :, 1]))
         },
         'comparison_metrics': metrics,
-        'joint_names': JOINT_NAMES
+        'joint_names': JOINT_NAMES,
+        'note': 'All poses are root-relative (root joint at origin)'
     }
     
     os.makedirs(output_dir, exist_ok=True)
@@ -331,7 +373,7 @@ def main():
                        help='Directory to save outputs')
     args = parser.parse_args()
     
-    print("Ground Truth vs MediaPipe 2D Pose Comparison")
+    print("Ground Truth vs MediaPipe 2D Pose Comparison (Root-Relative)")
     print("=" * 60)
     print(f"Sequence: {args.sequence}")
     print(f"Frames to visualize: {args.num_frames}")
@@ -366,18 +408,31 @@ def main():
     gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
     mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
     
-    # Compute comparison metrics on normalized data
-    metrics = compute_comparison_metrics(gt_poses_2d_norm, mp_poses_2d_norm)
+    # Make both datasets root-relative (root joint at origin)
+    print(f"\nMaking both datasets root-relative...")
+    gt_poses_2d_root_rel = make_root_relative_2d(gt_poses_2d_norm, root_joint_idx=14)
+    mp_poses_2d_root_rel = make_root_relative_2d(mp_poses_2d_norm, root_joint_idx=14)
+    
+    print(f"Root-relative GT range:")
+    print(f"  X: [{np.min(gt_poses_2d_root_rel[:, :, 0]):.3f}, {np.max(gt_poses_2d_root_rel[:, :, 0]):.3f}]")
+    print(f"  Y: [{np.min(gt_poses_2d_root_rel[:, :, 1]):.3f}, {np.max(gt_poses_2d_root_rel[:, :, 1]):.3f}]")
+    
+    print(f"Root-relative MP range:")
+    print(f"  X: [{np.min(mp_poses_2d_root_rel[:, :, 0]):.3f}, {np.max(mp_poses_2d_root_rel[:, :, 0]):.3f}]")
+    print(f"  Y: [{np.min(mp_poses_2d_root_rel[:, :, 1]):.3f}, {np.max(mp_poses_2d_root_rel[:, :, 1]):.3f}]")
+    
+    # Compute comparison metrics on root-relative data
+    metrics = compute_comparison_metrics(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
     
     # Save analysis if requested
     if args.save_analysis and metrics:
         save_comparison_analysis(gt_data, mp_data, args.sequence, metrics, args.output_dir)
     
-    # Create visualization using normalized data
+    # Create visualization using root-relative data
     print(f"\nCreating visualization...")
     try:
         result = create_comparison_visualization(
-            gt_poses_2d_norm, mp_poses_2d_norm, args.sequence, args)
+            gt_poses_2d_root_rel, mp_poses_2d_root_rel, args.sequence, args)
         
         if result[0] is None:
             return
@@ -390,14 +445,14 @@ def main():
                               interval=300, repeat=True, blit=False)
             
             os.makedirs(args.output_dir, exist_ok=True)
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d.gif')
+            output_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d_root_relative.gif')
             
             ani.save(output_path, writer='pillow', fps=3, dpi=100)
             print(f"✓ Animation saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d_static.png')
+            static_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d_root_relative_static.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
         else:
