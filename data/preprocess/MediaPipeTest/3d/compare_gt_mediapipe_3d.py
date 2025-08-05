@@ -397,12 +397,12 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
     
     # Enhanced title with all metrics
     if metrics:
-        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Upright Corrected)\n'
+        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name}\n'
                 f'Avg MPJPE: {metrics["avg_mpjpe"]:.1f}mm | '
                 f'AUC: {metrics["auc"]:.4f} | '
                 f'PCK@80%_150mm: {metrics["pck_results"]["PCK@80%_150mm"]*100:.1f}%')
     else:
-        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Upright Corrected)'
+        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name}'
     
     fig.suptitle(title, fontsize=16)
     
@@ -447,7 +447,7 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
             ax.text(0, 100, 0, 'Y(F)', fontsize=10, color='green')
             ax.text(0, 0, 100, 'Z(U)', fontsize=10, color='blue')
         
-        ax1.set_title(f'Ground Truth (Upright)\nFrame {frame_idx+1}/{min_frames}', fontsize=16, pad=20)
+        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=16, pad=20)
         gt_frame = gt_poses[frame_idx]
         
         gt_valid = not np.all(gt_frame == 0)
@@ -474,7 +474,7 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
         
         # Enhanced frame title with frame-specific MPJPE
         frame_mpjpe_val = frame_mpjpe[frame_idx] if not np.isnan(frame_mpjpe[frame_idx]) else 0
-        ax2.set_title(f'MediaPipe (Upright Corrected)\nFrame {frame_idx+1}/{min_frames} | '
+        ax2.set_title(f'MediaPipe\nFrame {frame_idx+1}/{min_frames} | '
                      f'Frame MPJPE: {frame_mpjpe_val:.1f}mm', fontsize=16, pad=20)
         mp_frame = mp_poses[frame_idx]
         
@@ -622,14 +622,14 @@ def main():
             
             os.makedirs(args.output_dir, exist_ok=True)
             output_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_upright.gif')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_comprehensive.gif')
             
             ani.save(output_path, writer='pillow', fps=2.5, dpi=120)
             print(f"✓ Animation saved to: {output_path}")
             
             update_func(0)
             static_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_upright.png')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_comprehensive.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
             
