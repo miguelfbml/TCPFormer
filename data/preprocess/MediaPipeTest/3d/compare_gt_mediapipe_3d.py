@@ -45,8 +45,8 @@ JOINT_NAMES = [
 
 def load_datasets():
     """Load both ground truth and MediaPipe 3D datasets"""
-    gt_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp.npz'
-    mp_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp_mediapipe_3d.npz'
+    gt_path = project_root + '/data/motion3d/data_test_3dhp.npz'
+    mp_path = project_root + '/data/motion3d/data_test_3dhp_mediapipe_3d.npz'
 
     print("Loading datasets...")
     
@@ -65,6 +65,28 @@ def load_datasets():
     print(f"✓ MediaPipe 3D loaded: {list(mp_data.keys())}")
     
     return gt_data, mp_data
+
+def apply_camera_transformation(poses_3d):
+    """
+    Apply camera transformation to align MediaPipe coordinates with MPI-INF-3DHP
+    
+    MediaPipe world coordinates: X=right, Y=down, Z=forward (camera view)
+    MPI-INF-3DHP coordinates: X=right, Y=up, Z=backward (world view)
+    
+    Transformation matrix converts from camera to world coordinates
+    """
+    # Camera to world transformation matrix
+    # This flips Y and Z axes to match MPI-INF-3DHP coordinate system
+    cam2world = np.array([
+        [1,  0,  0],  # X stays the same (right)
+        [0, -1,  0],  # Y flips (down -> up)
+        [0,  0, -1]   # Z flips (forward -> backward)
+    ], dtype=np.float32)
+    
+    # Apply transformation to all poses
+    transformed_poses = poses_3d @ cam2world.T
+    
+    return transformed_poses
 
 def make_root_relative_3d(poses_3d, root_joint_idx=14):
     """
@@ -132,13 +154,13 @@ def compute_mpjpe_3d(gt_poses_3d, mp_poses_3d):
     # Calculate joint-wise errors
     joint_errors = np.mean(np.linalg.norm(valid_gt - valid_mp, axis=2), axis=0)  # (17,)
     
-    # Calculate torso diameters for PCK - FIXED: Pass tensor instead of numpy array
+    # Calculate torso diameters for PCK
     torso_diameters = calculate_torso_diameter(gt_tensor)
     
-    # Compute PCK metrics - FIXED: Pass tensors instead of numpy arrays
+    # Compute PCK metrics
     pck_results = compute_pck(mp_tensor, gt_tensor, torso_diameters, fixed_threshold=150.0)
     
-    # Compute AUC - FIXED: Pass tensors instead of numpy arrays
+    # Compute AUC
     auc = compute_auc(mp_tensor, gt_tensor)
     
     return {
@@ -158,9 +180,12 @@ def process_single_sequence(gt_data, mp_data, seq_name):
     gt_poses_3d = gt_data[seq_name]['data_3d']
     mp_poses_3d = mp_data[seq_name]['data_3d']
     
-    # Make root-relative
+    # CRITICAL: Apply camera transformation to MediaPipe poses FIRST
+    mp_poses_3d_transformed = apply_camera_transformation(mp_poses_3d)
+    
+    # Then make both datasets root-relative
     gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d, root_joint_idx=14)
-    mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d, root_joint_idx=14)
+    mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d_transformed, root_joint_idx=14)
     
     # Compute comprehensive metrics
     metrics = compute_mpjpe_3d(gt_poses_3d_root_rel, mp_poses_3d_root_rel)
@@ -283,15 +308,23 @@ def analyze_coordinate_ranges(gt_poses_3d, mp_poses_3d, seq_name):
     print(f"\nCoordinate analysis for {seq_name}:")
     print(f"Ground Truth 3D:")
     print(f"  Shape: {gt_poses_3d.shape}")
-    print(f"  X range: [{np.min(gt_poses_3d[:, :, 0]):.1f}, {np.max(gt_poses_3d[:, :, 0]):.1f}] mm")
-    print(f"  Y range: [{np.min(gt_poses_3d[:, :, 1]):.1f}, {np.max(gt_poses_3d[:, :, 1]):.1f}] mm")
-    print(f"  Z range: [{np.min(gt_poses_3d[:, :, 2]):.1f}, {np.max(gt_poses_3d[:, :, 2]):.1f}] mm")
     
-    print(f"MediaPipe 3D:")
+    # Filter out zero poses for analysis
+    gt_nonzero = gt_poses_3d[~np.all(gt_poses_3d == 0, axis=(1, 2))]
+    if len(gt_nonzero) > 0:
+        print(f"  X range: [{np.min(gt_nonzero[:, :, 0]):.1f}, {np.max(gt_nonzero[:, :, 0]):.1f}] mm")
+        print(f"  Y range: [{np.min(gt_nonzero[:, :, 1]):.1f}, {np.max(gt_nonzero[:, :, 1]):.1f}] mm")
+        print(f"  Z range: [{np.min(gt_nonzero[:, :, 2]):.1f}, {np.max(gt_nonzero[:, :, 2]):.1f}] mm")
+    
+    print(f"MediaPipe 3D (after camera transformation):")
     print(f"  Shape: {mp_poses_3d.shape}")
-    print(f"  X range: [{np.min(mp_poses_3d[:, :, 0]):.1f}, {np.max(mp_poses_3d[:, :, 0]):.1f}] mm")
-    print(f"  Y range: [{np.min(mp_poses_3d[:, :, 1]):.1f}, {np.max(mp_poses_3d[:, :, 1]):.1f}] mm")
-    print(f"  Z range: [{np.min(mp_poses_3d[:, :, 2]):.1f}, {np.max(mp_poses_3d[:, :, 2]):.1f}] mm")
+    
+    # Filter out zero poses for analysis
+    mp_nonzero = mp_poses_3d[~np.all(mp_poses_3d == 0, axis=(1, 2))]
+    if len(mp_nonzero) > 0:
+        print(f"  X range: [{np.min(mp_nonzero[:, :, 0]):.1f}, {np.max(mp_nonzero[:, :, 0]):.1f}] mm")
+        print(f"  Y range: [{np.min(mp_nonzero[:, :, 1]):.1f}, {np.max(mp_nonzero[:, :, 1]):.1f}] mm")
+        print(f"  Z range: [{np.min(mp_nonzero[:, :, 2]):.1f}, {np.max(mp_nonzero[:, :, 2]):.1f}] mm")
     
     gt_zeros = np.sum(np.all(gt_poses_3d == 0, axis=(1, 2)))
     mp_zeros = np.sum(np.all(mp_poses_3d == 0, axis=(1, 2)))
@@ -309,20 +342,20 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
     mp_poses = mp_poses_3d[:min_frames]
     frame_mpjpe = metrics['frame_mpjpe'][:min_frames] if metrics else [np.nan] * min_frames
     
-    fig = plt.figure(figsize=(20, 10))
+    fig = plt.figure(figsize=(20, 12))
     ax1 = fig.add_subplot(121, projection='3d')
     ax2 = fig.add_subplot(122, projection='3d')
     
     # Enhanced title with all metrics
     if metrics:
-        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, mm)\n'
+        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Camera Corrected)\n'
                 f'Avg MPJPE: {metrics["avg_mpjpe"]:.1f}mm | '
                 f'AUC: {metrics["auc"]:.4f} | '
                 f'PCK@80%_150mm: {metrics["pck_results"]["PCK@80%_150mm"]*100:.1f}%')
     else:
-        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, mm)'
+        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Camera Corrected)'
     
-    fig.suptitle(title, fontsize=14)
+    fig.suptitle(title, fontsize=16)
     
     # Calculate visualization bounds
     all_gt_non_root = gt_poses[:, :, :].reshape(-1, 3)
@@ -336,7 +369,7 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
         x_range = np.max(np.abs(all_points[:, 0]))
         y_range = np.max(np.abs(all_points[:, 1]))
         z_range = np.max(np.abs(all_points[:, 2]))
-        max_range = max(x_range, y_range, z_range) * 1.1
+        max_range = max(x_range, y_range, z_range) * 1.2
         coord_min, coord_max = -max_range, max_range
     else:
         coord_min, coord_max = -500, 500
@@ -349,15 +382,23 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
             ax.set_xlim3d([coord_min, coord_max])
             ax.set_ylim3d([coord_min, coord_max])
             ax.set_zlim3d([coord_min, coord_max])
-            ax.set_xlabel('X (mm, root-relative)')
-            ax.set_ylabel('Y (mm, root-relative)')
-            ax.set_zlabel('Z (mm, root-relative)')
+            ax.set_xlabel('X (mm, right)', fontsize=12)
+            ax.set_ylabel('Y (mm, up)', fontsize=12)
+            ax.set_zlabel('Z (mm, backward)', fontsize=12)
             
-            # Mark root joint at origin
-            ax.scatter(0, 0, 0, c='green', s=150, marker='*', alpha=1.0, 
-                      edgecolors='darkgreen', linewidth=2)
+            # Mark root joint at origin with better visibility
+            ax.scatter(0, 0, 0, c='green', s=200, marker='*', alpha=1.0, 
+                      edgecolors='darkgreen', linewidth=3, label='Root (Hip Center)')
+            
+            # Add coordinate system reference
+            ax.plot([0, 100], [0, 0], [0, 0], 'r-', linewidth=2, alpha=0.7)  # X-axis
+            ax.plot([0, 0], [0, 100], [0, 0], 'g-', linewidth=2, alpha=0.7)  # Y-axis
+            ax.plot([0, 0], [0, 0], [0, 100], 'b-', linewidth=2, alpha=0.7)  # Z-axis
+            ax.text(100, 0, 0, 'X(R)', fontsize=10, color='red')
+            ax.text(0, 100, 0, 'Y(U)', fontsize=10, color='green')
+            ax.text(0, 0, 100, 'Z(B)', fontsize=10, color='blue')
         
-        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
+        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=16, pad=20)
         gt_frame = gt_poses[frame_idx]
         
         gt_valid = not np.all(gt_frame == 0)
@@ -368,23 +409,24 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
                 if joint1 < len(gt_frame) and joint2 < len(gt_frame):
                     x1, y1, z1 = gt_frame[joint1]
                     x2, y2, z2 = gt_frame[joint2]
-                    ax1.plot([x1, x2], [y1, y2], [z1, z2], 'b-', linewidth=2, alpha=0.7)
+                    ax1.plot([x1, x2], [y1, y2], [z1, z2], 'b-', linewidth=3, alpha=0.8)
             
-            # Draw joint points
+            # Draw joint points with better visibility
             for joint_idx, (x, y, z) in enumerate(gt_frame):
-                if joint_idx != 14:  # Skip root joint
-                    ax1.scatter(x, y, z, c='blue', s=60, alpha=0.9, 
-                               edgecolors='darkblue', linewidth=1)
-                    ax1.text(x+20, y+20, z+20, str(joint_idx), fontsize=9, 
-                            color='black', weight='bold')
+                if joint_idx != 14:  # Skip root joint (already marked)
+                    ax1.scatter(x, y, z, c='blue', s=80, alpha=0.9, 
+                               edgecolors='darkblue', linewidth=2)
+                    ax1.text(x+30, y+30, z+30, str(joint_idx), fontsize=11, 
+                            color='white', weight='bold',
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='blue', alpha=0.7))
         else:
-            ax1.text(0, 0, 50, 'No GT Data', ha='center', va='center', 
-                    fontsize=16, color='red')
+            ax1.text(0, 0, 100, 'No GT Data', ha='center', va='center', 
+                    fontsize=18, color='red', weight='bold')
         
         # Enhanced frame title with frame-specific MPJPE
         frame_mpjpe_val = frame_mpjpe[frame_idx] if not np.isnan(frame_mpjpe[frame_idx]) else 0
-        ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames} | '
-                     f'Frame MPJPE: {frame_mpjpe_val:.1f}mm', fontsize=14)
+        ax2.set_title(f'MediaPipe Estimation (Camera Corrected)\nFrame {frame_idx+1}/{min_frames} | '
+                     f'Frame MPJPE: {frame_mpjpe_val:.1f}mm', fontsize=16, pad=20)
         mp_frame = mp_poses[frame_idx]
         
         mp_valid = not np.all(mp_frame == 0)
@@ -395,18 +437,23 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
                 if joint1 < len(mp_frame) and joint2 < len(mp_frame):
                     x1, y1, z1 = mp_frame[joint1]
                     x2, y2, z2 = mp_frame[joint2]
-                    ax2.plot([x1, x2], [y1, y2], [z1, z2], 'r-', linewidth=2, alpha=0.7)
+                    ax2.plot([x1, x2], [y1, y2], [z1, z2], 'r-', linewidth=3, alpha=0.8)
             
-            # Draw joint points
+            # Draw joint points with better visibility
             for joint_idx, (x, y, z) in enumerate(mp_frame):
-                if joint_idx != 14:  # Skip root joint
-                    ax2.scatter(x, y, z, c='red', s=60, alpha=0.9, 
-                               edgecolors='darkred', linewidth=1)
-                    ax2.text(x+20, y+20, z+20, str(joint_idx), fontsize=9, 
-                            color='black', weight='bold')
+                if joint_idx != 14:  # Skip root joint (already marked)
+                    ax2.scatter(x, y, z, c='red', s=80, alpha=0.9, 
+                               edgecolors='darkred', linewidth=2)
+                    ax2.text(x+30, y+30, z+30, str(joint_idx), fontsize=11, 
+                            color='white', weight='bold',
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='red', alpha=0.7))
         else:
-            ax2.text(0, 0, 50, 'No MediaPipe Data', ha='center', va='center', 
-                    fontsize=16, color='red')
+            ax2.text(0, 0, 100, 'No MediaPipe Data', ha='center', va='center', 
+                    fontsize=18, color='red', weight='bold')
+        
+        # Set better viewing angles for human pose
+        for ax in [ax1, ax2]:
+            ax.view_init(elev=20, azim=45)
         
         plt.tight_layout()
         return [ax1, ax2]
@@ -427,8 +474,9 @@ def main():
                        help='Directory to save outputs')
     args = parser.parse_args()
     
-    print("Ground Truth vs MediaPipe 3D Pose Comparison with Comprehensive Metrics")
+    print("Ground Truth vs MediaPipe 3D Pose Comparison with Camera Correction")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
+    print("Camera Transformation: MediaPipe -> MPI-INF-3DHP coordinate system")
     print("=" * 80)
     
     # Load datasets
@@ -442,7 +490,7 @@ def main():
         results = process_all_sequences(gt_data, mp_data)
         return
     
-    # Single sequence processing (original functionality)
+    # Single sequence processing
     print(f"Sequence: {args.sequence}")
     print(f"Frames to visualize: {args.num_frames}")
     
@@ -464,9 +512,14 @@ def main():
     print(f"\n✓ Loaded sequence {args.sequence}")
     print(f"GT frames: {len(gt_poses_3d)}, MP frames: {len(mp_poses_3d)}")
     
-    print(f"\nMaking both datasets root-relative...")
+    # Apply camera transformation to MediaPipe poses
+    print(f"\nApplying camera transformation to MediaPipe poses...")
+    mp_poses_3d_transformed = apply_camera_transformation(mp_poses_3d)
+    
+    # Make both datasets root-relative
+    print(f"Making both datasets root-relative...")
     gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d, root_joint_idx=14)
-    mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d, root_joint_idx=14)
+    mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d_transformed, root_joint_idx=14)
     
     analyze_coordinate_ranges(gt_poses_3d_root_rel, mp_poses_3d_root_rel, args.sequence)
     
@@ -499,7 +552,7 @@ def main():
         print(f"="*60)
     
     # Create visualization
-    print(f"\nCreating 3D visualization...")
+    print(f"\nCreating 3D visualization with camera correction...")
     try:
         result = create_comparison_visualization(
             gt_poses_3d_root_rel, mp_poses_3d_root_rel, args.sequence, metrics, args)
@@ -512,18 +565,18 @@ def main():
         if args.save_video:
             print("Creating 3D animation...")
             ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                              interval=300, repeat=True, blit=False)
+                              interval=400, repeat=True, blit=False)
             
             os.makedirs(args.output_dir, exist_ok=True)
             output_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_comprehensive.gif')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_corrected.gif')
             
-            ani.save(output_path, writer='pillow', fps=3, dpi=100)
+            ani.save(output_path, writer='pillow', fps=2.5, dpi=120)
             print(f"✓ Animation saved to: {output_path}")
             
             update_func(0)
             static_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_comprehensive.png')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_corrected.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
             
