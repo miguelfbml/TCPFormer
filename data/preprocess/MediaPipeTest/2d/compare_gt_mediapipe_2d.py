@@ -1,6 +1,6 @@
 """
 Calculate 2D metrics (MPJPE, PCK, AUC) for MediaPipe vs Ground Truth 2D poses
-This denormalizes the poses back to pixel coordinates for meaningful metrics
+This normalizes both to [-1,1], then denormalizes to pixel coordinates for meaningful metrics
 
 Usage:
 python calculate_metrics_mediapipe.py --sequence TS1 --save-video
@@ -64,6 +64,63 @@ def load_datasets():
     print(f"✓ MediaPipe loaded: {list(mp_data.keys())}")
     
     return gt_data, mp_data
+
+def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
+    """Normalize any coordinate system to [-1, 1] range"""
+    print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
+    
+    # Get image dimensions for this sequence
+    if seq_name in ['TS5', 'TS6']:
+        width, height = 1920, 1080
+    else:
+        width, height = 2048, 2048
+    
+    print(f"Using image dimensions: {width}x{height}")
+    
+    # Analyze current coordinate range
+    print(f"Original {data_type} range:")
+    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
+    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
+    
+    normalized_poses = poses_2d.copy()
+    
+    # Detect coordinate system and normalize accordingly
+    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
+    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
+    
+    if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
+        # MediaPipe [0,1] format - convert to [-1,1]
+        print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
+        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
+        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
+        
+    elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
+        # Pixel coordinates - convert to [-1,1]
+        print(f"  Detected pixel coordinates - converting to [-1,1]")
+        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
+        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
+        
+    elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
+        # Already in [-1,1] format
+        print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
+        normalized_poses = poses_2d.copy()
+        
+    else:
+        # Unknown format - try to detect if it's extended pixel coordinates
+        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
+        # Assume it's some form of pixel/camera coordinates
+        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
+        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
+    
+    # Verify final range
+    final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
+    final_y_min, final_y_max = np.min(normalized_poses[:, :, 1]), np.max(normalized_poses[:, :, 1])
+    
+    print(f"Final {data_type} range:")
+    print(f"  X: [{final_x_min:.3f}, {final_x_max:.3f}]")
+    print(f"  Y: [{final_y_min:.3f}, {final_y_max:.3f}]")
+    
+    return normalized_poses
 
 def denormalize_2d_poses(poses_2d_norm, seq_name):
     """
@@ -340,10 +397,10 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
             ax2.text(img_width//2, img_height//2, 'No MediaPipe Data', ha='center', va='center', 
                     fontsize=16, color='red')
         
-        # Compute and display frame MPJPE (pixel error)
+        # Compute and display frame MPJPE (pixel error) - NOT frame error
         if gt_valid and mp_valid:
             frame_mpjpe = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            mpjpe_text = f'Frame 2D MPJPE: {frame_mpjpe:.2f}px'
+            mpjpe_text = f'Frame 2D MPJPE: {frame_mpjpe:.2f} pixels'
         else:
             mpjpe_text = 'Frame 2D MPJPE: N/A'
         
@@ -392,26 +449,31 @@ def main():
         print(f"Available sequences: {list(mp_data.keys())}")
         return
     
-    # Extract 2D poses (they should already be in normalized [-1,1] format)
-    gt_poses_2d_norm = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    mp_poses_2d_norm = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    # Extract 2D poses (in whatever format they are)
+    gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    mp_poses_2d_orig = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     
     print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d_norm)}, MP frames: {len(mp_poses_2d_norm)}")
+    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
+    
+    # STEP 1: Normalize BOTH datasets to [-1, 1] for fair comparison
+    print(f"\nNormalizing both datasets to [-1, 1] range...")
+    gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
+    mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
     
     # Verify normalized coordinate ranges
-    print(f"\nNormalized coordinate ranges:")
+    print(f"\nFinal normalized coordinate ranges:")
     print(f"GT: X[{np.min(gt_poses_2d_norm[:, :, 0]):.3f}, {np.max(gt_poses_2d_norm[:, :, 0]):.3f}], "
           f"Y[{np.min(gt_poses_2d_norm[:, :, 1]):.3f}, {np.max(gt_poses_2d_norm[:, :, 1]):.3f}]")
     print(f"MP: X[{np.min(mp_poses_2d_norm[:, :, 0]):.3f}, {np.max(mp_poses_2d_norm[:, :, 0]):.3f}], "
           f"Y[{np.min(mp_poses_2d_norm[:, :, 1]):.3f}, {np.max(mp_poses_2d_norm[:, :, 1]):.3f}]")
     
-    # Denormalize both datasets back to pixel coordinates
+    # STEP 2: Denormalize both datasets back to pixel coordinates
     print(f"\nDenormalizing poses to pixel coordinates...")
     gt_poses_pixel = denormalize_2d_poses(gt_poses_2d_norm, args.sequence)
     mp_poses_pixel = denormalize_2d_poses(mp_poses_2d_norm, args.sequence)
     
-    # Calculate metrics in pixel coordinates
+    # STEP 3: Calculate metrics in pixel coordinates
     print(f"\nCalculating 2D metrics in pixel coordinates...")
     
     # MPJPE
