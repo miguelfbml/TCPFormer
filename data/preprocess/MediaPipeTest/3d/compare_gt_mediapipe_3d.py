@@ -118,26 +118,28 @@ def compute_mpjpe_3d(gt_poses_3d, mp_poses_3d):
     if len(valid_gt_list) == 0:
         return None
     
-    # Convert to numpy arrays
+    # Convert to numpy arrays first
     valid_gt = np.array(valid_gt_list)  # (V, 17, 3)
     valid_mp = np.array(valid_mp_list)  # (V, 17, 3)
     
-    # Calculate MPJPE using the same function as train_3dhp.py
+    # Convert to PyTorch tensors for the utility functions
     gt_tensor = torch.from_numpy(valid_gt).float()
     mp_tensor = torch.from_numpy(valid_mp).float()
+    
+    # Calculate MPJPE using the same function as train_3dhp.py
     avg_mpjpe = mpjpe_cal(mp_tensor, gt_tensor).item()
     
     # Calculate joint-wise errors
     joint_errors = np.mean(np.linalg.norm(valid_gt - valid_mp, axis=2), axis=0)  # (17,)
     
-    # Calculate torso diameters for PCK
-    torso_diameters = calculate_torso_diameter(valid_gt)
+    # Calculate torso diameters for PCK - FIXED: Pass tensor instead of numpy array
+    torso_diameters = calculate_torso_diameter(gt_tensor)
     
-    # Compute PCK metrics
-    pck_results = compute_pck(valid_mp, valid_gt, torso_diameters, fixed_threshold=150.0)
+    # Compute PCK metrics - FIXED: Pass tensors instead of numpy arrays
+    pck_results = compute_pck(mp_tensor, gt_tensor, torso_diameters, fixed_threshold=150.0)
     
-    # Compute AUC
-    auc = compute_auc(valid_mp, valid_gt)
+    # Compute AUC - FIXED: Pass tensors instead of numpy arrays
+    auc = compute_auc(mp_tensor, gt_tensor)
     
     return {
         'avg_mpjpe': float(avg_mpjpe),
