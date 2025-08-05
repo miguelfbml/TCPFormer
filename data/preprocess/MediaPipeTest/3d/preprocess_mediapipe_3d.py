@@ -155,7 +155,7 @@ def get_sequence_image_dimensions(sequence_name):
 
 def load_original_dataset():
     """Load the original MPI-INF-3DHP test dataset"""
-    dataset_path = project_root + '/data/motion3d/data_test_3dhp.npz'
+    dataset_path = project_root + 'data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp.npz'
 
     if not os.path.exists(dataset_path):
         print(f"ERROR: Original dataset not found: {dataset_path}")

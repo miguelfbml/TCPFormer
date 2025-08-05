@@ -166,7 +166,7 @@ def get_sequence_image_dimensions(sequence_name):
 
 def load_original_dataset():
     """Load the original MPI-INF-3DHP test dataset"""
-    dataset_path = project_root + '/data/motion3d/data_test_3dhp.npz'
+    dataset_path = project_root + 'data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp.npz'
 
     if not os.path.exists(dataset_path):
         print(f"ERROR: Original dataset not found: {dataset_path}")
@@ -330,9 +330,10 @@ def verify_dataset(original_data, mediapipe_data):
     
     print("✓ Dataset verification passed!")
 
+
 def main():
     parser = argparse.ArgumentParser(description='Create MediaPipe version of MPI-INF-3DHP test dataset')
-    parser.add_argument('--output-path', type=str, default='data/motion3d/data_test_3dhp_mediapipe.npz',
+    parser.add_argument('--output-path', type=str, default='data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp_mediapipe.npz',
                        help='Output path for MediaPipe dataset')
     parser.add_argument('--resize-resolution', type=int, nargs=2, default=[640, 480],
                        help='Resize images to W H for MediaPipe processing')

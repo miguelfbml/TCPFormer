@@ -45,9 +45,9 @@ JOINT_NAMES = [
 
 def load_datasets():
     """Load both ground truth and MediaPipe 3D datasets"""
-    gt_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/motion3d/data_test_3dhp.npz'
-    mp_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/motion3d/data_test_3dhp_mediapipe_3d.npz'
-    
+    gt_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp.npz'
+    mp_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/preprocess/MediaPipeTest/data1/motion3d/data_test_3dhp_mediapipe_3d.npz'
+
     print("Loading datasets...")
     
     if not os.path.exists(gt_path):
