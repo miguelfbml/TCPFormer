@@ -1,6 +1,7 @@
 """
 Calculate 2D metrics (MPJPE, PCK, AUC) for MediaPipe vs Ground Truth 2D poses
 This normalizes both to [-1,1], then denormalizes to pixel coordinates for meaningful metrics
+Both poses are centered on joint 14 (hip) which becomes the origin (0,0)
 
 Usage:
 python compare_gt_mediapipe_2d.py --sequence TS1 --save-video
@@ -62,8 +63,26 @@ def load_datasets():
     
     return gt_data, mp_data
 
+def center_poses_on_hip(poses_2d):
+    """Center all poses on joint 14 (hip) - makes hip the origin (0,0)"""
+    centered_poses = poses_2d.copy()
+    
+    for frame_idx in range(len(poses_2d)):
+        frame = poses_2d[frame_idx]  # (17, 2)
+        hip_pos = frame[14]  # Joint 14 is the hip
+        
+        # Check if hip position is valid (not zero)
+        if not np.all(hip_pos == 0):
+            # Subtract hip position from all joints to center on hip
+            centered_poses[frame_idx] = frame - hip_pos
+        else:
+            # If hip is invalid, keep original pose
+            centered_poses[frame_idx] = frame
+    
+    return centered_poses
+
 def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
-    """Normalize any coordinate system to [-1, 1] range"""
+    """Normalize any coordinate system to [-1, 1] range after centering on hip"""
     print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
     
     # Get image dimensions for this sequence
@@ -74,40 +93,47 @@ def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
     
     print(f"Using image dimensions: {width}x{height}")
     
-    # Analyze current coordinate range
-    print(f"Original {data_type} range:")
-    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
+    # First center poses on hip (joint 14)
+    print(f"Centering {data_type} poses on hip joint (joint 14)...")
+    centered_poses = center_poses_on_hip(poses_2d)
     
-    normalized_poses = poses_2d.copy()
+    # Analyze coordinate range after centering
+    print(f"Centered {data_type} range (relative to hip):")
+    print(f"  X: [{np.min(centered_poses[:, :, 0]):.3f}, {np.max(centered_poses[:, :, 0]):.3f}]")
+    print(f"  Y: [{np.min(centered_poses[:, :, 1]):.3f}, {np.max(centered_poses[:, :, 1]):.3f}]")
+    
+    normalized_poses = centered_poses.copy()
     
     # Detect coordinate system and normalize accordingly
-    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
-    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
+    x_min, x_max = np.min(centered_poses[:, :, 0]), np.max(centered_poses[:, :, 0])
+    y_min, y_max = np.min(centered_poses[:, :, 1]), np.max(centered_poses[:, :, 1])
     
     if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
         # MediaPipe [0,1] format - convert to [-1,1]
         print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
-        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
+        normalized_poses[:, :, 0] = centered_poses[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
+        normalized_poses[:, :, 1] = centered_poses[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
         
     elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
         # Pixel coordinates - convert to [-1,1]
         print(f"  Detected pixel coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
+        normalized_poses[:, :, 0] = (centered_poses[:, :, 0] / width) * 2.0
+        normalized_poses[:, :, 1] = (centered_poses[:, :, 1] / height) * 2.0
         
     elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
         # Already in [-1,1] format
         print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
-        normalized_poses = poses_2d.copy()
+        normalized_poses = centered_poses.copy()
         
     else:
-        # Unknown format - try to detect if it's extended pixel coordinates
-        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
-        # Assume it's some form of pixel/camera coordinates
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
+        # Unknown format - normalize to range
+        print(f"  Unknown coordinate format - normalizing to [-1,1] range")
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        if x_range > 0:
+            normalized_poses[:, :, 0] = (centered_poses[:, :, 0] - x_min) / x_range * 2.0 - 1.0
+        if y_range > 0:
+            normalized_poses[:, :, 1] = (centered_poses[:, :, 1] - y_min) / y_range * 2.0 - 1.0
     
     # Verify final range
     final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
@@ -122,7 +148,7 @@ def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
 def denormalize_2d_poses(poses_2d_norm, seq_name):
     """
     Denormalize 2D poses from [-1, 1] back to pixel coordinates
-    This matches the MPI-INF-3DHP normalization exactly
+    Hip joint (14) remains at (0,0) in the center of the image
     """
     # Get image dimensions for this sequence
     if seq_name in ['TS5', 'TS6']:
@@ -131,26 +157,30 @@ def denormalize_2d_poses(poses_2d_norm, seq_name):
         width, height = 2048, 2048
     
     print(f"Denormalizing {seq_name} from [-1,1] to pixel coordinates ({width}x{height})")
-    
-    # The MPI-INF-3DHP normalization is:
-    # normalized_x = (pixel_x / width) * 2 - 1
-    # normalized_y = (pixel_y / width) * 2 - (height / width)  # Note: using width for Y too!
-    
-    # So to reverse it:
-    # pixel_x = (normalized_x + 1) * width / 2
-    # pixel_y = (normalized_y + height/width) * width / 2
+    print(f"Hip joint (14) will be at image center: ({width//2}, {height//2})")
     
     poses_pixel = poses_2d_norm.copy()
     
-    # For X coordinates: pixel_x = (norm_x + 1) * width / 2
-    poses_pixel[:, :, 0] = (poses_2d_norm[:, :, 0] + 1.0) * width / 2.0
+    # Convert normalized coordinates to pixel offsets from center
+    # [-1,1] range maps to [-width/2, width/2] for X and [-height/2, height/2] for Y
+    poses_pixel[:, :, 0] = poses_2d_norm[:, :, 0] * width / 2.0
+    poses_pixel[:, :, 1] = poses_2d_norm[:, :, 1] * height / 2.0
     
-    # For Y coordinates: pixel_y = (norm_y + height/width) * width / 2
-    poses_pixel[:, :, 1] = (poses_2d_norm[:, :, 1] + height/width) * width / 2.0
+    # Add image center to make hip joint at center of image
+    poses_pixel[:, :, 0] += width / 2.0
+    poses_pixel[:, :, 1] += height / 2.0
     
     print(f"Denormalized pixel range:")
     print(f"  X: [{np.min(poses_pixel[:, :, 0]):.1f}, {np.max(poses_pixel[:, :, 0]):.1f}] (expected: [0, {width}])")
     print(f"  Y: [{np.min(poses_pixel[:, :, 1]):.1f}, {np.max(poses_pixel[:, :, 1]):.1f}] (expected: [0, {height}])")
+    
+    # Verify hip is at center
+    hip_positions = poses_pixel[:, 14, :]  # All hip positions
+    valid_hips = hip_positions[~np.all(hip_positions == width//2, axis=1)]  # Non-centered hips
+    if len(valid_hips) > 0:
+        print(f"Hip positions (should be at center {width//2}, {height//2}):")
+        print(f"  Hip X range: [{np.min(poses_pixel[:, 14, 0]):.1f}, {np.max(poses_pixel[:, 14, 0]):.1f}]")
+        print(f"  Hip Y range: [{np.min(poses_pixel[:, 14, 1]):.1f}, {np.max(poses_pixel[:, 14, 1]):.1f}]")
     
     return poses_pixel
 
@@ -286,7 +316,7 @@ def compute_2d_auc(gt_poses_pixel, mp_poses_pixel, max_threshold=100.0, num_thre
         return 0.0
 
 def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, args, metrics):
-    """Create side-by-side comparison with pixel coordinates (no background images)"""
+    """Create side-by-side comparison with pixel coordinates (hip-centered)"""
     min_frames = min(len(gt_poses_pixel), len(mp_poses_pixel), args.num_frames)
     
     if min_frames == 0:
@@ -306,7 +336,7 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
         ax1.clear()
         ax2.clear()
         
-        # Set image dimensions as limits (no background image)
+        # Set image dimensions as limits
         ax1.set_xlim(0, img_width)
         ax1.set_ylim(img_height, 0)  # Flip Y axis
         ax2.set_xlim(0, img_width)
@@ -314,8 +344,15 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
         ax1.set_facecolor('black')
         ax2.set_facecolor('black')
         
-        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14, color='white')
-        ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames}', fontsize=14, color='white')
+        # Add center crosshair to show hip position
+        center_x, center_y = img_width // 2, img_height // 2
+        ax1.axhline(y=center_y, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+        ax1.axvline(x=center_x, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+        ax2.axhline(y=center_y, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+        ax2.axvline(x=center_x, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+        
+        ax1.set_title(f'Ground Truth (Hip-Centered)\nFrame {frame_idx+1}/{min_frames}', fontsize=14, color='white')
+        ax2.set_title(f'MediaPipe (Hip-Centered)\nFrame {frame_idx+1}/{min_frames}', fontsize=14, color='white')
         
         # Plot Ground Truth
         gt_frame = gt_poses_pixel[frame_idx]  # (17, 2)
@@ -332,8 +369,10 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
             
             # Draw joints
             for joint_idx, (x, y) in enumerate(gt_frame):
-                ax1.scatter(x, y, c='cyan', s=120, alpha=0.9, edgecolors='white', linewidth=3)
-                ax1.text(x+15, y-15, str(joint_idx), fontsize=14, ha='left', va='bottom', 
+                color = 'red' if joint_idx == 14 else 'cyan'  # Highlight hip joint
+                size = 150 if joint_idx == 14 else 120
+                ax1.scatter(x, y, c=color, s=size, alpha=0.9, edgecolors='white', linewidth=3)
+                ax1.text(x+15, y-15, str(joint_idx), fontsize=12, ha='left', va='bottom', 
                         color='yellow', weight='bold',
                         bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.8))
         else:
@@ -355,8 +394,10 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
             
             # Draw joints
             for joint_idx, (x, y) in enumerate(mp_frame):
-                ax2.scatter(x, y, c='orange', s=120, alpha=0.9, edgecolors='white', linewidth=3)
-                ax2.text(x+15, y-15, str(joint_idx), fontsize=14, ha='left', va='bottom', 
+                color = 'red' if joint_idx == 14 else 'orange'  # Highlight hip joint
+                size = 150 if joint_idx == 14 else 120
+                ax2.scatter(x, y, c=color, s=size, alpha=0.9, edgecolors='white', linewidth=3)
+                ax2.text(x+15, y-15, str(joint_idx), fontsize=12, ha='left', va='bottom', 
                         color='yellow', weight='bold',
                         bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.8))
         else:
@@ -368,17 +409,24 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
             # Calculate frame MPJPE in pixels
             frame_mpjpe = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
             mpjpe_text = f'Frame MPJPE: {frame_mpjpe:.2f} pixels'
+            
+            # Verify hip positions
+            gt_hip = gt_frame[14]
+            mp_hip = mp_frame[14]
+            hip_error = np.linalg.norm(gt_hip - mp_hip)
+            hip_text = f'Hip Error: {hip_error:.2f}px'
         else:
             mpjpe_text = 'Frame MPJPE: N/A'
+            hip_text = 'Hip Error: N/A'
         
         # Create comprehensive title with all metrics
         pck_text = " | ".join([f"{k}: {v:.1f}%" for k, v in metrics['pck_results'].items()])
         
         # Enhanced title showing both overall and frame-specific MPJPE in pixels
-        fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                    f'Average MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
+        fig.suptitle(f'2D Pose Comparison (Hip-Centered): Ground Truth vs MediaPipe - {seq_name}\n'
+                    f'Average MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text} | {hip_text}\n'
                     f'{pck_text} | Valid: {metrics["valid_frames"]}/{metrics["total_frames"]} frames', 
-                    fontsize=14, y=0.95, color='white')
+                    fontsize=13, y=0.95, color='white')
         
         # Add coordinate grid for reference
         ax1.grid(True, alpha=0.3, color='gray')
@@ -389,7 +437,7 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, seq_name, ar
     return update, fig, min_frames
 
 def main():
-    parser = argparse.ArgumentParser(description='Calculate 2D metrics for Ground Truth vs MediaPipe poses')
+    parser = argparse.ArgumentParser(description='Calculate 2D metrics for Ground Truth vs MediaPipe poses (hip-centered)')
     parser.add_argument('--sequence', type=str, default='TS1', 
                        help='Sequence to analyze (TS1, TS2, TS3, TS4, TS5, TS6)')
     parser.add_argument('--num-frames', type=int, default=50,
@@ -400,10 +448,11 @@ def main():
                        help='Directory to save outputs')
     args = parser.parse_args()
     
-    print("2D Pose Metrics Calculator: Ground Truth vs MediaPipe")
-    print("=" * 60)
+    print("2D Pose Metrics Calculator: Ground Truth vs MediaPipe (Hip-Centered)")
+    print("=" * 70)
     print(f"Sequence: {args.sequence}")
     print(f"Frames to analyze: {args.num_frames}")
+    print("Both poses will be centered on joint 14 (hip) at image center")
     
     # Load datasets
     gt_data, mp_data = load_datasets()
@@ -428,8 +477,8 @@ def main():
     print(f"\n✓ Loaded sequence {args.sequence}")
     print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
     
-    # STEP 1: Normalize BOTH datasets to [-1, 1] for fair comparison
-    print(f"\nNormalizing both datasets to [-1, 1] range...")
+    # STEP 1: Normalize BOTH datasets to [-1, 1] for fair comparison (with hip centering)
+    print(f"\nNormalizing both datasets to [-1, 1] range (hip-centered)...")
     gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
     mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
     
@@ -440,8 +489,8 @@ def main():
     print(f"MP: X[{np.min(mp_poses_2d_norm[:, :, 0]):.3f}, {np.max(mp_poses_2d_norm[:, :, 0]):.3f}], "
           f"Y[{np.min(mp_poses_2d_norm[:, :, 1]):.3f}, {np.max(mp_poses_2d_norm[:, :, 1]):.3f}]")
     
-    # STEP 2: Denormalize both datasets back to pixel coordinates
-    print(f"\nDenormalizing poses to pixel coordinates...")
+    # STEP 2: Denormalize both datasets back to pixel coordinates (hip at center)
+    print(f"\nDenormalizing poses to pixel coordinates (hip-centered)...")
     gt_poses_pixel = denormalize_2d_poses(gt_poses_2d_norm, args.sequence)
     mp_poses_pixel = denormalize_2d_poses(mp_poses_2d_norm, args.sequence)
     
@@ -469,7 +518,7 @@ def main():
     
     # Save metrics
     os.makedirs(args.output_dir, exist_ok=True)
-    metrics_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics.json')
+    metrics_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics_hip_centered.json')
     
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2)
@@ -477,20 +526,20 @@ def main():
     print(f"\n✓ Metrics saved to: {metrics_path}")
     
     # Print final summary with AVERAGE MPJPE prominently displayed
-    print(f"\n{'='*60}")
-    print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence}")
-    print(f"{'='*60}")
+    print(f"\n{'='*70}")
+    print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence} (HIP-CENTERED)")
+    print(f"{'='*70}")
     print(f"🎯 AVERAGE 2D MPJPE: {metrics['mpjpe_2d']:.2f} PIXELS")
     print(f"📊 2D AUC:           {metrics['auc_2d']:.4f}")
     print(f"✅ 2D PCK Results:")
     for threshold, pck in pck_results.items():
         print(f"   {threshold}: {pck:.2f}%")
     print(f"📋 Valid frames:     {metrics['valid_frames']}/{metrics['total_frames']}")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
     
     # Create visualization if requested
     if args.save_video:
-        print(f"\nCreating visualization with MPJPE error in pixels...")
+        print(f"\nCreating visualization with MPJPE error in pixels (hip-centered)...")
         
         try:
             result = create_comparison_visualization(
@@ -505,14 +554,14 @@ def main():
             ani = FuncAnimation(fig, update_func, frames=min_frames, 
                               interval=500, repeat=True, blit=False)
             
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison.gif')
+            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_hip_centered.gif')
             
             ani.save(output_path, writer='pillow', fps=2, dpi=100)
             print(f"✓ Animation with MPJPE pixel errors saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_static.png')
+            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_hip_centered_static.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight', facecolor='black')
             print(f"✓ Static image saved to: {static_path}")
             
