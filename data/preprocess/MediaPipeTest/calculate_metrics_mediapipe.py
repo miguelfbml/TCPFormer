@@ -3,7 +3,7 @@ Calculate 2D metrics (MPJPE, PCK, AUC) for MediaPipe vs Ground Truth 2D poses
 This denormalizes the poses back to pixel coordinates for meaningful metrics
 
 Usage:
-python calculate_2d_metrics.py --sequence TS1 --save-video
+python calculate_metrics_mediapipe.py --sequence TS1 --save-video
 """
 
 import argparse
@@ -126,24 +126,12 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
         avg_mpjpe = np.mean(frame_errors)
         joint_errors /= valid_frame_count
         
-        print(f"\n2D MPJPE Results (pixel coordinates):")
-        print(f"Valid frames: {valid_frame_count}/{min_frames}")
-        print(f"Average MPJPE: {avg_mpjpe:.2f} pixels")
-        print(f"Joint errors (worst 5):")
-        
-        # Sort joints by error
-        joint_error_pairs = [(i, joint_errors[i], JOINT_NAMES[i]) for i in range(17)]
-        joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
-        
-        for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
-            print(f"  {name} (joint {joint_idx}): {error:.2f} pixels")
-        
         return {
             'mpjpe_2d': float(avg_mpjpe),
             'joint_errors': [float(x) for x in joint_errors],
             'valid_frames': int(valid_frame_count),
             'total_frames': int(min_frames),
-            'joint_error_pairs': joint_error_pairs
+            'frame_errors': frame_errors  # Keep individual frame errors for visualization
         }
     else:
         print("No valid frames found for comparison!")
@@ -180,8 +168,6 @@ def compute_2d_pck(gt_poses_pixel, mp_poses_pixel, thresholds=[10, 20, 30, 50]):
             correct = all_joint_errors < threshold  # (valid_frames, 17)
             pck = np.mean(correct) * 100  # Overall percentage
             pck_results[f'PCK@{threshold}px'] = pck
-            
-            print(f"PCK@{threshold}px: {pck:.2f}%")
         
         return pck_results
     else:
@@ -220,7 +206,6 @@ def compute_2d_auc(gt_poses_pixel, mp_poses_pixel, max_threshold=100.0, num_thre
         # Calculate AUC using trapezoidal rule
         auc = np.trapz(pck_values, thresholds) / max_threshold
         
-        print(f"2D AUC (0-{max_threshold}px): {auc:.4f}")
         return auc
     else:
         return 0.0
@@ -266,9 +251,6 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
     
     # Set up the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                f'MPJPE: {metrics["mpjpe_2d"]:.2f}px | Valid frames: {metrics["valid_frames"]}/{metrics["total_frames"]}', 
-                fontsize=16)
     
     def update(frame_idx):
         ax1.clear()
@@ -339,16 +321,20 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
             ax2.text(img_width//2, img_height//2, 'No MediaPipe Data', ha='center', va='center', 
                     fontsize=16, color='red')
         
-        # Compute and display frame error
-        if gt_valid and mp_valid:
-            frame_error = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            error_text = f'Frame Error: {frame_error:.2f} pixels'
+        # Get frame-specific MPJPE
+        if frame_idx < len(metrics['frame_errors']):
+            frame_mpjpe = metrics['frame_errors'][frame_idx]
+            mpjpe_text = f'Frame MPJPE: {frame_mpjpe:.2f}px'
         else:
-            error_text = 'Frame Error: N/A'
+            mpjpe_text = 'Frame MPJPE: N/A'
+        
+        # Create comprehensive title with all metrics
+        pck_text = " | ".join([f"{k}: {v:.1f}%" for k, v in metrics['pck_results'].items()])
         
         fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                    f'MPJPE: {metrics["mpjpe_2d"]:.2f}px | {error_text} | Valid frames: {metrics["valid_frames"]}/{metrics["total_frames"]}', 
-                    fontsize=16)
+                    f'Overall MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
+                    f'{pck_text} | Valid: {metrics["valid_frames"]}/{metrics["total_frames"]} frames', 
+                    fontsize=14, y=0.95)
         
         return [ax1, ax2]
     
@@ -423,6 +409,26 @@ def main():
     print(f"\nCalculating AUC...")
     auc_result = compute_2d_auc(gt_poses_pixel, mp_poses_pixel, max_threshold=100.0)
     
+    # Print metrics to terminal
+    print(f"\n{'='*60}")
+    print(f"2D METRICS RESULTS FOR {args.sequence}")
+    print(f"{'='*60}")
+    print(f"2D MPJPE: {mpjpe_metrics['mpjpe_2d']:.2f} pixels")
+    print(f"2D AUC:   {auc_result:.4f}")
+    print(f"2D PCK Results:")
+    for threshold, pck in pck_results.items():
+        print(f"  {threshold}: {pck:.2f}%")
+    print(f"Valid frames: {mpjpe_metrics['valid_frames']}/{mpjpe_metrics['total_frames']}")
+    print(f"{'='*60}")
+    
+    # Print joint errors (worst 5)
+    joint_error_pairs = [(i, mpjpe_metrics['joint_errors'][i], JOINT_NAMES[i]) for i in range(17)]
+    joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
+    
+    print(f"\nJoint errors (worst 5):")
+    for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
+        print(f"  {name} (joint {joint_idx}): {error:.2f} pixels")
+    
     # Combine all metrics
     metrics = {
         **mpjpe_metrics,
@@ -474,18 +480,6 @@ def main():
             print(f"Error creating visualization: {e}")
             import traceback
             traceback.print_exc()
-    
-    # Print final summary
-    print(f"\n{'='*60}")
-    print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence}")
-    print(f"{'='*60}")
-    print(f"2D MPJPE: {metrics['mpjpe_2d']:.2f} pixels")
-    print(f"2D AUC:   {metrics['auc_2d']:.4f}")
-    print(f"PCK Results:")
-    for threshold, pck in pck_results.items():
-        print(f"  {threshold}: {pck:.2f}%")
-    print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
-    print(f"{'='*60}")
 
 if __name__ == '__main__':
     main()
