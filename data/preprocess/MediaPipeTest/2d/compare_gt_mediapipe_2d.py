@@ -449,14 +449,14 @@ def main():
                               interval=300, repeat=True, blit=False)
             
             os.makedirs(args.output_dir, exist_ok=True)
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d_root_relative.gif')
+            output_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d.gif')
             
             ani.save(output_path, writer='pillow', fps=3, dpi=100)
             print(f"✓ Animation saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d_root_relative_static.png')
+            static_path = os.path.join(args.output_dir, f'{args.sequence}_gt_vs_mediapipe_2d.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
         else:
