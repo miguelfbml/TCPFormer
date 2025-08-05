@@ -1,555 +1,429 @@
-"""
-Calculate 2D metrics (MPJPE, PCK, AUC) for MediaPipe vs Ground Truth 2D poses
-This normalizes both to [-1,1], then denormalizes to pixel coordinates for meaningful metrics
-
-Usage:
-python calculate_metrics_mediapipe.py --sequence TS1 --save-video
-"""
-
 import argparse
 import os
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import json
-from tqdm import tqdm
 import cv2
+import numpy as np
+import torch
+import mediapipe as mp
+from tqdm import tqdm
 import glob
+import gc
+import json
+import time
 
 # Navigate to project root
 import sys
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, '../../../..'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
 sys.path.insert(0, project_root)
 
-print(f"Project root: {project_root}")
+from data.reader.motion_dataset import Fusion
+from utils.tools import get_config
+from utils.learning import load_model_TCPFormer
+from utils.utils_3dhp import *
+from utils.data import denormalize
 
-# MPI-INF-3DHP skeleton connections for 2D visualization
-connections_2d = [
-    (1, 2), (2, 3), (3, 4),  # Right arm
-    (1, 5), (5, 6), (6, 7),  # Left arm
-    (14, 8), (8, 9), (9, 10),  # Right leg
-    (14, 11), (11, 12), (12, 13),  # Left leg
-    (0, 16), (16, 1), (1, 15), (15, 14)  # Spine and head
-]
-
-# Joint names for reference
-JOINT_NAMES = [
-    'Head_Top', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
-    'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-    'RShoulder', 'RElbow', 'RWrist'
-]
-
-def load_datasets():
-    """Load both ground truth and MediaPipe datasets"""
-    gt_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/motion3d/data_test_3dhp.npz'
-    mp_path = '/nas-ctm01/homes/mfbrandao/TCPFormerForked/data/motion3d/data_test_3dhp_mediapipe.npz'
-    
-    print("Loading datasets...")
-    
-    # Load ground truth
-    if not os.path.exists(gt_path):
-        print(f"ERROR: Ground truth dataset not found: {gt_path}")
-        return None, None
-    
-    gt_data = np.load(gt_path, allow_pickle=True)['data'].item()
-    print(f"✓ Ground truth loaded: {list(gt_data.keys())}")
-    
-    # Load MediaPipe
-    if not os.path.exists(mp_path):
-        print(f"ERROR: MediaPipe dataset not found: {mp_path}")
-        return None, None
-    
-    mp_data = np.load(mp_path, allow_pickle=True)['data'].item()
-    print(f"✓ MediaPipe loaded: {list(mp_data.keys())}")
-    
-    return gt_data, mp_data
-
-def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
-    """Normalize any coordinate system to [-1, 1] range"""
-    print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
-    
-    # Get image dimensions for this sequence
-    if seq_name in ['TS5', 'TS6']:
-        width, height = 1920, 1080
-    else:
-        width, height = 2048, 2048
-    
-    print(f"Using image dimensions: {width}x{height}")
-    
-    # Analyze current coordinate range
-    print(f"Original {data_type} range:")
-    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
-    
-    normalized_poses = poses_2d.copy()
-    
-    # Detect coordinate system and normalize accordingly
-    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
-    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
-    
-    if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
-        # MediaPipe [0,1] format - convert to [-1,1]
-        print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
-        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
-        
-    elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
-        # Pixel coordinates - convert to [-1,1]
-        print(f"  Detected pixel coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
-        
-    elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
-        # Already in [-1,1] format
-        print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
-        normalized_poses = poses_2d.copy()
-        
-    else:
-        # Unknown format - try to detect if it's extended pixel coordinates
-        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
-        # Assume it's some form of pixel/camera coordinates
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
-    
-    # Verify final range
-    final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
-    final_y_min, final_y_max = np.min(normalized_poses[:, :, 1]), np.max(normalized_poses[:, :, 1])
-    
-    print(f"Final {data_type} range:")
-    print(f"  X: [{final_x_min:.3f}, {final_x_max:.3f}]")
-    print(f"  Y: [{final_y_min:.3f}, {final_y_max:.3f}]")
-    
-    return normalized_poses
-
-def denormalize_2d_poses(poses_2d_norm, seq_name):
-    """
-    Denormalize 2D poses from [-1, 1] back to pixel coordinates
-    This reverses the normalization done in the Fusion dataset
-    """
-    # Get image dimensions for this sequence (same as MPI3DHP.normalize_poses())
-    if seq_name in ['TS5', 'TS6']:
-        width, height = 1920, 1080
-    else:
-        width, height = 2048, 2048
-    
-    print(f"Denormalizing {seq_name} from [-1,1] to pixel coordinates ({width}x{height})")
-    
-    # Reverse the normalization: normalized = (pixel / width) * 2 - [1, height/width]
-    # So: pixel = (normalized + [1, height/width]) * width / 2
-    
-    poses_pixel = poses_2d_norm.copy()
-    
-    # For X coordinates: pixel_x = (norm_x + 1) * width / 2
-    poses_pixel[:, :, 0] = (poses_2d_norm[:, :, 0] + 1.0) * width / 2.0
-    
-    # For Y coordinates: pixel_y = (norm_y + height/width) * width / 2
-    poses_pixel[:, :, 1] = (poses_2d_norm[:, :, 1] + height/width) * width / 2.0
-    
-    print(f"Denormalized pixel range:")
-    print(f"  X: [{np.min(poses_pixel[:, :, 0]):.1f}, {np.max(poses_pixel[:, :, 0]):.1f}] (expected: [0, {width}])")
-    print(f"  Y: [{np.min(poses_pixel[:, :, 1]):.1f}, {np.max(poses_pixel[:, :, 1]):.1f}] (expected: [0, {height}])")
-    
-    return poses_pixel
-
-def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
-    """Compute 2D MPJPE in pixel coordinates"""
-    # Ensure same number of frames
-    min_frames = min(len(gt_poses_pixel), len(mp_poses_pixel))
-    gt_poses = gt_poses_pixel[:min_frames]
-    mp_poses = mp_poses_pixel[:min_frames]
-    
-    frame_mpjpe_errors = []  # Store MPJPE per frame in pixels
-    joint_errors = np.zeros(17)
-    valid_frame_count = 0
-    
-    for frame_idx in range(min_frames):
-        gt_frame = gt_poses[frame_idx]  # (17, 2)
-        mp_frame = mp_poses[frame_idx]  # (17, 2)
-        
-        # Check if both frames have valid data (not all zeros)
-        gt_valid = not np.all(gt_frame == 0)
-        mp_valid = not np.all(mp_frame == 0)
-        
-        if gt_valid and mp_valid:
-            # Compute L2 distance per joint in pixels
-            joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)
-            frame_mpjpe = np.mean(joint_diffs)  # MPJPE for this frame in pixels
-            frame_mpjpe_errors.append(frame_mpjpe)
-            joint_errors += joint_diffs
-            valid_frame_count += 1
-    
-    if valid_frame_count > 0:
-        avg_mpjpe = np.mean(frame_mpjpe_errors)  # Average MPJPE across all frames
-        joint_errors /= valid_frame_count
-        
-        print(f"\n2D MPJPE Results (pixel coordinates):")
-        print(f"Valid frames: {valid_frame_count}/{min_frames}")
-        print(f"Average 2D MPJPE: {avg_mpjpe:.2f} pixels")
-        print(f"Joint errors (worst 5):")
-        
-        # Sort joints by error
-        joint_error_pairs = [(i, joint_errors[i], JOINT_NAMES[i]) for i in range(17)]
-        joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
-        
-        for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
-            print(f"  {name} (joint {joint_idx}): {error:.2f} pixels")
-        
-        return {
-            'mpjpe_2d': float(avg_mpjpe),
-            'joint_errors': [float(x) for x in joint_errors],
-            'valid_frames': int(valid_frame_count),
-            'total_frames': int(min_frames),
-            'frame_mpjpe_errors': frame_mpjpe_errors  # Individual frame MPJPE errors in pixels
+class MediaPipe2DPoseEstimator:
+    def __init__(self, resize_resolution=None):
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.resize_resolution = resize_resolution
+        self.mp_to_mpi_mapping = {
+            0: 16,   # nose -> head
+            11: 5,   # left_shoulder -> left shoulder
+            12: 2,   # right_shoulder -> right shoulder
+            13: 6,   # left_elbow -> left elbow
+            14: 3,   # right_elbow -> right elbow
+            15: 7,   # left_wrist -> left wrist
+            16: 4,   # right_wrist -> right wrist
+            23: 11,  # left_hip -> left hip
+            24: 8,   # right_hip -> right hip
+            25: 12,  # left_knee -> left knee
+            26: 9,   # right_knee -> right knee
+            27: 13,  # left_ankle -> left ankle
+            28: 10,  # right_ankle -> right ankle
         }
-    else:
-        print("No valid frames found for comparison!")
-        return None
+        self.missing_joints_estimation = {
+            1: [5, 2],   # neck from shoulders
+            14: [11, 8], # hip from left/right hips
+            15: [14, 1], # spine from hip and neck
+        }
 
-def compute_2d_pck(gt_poses_pixel, mp_poses_pixel, thresholds=[5, 10, 20, 30, 50]):
-    """Compute 2D PCK at different pixel thresholds"""
-    min_frames = min(len(gt_poses_pixel), len(mp_poses_pixel))
-    gt_poses = gt_poses_pixel[:min_frames]
-    mp_poses = mp_poses_pixel[:min_frames]
-    
-    pck_results = {}
-    valid_frame_count = 0
-    all_joint_errors = []
-    
-    for frame_idx in range(min_frames):
-        gt_frame = gt_poses[frame_idx]  # (17, 2)
-        mp_frame = mp_poses[frame_idx]  # (17, 2)
+    def estimate_2d_pose_from_image(self, image):
+        """Estimate 2D pose from image, return normalized coordinates [0,1] with confidence."""
+        if image is None:
+            return np.zeros((17, 3), dtype=np.float32)
         
-        # Check if both frames have valid data
-        gt_valid = not np.all(gt_frame == 0)
-        mp_valid = not np.all(mp_frame == 0)
+        # Optional resizing
+        if self.resize_resolution:
+            image = cv2.resize(image, self.resize_resolution, interpolation=cv2.INTER_AREA)
+        height, width = image.shape[:2]
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        if gt_valid and mp_valid:
-            # Compute L2 distance per joint
-            joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)  # (17,)
-            all_joint_errors.append(joint_diffs)
-            valid_frame_count += 1
-    
-    if valid_frame_count > 0:
-        all_joint_errors = np.stack(all_joint_errors, axis=0)  # (valid_frames, 17)
-        
-        print(f"\n2D PCK Results (pixel thresholds):")
-        for threshold in thresholds:
-            correct = all_joint_errors < threshold  # (valid_frames, 17)
-            pck = np.mean(correct) * 100  # Overall percentage
-            pck_results[f'PCK@{threshold}px'] = pck
-            print(f"  PCK@{threshold}px: {pck:.2f}%")
-        
-        return pck_results
-    else:
-        return {}
+        results = self.pose.process(rgb_image)
+        pose_2d = np.zeros((17, 3), dtype=np.float32)
 
-def compute_2d_auc(gt_poses_pixel, mp_poses_pixel, max_threshold=100.0, num_thresholds=51):
-    """Compute 2D AUC metric"""
-    min_frames = min(len(gt_poses_pixel), len(mp_poses_pixel))
-    gt_poses = gt_poses_pixel[:min_frames]
-    mp_poses = mp_poses_pixel[:min_frames]
-    
-    all_joint_errors = []
-    valid_frame_count = 0
-    
-    for frame_idx in range(min_frames):
-        gt_frame = gt_poses[frame_idx]
-        mp_frame = mp_poses[frame_idx]
-        
-        gt_valid = not np.all(gt_frame == 0)
-        mp_valid = not np.all(mp_frame == 0)
-        
-        if gt_valid and mp_valid:
-            joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)
-            all_joint_errors.extend(joint_diffs)
-            valid_frame_count += 1
-    
-    if len(all_joint_errors) > 0:
-        all_joint_errors = np.array(all_joint_errors)
-        thresholds = np.linspace(0, max_threshold, num_thresholds)
-        
-        pck_values = []
-        for threshold in thresholds:
-            pck = np.mean(all_joint_errors < threshold)
-            pck_values.append(pck)
-        
-        # Calculate AUC using trapezoidal rule
-        auc = np.trapz(pck_values, thresholds) / max_threshold
-        
-        print(f"\n2D AUC Result:")
-        print(f"  AUC (0-{max_threshold}px): {auc:.4f}")
-        return auc
-    else:
-        return 0.0
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            avg_visibility = np.mean([landmarks[i].visibility for i in self.mp_to_mpi_mapping.keys() if i < len(landmarks)])
+            confidence_threshold = max(0.3, avg_visibility * 0.5)
 
-def load_video_frames_for_visualization(sequence_name, num_frames=50):
-    """Load video frames for visualization"""
+            for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
+                if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
+                    pose_2d[mpi_idx] = [landmarks[mp_idx].x, landmarks[mp_idx].y, landmarks[mp_idx].visibility]
+
+            if len(landmarks) > 10:
+                if len(landmarks) > 5:
+                    left_eyebrow_inner = landmarks[2] if len(landmarks) > 2 else landmarks[0]
+                    right_eyebrow_inner = landmarks[5] if len(landmarks) > 5 else landmarks[0]
+                    pose_2d[0] = [
+                        (left_eyebrow_inner.x + right_eyebrow_inner.x) / 2.0,
+                        (left_eyebrow_inner.y + right_eyebrow_inner.y) / 2.0,
+                        (left_eyebrow_inner.visibility + right_eyebrow_inner.visibility) / 2.0
+                    ]
+                if len(landmarks) > 10:
+                    mouth_left = landmarks[9] if len(landmarks) > 9 else landmarks[0]
+                    mouth_right = landmarks[10] if len(landmarks) > 10 else landmarks[0]
+                    pose_2d[16] = [
+                        (mouth_left.x + mouth_right.x) / 2.0,
+                        (mouth_left.y + mouth_right.y) / 2.0,
+                        (mouth_left.visibility + mouth_right.visibility) / 2.0
+                    ]
+
+            for missing_joint, source_joints in self.missing_joints_estimation.items():
+                valid_sources = [j for j in source_joints if pose_2d[j, 2] > confidence_threshold]
+                if valid_sources:
+                    pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
+                    pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
+
+            if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
+                pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
+                pose_2d[0, 1] -= 0.05
+                pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
+
+        return pose_2d
+
+    def close(self):
+        self.pose.close()
+
+def load_video_frames_for_sample(sequence_name, sample_idx, n_frames=27, stride=9):
+    """Load video frames for a single sample."""
     video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
-    
     if not os.path.exists(video_path):
         print(f"Video frames not found at: {video_path}")
         return None
-    
+
     image_files = []
     for ext in ['*.jpg', '*.jpeg', '*.png']:
         image_files.extend(glob.glob(os.path.join(video_path, ext)))
-    
     image_files.sort()
-    
-    frames = []
-    print(f"Loading {min(num_frames, len(image_files))} frames for visualization...")
-    
-    for i, img_path in enumerate(image_files[:num_frames]):
-        frame = cv2.imread(img_path)
-        if frame is not None:
-            frames.append(frame)
-    
-    print(f"✓ Loaded {len(frames)} frames")
-    return frames
 
-def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_name, args, metrics):
-    """Create side-by-side comparison with pixel coordinates overlaid on images"""
-    min_frames = min(len(gt_poses_pixel), len(mp_poses_pixel), len(frames) if frames else 999999, args.num_frames)
+    if not image_files:
+        print(f"No image files found in {video_path}")
+        return None
+
+    print(f"Found {len(image_files)} image files in {video_path}")
+    center_frame = sample_idx * stride + (n_frames - 1) // 2
+    start_frame = max(0, center_frame - (n_frames - 1) // 2)
+    end_frame = min(len(image_files), center_frame + (n_frames - 1) // 2 + 1)
+
+    frames = []
+    valid_frames = 0
+    for frame_idx in range(start_frame, end_frame):
+        frame = cv2.imread(image_files[frame_idx]) if frame_idx < len(image_files) else None
+        if frame is not None:
+            valid_frames += 1
+        frames.append(frame)
+
+    return frames if valid_frames >= n_frames // 2 else None
+
+def input_augmentation_mediapipe(input_2D, model, joints_left, joints_right, use_augmentation=True):
+    """Apply test-time augmentation using MediaPipe 2D poses."""
+    N, T, J, C = input_2D.shape
+    if not use_augmentation:
+        return input_2D, model(input_2D)
+
+    input_2D_flip = input_2D.clone()
+    input_2D_flip[..., 0] = 1.0 - input_2D_flip[..., 0]
+    input_2D_flip[:, :, joints_left + joints_right, :] = input_2D_flip[:, :, joints_right + joints_left, :]
+
+    output_3D_non_flip = model(input_2D)
+    output_3D_flip = model(input_2D_flip)
+    output_3D_flip[..., 0] *= -1
+    output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
+
+    output_3D = (output_3D_non_flip + output_3D_flip) / 2
+    return input_2D, output_3D
+
+def compute_2d_mpjpe(mediapipe_2d, gt_2d):
+    """Compute MPJPE between MediaPipe and ground truth 2D poses."""
+    if mediapipe_2d.shape[2] != gt_2d.shape[2]:
+        print(f"Warning: Joint dimension mismatch - MediaPipe: {mediapipe_2d.shape[2]}, Ground Truth: {gt_2d.shape[2]}")
+        return None
+    diff = mediapipe_2d[:, :, :2] - gt_2d[:, :, :2]  # (N, T, J, 2)
+    return torch.sqrt(torch.sum(diff ** 2, dim=-1)).mean().item()
+
+def evaluate_with_mediapipe_2d(model, test_loader, estimator, args):
+    """Evaluate model using MediaPipe 2D poses iteratively and compare with ground truth 2D."""
+    model.eval()
+    joints_left = [5, 6, 7, 11, 12, 13]
+    joints_right = [2, 3, 4, 8, 9, 10]
     
-    if min_frames == 0:
-        print("No frames to visualize!")
-        return None, None, 0
-    
-    # Get image dimensions
-    if seq_name in ['TS5', 'TS6']:
-        img_width, img_height = 1920, 1080
-    else:
-        img_width, img_height = 2048, 2048
-    
-    # Set up the plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-    
-    def update(frame_idx):
-        ax1.clear()
-        ax2.clear()
-        
-        # Show background image if available
-        if frames and frame_idx < len(frames):
-            frame = frames[frame_idx]
-            # Convert BGR to RGB for matplotlib
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            ax1.imshow(frame_rgb)
-            ax2.imshow(frame_rgb)
-        else:
-            # Set image dimensions as limits
-            ax1.set_xlim(0, img_width)
-            ax1.set_ylim(img_height, 0)  # Flip Y axis
-            ax2.set_xlim(0, img_width)
-            ax2.set_ylim(img_height, 0)  # Flip Y axis
-            ax1.set_facecolor('black')
-            ax2.set_facecolor('black')
-        
-        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
-        ax2.set_title(f'MediaPipe Estimation\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
-        
-        # Plot Ground Truth
-        gt_frame = gt_poses_pixel[frame_idx]  # (17, 2)
-        gt_valid = not np.all(gt_frame == 0)
-        
-        if gt_valid:
-            # Draw skeleton connections
-            for connection in connections_2d:
-                joint1, joint2 = connection
-                if joint1 < len(gt_frame) and joint2 < len(gt_frame):
-                    x1, y1 = gt_frame[joint1]
-                    x2, y2 = gt_frame[joint2]
-                    ax1.plot([x1, x2], [y1, y2], 'b-', linewidth=3, alpha=0.8)
+    data_inference = {}
+    pose_2d_comparison = {}
+    error_sum_test = AccumLoss()
+    pck_results = {
+        'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
+        'PCK@90%_150mm': 0.0, 'PCK@80%_150mm': 0.0, 'PCK@70%_150mm': 0.0
+    }
+    auc_sum = 0.0
+    mpjpe_2d_sum = 0.0
+    valid_2d_samples = 0
+    valid_samples = 0
+
+    for data in tqdm(test_loader, desc="Evaluating samples"):
+        batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
+        [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
+        N = input_2D.size(0)
+
+        out_target = gt_3D.clone().view(N, -1, 17, 3)
+        out_target[:, :, 14] = 0
+        gt_3D_original = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
+
+        for i in range(N):
+            if args.sequence_name and seq[i] != args.sequence_name:
+                continue
+            if args.max_samples and valid_samples >= args.max_samples:
+                break
+
+            start_time = time.time()
+            print(f"Processing sample {valid_samples + 1} from sequence {seq[i]}")
+            frames = load_video_frames_for_sample(seq[i], valid_samples, args.n_frames, stride=9)
+            if frames is None:
+                print(f"Skipping sample {valid_samples + 1} from {seq[i]}: No valid frames")
+                continue
+
+            mediapipe_2d_sequence = []
+            for frame in frames:
+                pose_2d = estimator.estimate_2d_pose_from_image(frame)
+                mediapipe_2d_sequence.append(pose_2d)
+
+            if len(mediapipe_2d_sequence) != args.n_frames:
+                print(f"Skipping sample {valid_samples + 1} from {seq[i]}: Incomplete frame sequence")
+                continue
+
+            mediapipe_2d_tensor = torch.from_numpy(np.stack(mediapipe_2d_sequence, axis=0)).float().unsqueeze(0)
             
-            # Draw joints
-            for joint_idx, (x, y) in enumerate(gt_frame):
-                ax1.scatter(x, y, c='blue', s=80, alpha=0.9, edgecolors='white', linewidth=2)
-                ax1.text(x+10, y+10, str(joint_idx), fontsize=12, ha='left', va='bottom', 
-                        color='yellow', weight='bold',
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.7))
-        else:
-            ax1.text(img_width//2, img_height//2, 'No GT Data', ha='center', va='center', 
-                    fontsize=16, color='red')
-        
-        # Plot MediaPipe
-        mp_frame = mp_poses_pixel[frame_idx]  # (17, 2)
-        mp_valid = not np.all(mp_frame == 0)
-        
-        if mp_valid:
-            # Draw skeleton connections
-            for connection in connections_2d:
-                joint1, joint2 = connection
-                if joint1 < len(mp_frame) and joint2 < len(mp_frame):
-                    x1, y1 = mp_frame[joint1]
-                    x2, y2 = mp_frame[joint2]
-                    ax2.plot([x1, x2], [y1, y2], 'r-', linewidth=3, alpha=0.8)
-            
-            # Draw joints
-            for joint_idx, (x, y) in enumerate(mp_frame):
-                ax2.scatter(x, y, c='red', s=80, alpha=0.9, edgecolors='white', linewidth=2)
-                ax2.text(x+10, y+10, str(joint_idx), fontsize=12, ha='left', va='bottom', 
-                        color='yellow', weight='bold',
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.7))
-        else:
-            ax2.text(img_width//2, img_height//2, 'No MediaPipe Data', ha='center', va='center', 
-                    fontsize=16, color='red')
-        
-        # Compute and display frame MPJPE (pixel error)
-        if gt_valid and mp_valid:
-            # Calculate frame MPJPE in pixels
-            frame_mpjpe = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            mpjpe_text = f'Frame MPJPE: {frame_mpjpe:.2f} pixels'
-        else:
-            mpjpe_text = 'Frame MPJPE: N/A'
-        
-        # Create comprehensive title with all metrics
-        pck_text = " | ".join([f"{k}: {v:.1f}%" for k, v in metrics['pck_results'].items()])
-        
-        # Enhanced title showing both overall and frame-specific MPJPE in pixels
-        fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                    f'Average MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
-                    f'{pck_text} | Valid: {metrics["valid_frames"]}/{metrics["total_frames"]} frames', 
-                    fontsize=14, y=0.95)
-        
-        return [ax1, ax2]
-    
-    return update, fig, min_frames
+            if torch.cuda.is_available():
+                mediapipe_2d_tensor = mediapipe_2d_tensor.cuda()
+
+            print(f"MediaPipe 2D shape: {mediapipe_2d_tensor.shape}")
+            print(f"Ground Truth 2D shape: {input_2D[i:i+1].shape}")
+
+            seq_name = seq[i]
+            if seq_name not in pose_2d_comparison:
+                pose_2d_comparison[seq_name] = {}
+            pose_2d_comparison[seq_name][valid_samples] = {
+                'mediapipe_2d': mediapipe_2d_tensor[0].cpu().numpy().tolist(),
+                'ground_truth_2d': input_2D[i:i+1].cpu().numpy().tolist()
+            }
+
+            mpjpe_2d = compute_2d_mpjpe(mediapipe_2d_tensor, input_2D[i:i+1])
+            if mpjpe_2d is not None:
+                mpjpe_2d_sum += mpjpe_2d
+                valid_2d_samples += 1
+
+            with torch.no_grad():
+                mediapipe_2d_tensor, output_3D = input_augmentation_mediapipe(
+                    mediapipe_2d_tensor, model, joints_left, joints_right, use_augmentation=args.use_augmentation)
+
+                output_3D = output_3D * scale[i:i+1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
+                
+                pad = (args.n_frames - 1) // 2
+                pred_out = output_3D[:, pad].unsqueeze(1)
+
+                pred_out[..., 14, :] = 0
+                pred_out = denormalize(pred_out, [seq[i]])
+
+                cam2real = np.array([[1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32)
+                pred_out_np = pred_out.cpu().numpy()
+                pred_out_np = pred_out_np @ cam2real
+                pred_out = torch.from_numpy(pred_out_np).to(pred_out.device)
+
+                pred_out = pred_out - pred_out[..., 14:15, :]
+                inference_out = pred_out + out_target[i:i+1, :, 14:15, :]
+                out_target_sample = out_target[i:i+1] - out_target[i:i+1, :, 14:15, :]
+
+                joint_error_test = mpjpe_cal(pred_out, out_target_sample).item()
+                error_sum_test.update(joint_error_test * 1, 1)
+
+                torso_diameters = calculate_torso_diameter(gt_3D_original[i:i+1])
+
+                pred_frame = pred_out[:, 0]
+                gt_frame = out_target_sample[:, 0]
+                
+                batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+                for key in pck_results:
+                    pck_results[key] += batch_pck[key] * 1
+
+                auc = compute_auc(pred_frame, gt_frame)
+                auc_sum += auc * 1
+
+                valid_samples += 1
+
+                seq_name = seq[i]
+                inference_data = inference_out[0].permute(2, 1, 0).cpu().numpy()
+                
+                if seq_name in data_inference:
+                    data_inference[seq_name] = np.concatenate(
+                        (data_inference[seq_name], inference_data), axis=2)
+                else:
+                    data_inference[seq_name] = inference_data
+
+                if valid_samples % 10 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
+            print(f"Sample {valid_samples} processing time: {time.time() - start_time:.2f} seconds")
+
+    if valid_samples == 0:
+        print("No valid samples processed!")
+        return None
+
+    for seq_name in data_inference.keys():
+        data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
+
+    mpjpe_avg = error_sum_test.avg
+    mpjpe_2d_avg = mpjpe_2d_sum / valid_2d_samples if valid_2d_samples > 0 else 0.0
+    for key in pck_results:
+        pck_results[key] /= valid_samples if valid_samples > 0 else 1
+    auc_avg = auc_sum / valid_samples if valid_samples > 0 else 0.0
+
+    print(f'Protocol #1 Error (MPJPE 3D): {mpjpe_avg:.2f} mm')
+    print(f'MPJPE 2D (MediaPipe vs GT): {mpjpe_2d_avg:.4f} (normalized units)')
+    for key, value in pck_results.items():
+        print(f'{key}: {value*100:.2f}%')
+    print(f'AUC: {auc_avg:.4f}')
+
+    return {
+        'mpjpe': mpjpe_avg,
+        'mpjpe_2d': mpjpe_2d_avg,
+        'pck_results': pck_results,
+        'auc': auc_avg,
+        'valid_samples': valid_samples,
+        'data_inference': data_inference,
+        'pose_2d_comparison': pose_2d_comparison
+    }
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, required=True, help="Path to the config file.")
+    parser.add_argument('--checkpoint', type=str, required=True, help='Checkpoint directory')
+    parser.add_argument('--checkpoint-file', type=str, default='best_epoch.pth.tr', help="Checkpoint file name")
+    parser.add_argument('--batch-size', type=int, default=1, help='Batch size for processing')
+    parser.add_argument('--sequence-name', type=str, default=None, help='Specific sequence to test (TS1, TS2, etc.)')
+    parser.add_argument('--max-samples', type=int, default=None, help='Maximum samples to process (for testing)')
+    parser.add_argument('--resize-resolution', type=int, nargs=2, default=None, help='Resize images to W H (e.g., 1280 720)')
+    parser.add_argument('--no-augmentation', action='store_false', dest='use_augmentation', help='Disable test-time augmentation')
+    parser.set_defaults(use_augmentation=True)
+    return parser.parse_args()
 
 def main():
-    parser = argparse.ArgumentParser(description='Calculate 2D metrics for Ground Truth vs MediaPipe poses')
-    parser.add_argument('--sequence', type=str, default='TS1', 
-                       help='Sequence to analyze (TS1, TS2, TS3, TS4, TS5, TS6)')
-    parser.add_argument('--num-frames', type=int, default=50,
-                       help='Number of frames to visualize')
-    parser.add_argument('--save-video', action='store_true',
-                       help='Save comparison as GIF')
-    parser.add_argument('--output-dir', type=str, default='2d_metrics_output',
-                       help='Directory to save outputs')
-    args = parser.parse_args()
-    
-    print("2D Pose Metrics Calculator: Ground Truth vs MediaPipe")
+    opts = parse_args()
+    args = get_config(opts.config)
+    args.sequence_name = opts.sequence_name
+    args.max_samples = opts.max_samples
+    args.batch_size = opts.batch_size
+    args.use_augmentation = opts.use_augmentation
+
+    print("TCPFormer Evaluation with MediaPipe 2D Poses")
     print("=" * 60)
-    print(f"Sequence: {args.sequence}")
-    print(f"Frames to analyze: {args.num_frames}")
-    
-    # Load datasets
-    gt_data, mp_data = load_datasets()
-    if gt_data is None or mp_data is None:
+    print(f"Config: {opts.config}")
+    print(f"Checkpoint: {opts.checkpoint}/{opts.checkpoint_file}")
+    print(f"Frames per sample: {args.n_frames}")
+    print(f"Stride: 9")
+    if args.sequence_name:
+        print(f"Filtering for sequence: {args.sequence_name}")
+    if opts.resize_resolution:
+        print(f"Resizing images to: {opts.resize_resolution}")
+    print(f"Test-time augmentation: {'Enabled' if args.use_augmentation else 'Disabled'}")
+
+    print("\nInitializing MediaPipe...")
+    estimator = MediaPipe2DPoseEstimator(resize_resolution=opts.resize_resolution)
+
+    print("Loading model...")
+    model = load_model_TCPFormer(args)
+    checkpoint_path = os.path.join(opts.checkpoint, opts.checkpoint_file)
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        if 'module.' in list(checkpoint['model'].keys())[0]:
+            model = torch.nn.DataParallel(model)
+        model.load_state_dict(checkpoint['model'], strict=True)
+        print(f"✓ Loaded checkpoint from {checkpoint_path}")
+        if 'min_mpjpe' in checkpoint:
+            print(f"  Best MPJPE from training: {checkpoint['min_mpjpe']:.2f} mm")
+    else:
+        print(f"Error: Checkpoint not found at {checkpoint_path}")
         return
-    
-    # Check if sequence exists
-    if args.sequence not in gt_data:
-        print(f"ERROR: Sequence {args.sequence} not found in ground truth data")
-        print(f"Available sequences: {list(gt_data.keys())}")
-        return
-    
-    if args.sequence not in mp_data:
-        print(f"ERROR: Sequence {args.sequence} not found in MediaPipe data")
-        print(f"Available sequences: {list(mp_data.keys())}")
-        return
-    
-    # Extract 2D poses (in whatever format they are)
-    gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    mp_poses_2d_orig = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    
-    print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
-    
-    # STEP 1: Normalize BOTH datasets to [-1, 1] for fair comparison
-    print(f"\nNormalizing both datasets to [-1, 1] range...")
-    gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
-    mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
-    
-    # Verify normalized coordinate ranges
-    print(f"\nFinal normalized coordinate ranges:")
-    print(f"GT: X[{np.min(gt_poses_2d_norm[:, :, 0]):.3f}, {np.max(gt_poses_2d_norm[:, :, 0]):.3f}], "
-          f"Y[{np.min(gt_poses_2d_norm[:, :, 1]):.3f}, {np.max(gt_poses_2d_norm[:, :, 1]):.3f}]")
-    print(f"MP: X[{np.min(mp_poses_2d_norm[:, :, 0]):.3f}, {np.max(mp_poses_2d_norm[:, :, 0]):.3f}], "
-          f"Y[{np.min(mp_poses_2d_norm[:, :, 1]):.3f}, {np.max(mp_poses_2d_norm[:, :, 1]):.3f}]")
-    
-    # STEP 2: Denormalize both datasets back to pixel coordinates
-    print(f"\nDenormalizing poses to pixel coordinates...")
-    gt_poses_pixel = denormalize_2d_poses(gt_poses_2d_norm, args.sequence)
-    mp_poses_pixel = denormalize_2d_poses(mp_poses_2d_norm, args.sequence)
-    
-    # STEP 3: Calculate metrics in pixel coordinates
-    print(f"\nCalculating 2D metrics in pixel coordinates...")
-    
-    # MPJPE
-    mpjpe_metrics = compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel)
-    if mpjpe_metrics is None:
-        print("Failed to compute MPJPE!")
-        return
-    
-    # PCK at various thresholds
-    pck_results = compute_2d_pck(gt_poses_pixel, mp_poses_pixel, thresholds=[5, 10, 20, 30, 50])
-    
-    # AUC
-    auc_result = compute_2d_auc(gt_poses_pixel, mp_poses_pixel, max_threshold=100.0)
-    
-    # Combine all metrics
-    metrics = {
-        **mpjpe_metrics,
-        'pck_results': pck_results,
-        'auc_2d': auc_result
-    }
-    
-    # Save metrics
-    os.makedirs(args.output_dir, exist_ok=True)
-    metrics_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics.json')
-    
-    with open(metrics_path, 'w') as f:
-        json.dump(metrics, f, indent=2)
-    
-    print(f"\n✓ Metrics saved to: {metrics_path}")
-    
-    # Print final summary with AVERAGE MPJPE prominently displayed
-    print(f"\n{'='*60}")
-    print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence}")
-    print(f"{'='*60}")
-    print(f"🎯 AVERAGE 2D MPJPE: {metrics['mpjpe_2d']:.2f} PIXELS")
-    print(f"📊 2D AUC:           {metrics['auc_2d']:.4f}")
-    print(f"✅ 2D PCK Results:")
-    for threshold, pck in pck_results.items():
-        print(f"   {threshold}: {pck:.2f}%")
-    print(f"📋 Valid frames:     {metrics['valid_frames']}/{metrics['total_frames']}")
-    print(f"{'='*60}")
-    
-    # Create visualization if requested
-    if args.save_video:
-        print(f"\nCreating visualization with MPJPE error in pixels...")
-        
-        # Load video frames for background
-        frames = load_video_frames_for_visualization(args.sequence, args.num_frames)
-        
-        try:
-            result = create_comparison_visualization(
-                gt_poses_pixel, mp_poses_pixel, frames, args.sequence, args, metrics)
-            
-            if result[0] is None:
-                return
-                
-            update_func, fig, min_frames = result
-            
-            print("Creating animation with pixel error display...")
-            ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                              interval=500, repeat=True, blit=False)
-            
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison.gif')
-            
-            ani.save(output_path, writer='pillow', fps=2, dpi=100)
-            print(f"✓ Animation with MPJPE pixel errors saved to: {output_path}")
-            
-            # Save static comparison
-            update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_static.png')
-            plt.savefig(static_path, dpi=150, bbox_inches='tight')
-            print(f"✓ Static image saved to: {static_path}")
-            
-        except Exception as e:
-            print(f"Error creating visualization: {e}")
-            import traceback
-            traceback.print_exc()
+
+    if torch.cuda.is_available():
+        if not isinstance(model, torch.nn.DataParallel):
+            model = torch.nn.DataParallel(model, device_ids=[0])
+        model = model.cuda()
+        print("✓ Model moved to GPU")
+
+    model.eval()
+
+    print("Loading test dataset...")
+    test_dataset = Fusion(args, train=False)
+    from torch.utils.data import DataLoader
+    test_loader = DataLoader(test_dataset,
+                             shuffle=False,
+                             batch_size=args.batch_size,
+                             num_workers=4,
+                             pin_memory=True)
+
+    print(f"✓ Test dataset loaded: {len(test_dataset)} samples")
+
+    try:
+        print("\nStarting evaluation with MediaPipe 2D poses...")
+        with torch.no_grad():
+            results = evaluate_with_mediapipe_2d(model, test_loader, estimator, args)
+
+        if results:
+            print("\n✓ Evaluation completed successfully!")
+            results_path = os.path.join(opts.checkpoint, 'mediapipe_evaluation_results.json')
+            with open(results_path, 'w') as f:
+                json_results = {
+                    key: float(value) if isinstance(value, (np.floating, np.integer)) else value
+                    for key, value in results.items()
+                    if key not in ['data_inference', 'pose_2d_comparison']
+                }
+                json.dump(json_results, f, indent=2)
+            print(f"✓ Results saved to: {results_path}")
+
+            comparison_path = os.path.join(opts.checkpoint, 'mediapipe_vs_gt_2d.json')
+            with open(comparison_path, 'w') as f:
+                json.dump(results['pose_2d_comparison'], f, indent=2)
+            print(f"✓ 2D pose comparison saved to: {comparison_path}")
+
+            import scipy.io as scio
+            mat_path = os.path.join(opts.checkpoint, 'inference_data_mediapipe.mat')
+            scio.savemat(mat_path, results['data_inference'])
+            print(f"✓ Inference data saved to: {mat_path}")
+
+    except Exception as e:
+        print(f"Error during evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        estimator.close()
+        print("✓ MediaPipe estimator closed")
 
 if __name__ == '__main__':
     main()
