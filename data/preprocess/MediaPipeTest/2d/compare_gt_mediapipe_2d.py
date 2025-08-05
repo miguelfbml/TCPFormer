@@ -63,12 +63,11 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def normalize_gt_coordinates(gt_poses_2d, seq_name):
-    """Normalize GT coordinates to [-1, 1] range for fair comparison"""
-    print(f"\nNormalizing GT coordinates for {seq_name}...")
+def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
+    """Normalize any coordinate system to [-1, 1] range"""
+    print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
     
     # Get image dimensions for this sequence
-    # TS5 and TS6 use 1920x1080, others use 2048x2048
     if seq_name in ['TS5', 'TS6']:
         width, height = 1920, 1080
     else:
@@ -76,15 +75,50 @@ def normalize_gt_coordinates(gt_poses_2d, seq_name):
     
     print(f"Using image dimensions: {width}x{height}")
     
-    # Normalize to [-1, 1] range
-    normalized_gt = gt_poses_2d.copy()
-    normalized_gt[:, :, 0] = (gt_poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
-    normalized_gt[:, :, 1] = (gt_poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
+    # Analyze current coordinate range
+    print(f"Original {data_type} range:")
+    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
+    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
     
-    print(f"Original GT range: X[{np.min(gt_poses_2d[:, :, 0]):.3f}, {np.max(gt_poses_2d[:, :, 0]):.3f}], Y[{np.min(gt_poses_2d[:, :, 1]):.3f}, {np.max(gt_poses_2d[:, :, 1]):.3f}]")
-    print(f"Normalized GT range: X[{np.min(normalized_gt[:, :, 0]):.3f}, {np.max(normalized_gt[:, :, 0]):.3f}], Y[{np.min(normalized_gt[:, :, 1]):.3f}, {np.max(normalized_gt[:, :, 1]):.3f}]")
+    normalized_poses = poses_2d.copy()
     
-    return normalized_gt
+    # Detect coordinate system and normalize accordingly
+    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
+    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
+    
+    if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
+        # MediaPipe [0,1] format - convert to [-1,1]
+        print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
+        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
+        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
+        
+    elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
+        # Pixel coordinates - convert to [-1,1]
+        print(f"  Detected pixel coordinates - converting to [-1,1]")
+        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
+        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
+        
+    elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
+        # Already in [-1,1] format
+        print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
+        normalized_poses = poses_2d.copy()
+        
+    else:
+        # Unknown format - try to detect if it's extended pixel coordinates
+        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
+        # Assume it's some form of pixel/camera coordinates
+        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
+        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
+    
+    # Verify final range
+    final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
+    final_y_min, final_y_max = np.min(normalized_poses[:, :, 1]), np.max(normalized_poses[:, :, 1])
+    
+    print(f"Final {data_type} range:")
+    print(f"  X: [{final_x_min:.3f}, {final_x_max:.3f}]")
+    print(f"  Y: [{final_y_min:.3f}, {final_y_max:.3f}]")
+    
+    return normalized_poses
 
 def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
     """Analyze coordinate ranges for both datasets"""
@@ -136,7 +170,7 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         avg_frame_error = np.mean(frame_errors)
         joint_errors /= valid_frame_count
         
-        print(f"\nComparison Metrics (after normalization):")
+        print(f"\nComparison Metrics (both in [-1,1] coordinates):")
         print(f"Valid frames: {valid_frame_count}/{min_frames}")
         print(f"Average frame error: {avg_frame_error:.4f}")
         print(f"Joint errors (top 5):")
@@ -150,7 +184,7 @@ def compute_comparison_metrics(gt_poses_2d, mp_poses_2d):
         
         return {
             'avg_frame_error': float(avg_frame_error),
-            'joint_errors': [float(x) for x in joint_errors],  # Convert to list for JSON
+            'joint_errors': [float(x) for x in joint_errors],
             'valid_frames': int(valid_frame_count),
             'total_frames': int(min_frames)
         }
@@ -164,7 +198,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
     
     if min_frames == 0:
         print("No frames to visualize!")
-        return
+        return None, None, 0
     
     # Limit frames
     gt_poses = gt_poses_2d[:min_frames]
@@ -174,29 +208,9 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}', fontsize=16)
     
-    # Calculate plot limits based on both datasets
-    all_gt = gt_poses.reshape(-1, 2)
-    all_mp = mp_poses.reshape(-1, 2)
-    
-    # Remove zero points for limit calculation
-    valid_gt = all_gt[~np.all(all_gt == 0, axis=1)]
-    valid_mp = all_mp[~np.all(all_mp == 0, axis=1)]
-    
-    if len(valid_gt) > 0 and len(valid_mp) > 0:
-        all_points = np.vstack([valid_gt, valid_mp])
-        x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
-        y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
-        
-        # Add padding
-        x_pad = (x_max - x_min) * 0.1
-        y_pad = (y_max - y_min) * 0.1
-        x_min -= x_pad
-        x_max += x_pad
-        y_min -= y_pad
-        y_max += y_pad
-    else:
-        x_min, x_max = -1.2, 1.2
-        y_min, y_max = -1.2, 1.2
+    # Use fixed limits since both are now in [-1,1] range
+    x_min, x_max = -1.2, 1.2
+    y_min, y_max = -1.2, 1.2
     
     def update(frame_idx):
         ax1.clear()
@@ -208,11 +222,11 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
             ax.set_ylim(y_max, y_min)  # Flip Y axis for image coordinates
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
-            ax.set_xlabel('X (normalized)')
-            ax.set_ylabel('Y (normalized)')
+            ax.set_xlabel('X (normalized [-1,1])')
+            ax.set_ylabel('Y (normalized [-1,1])')
         
         # Plot Ground Truth
-        ax1.set_title(f'Ground Truth (Normalized)\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
+        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=14)
         gt_frame = gt_poses[frame_idx]
         
         # Check if frame has valid data
@@ -277,8 +291,8 @@ def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
     """Save detailed comparison analysis to JSON"""
     analysis = {
         'sequence_name': seq_name,
-        'gt_shape': list(gt_data[seq_name]['data_2d'].shape),  # Convert to list for JSON
-        'mp_shape': list(mp_data[seq_name]['data_2d'].shape),  # Convert to list for JSON
+        'gt_shape': list(gt_data[seq_name]['data_2d'].shape),
+        'mp_shape': list(mp_data[seq_name]['data_2d'].shape),
         'gt_coordinate_range': {
             'x_min': float(np.min(gt_data[seq_name]['data_2d'][:, :, 0])),
             'x_max': float(np.max(gt_data[seq_name]['data_2d'][:, :, 0])),
@@ -340,29 +354,35 @@ def main():
     
     # Extract 2D poses
     gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    mp_poses_2d = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    mp_poses_2d_orig = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     
     print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d)}")
+    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
     
     # Analyze coordinate ranges before normalization
-    analyze_coordinate_ranges(gt_poses_2d_orig, mp_poses_2d, args.sequence)
+    analyze_coordinate_ranges(gt_poses_2d_orig, mp_poses_2d_orig, args.sequence)
     
-    # Normalize GT coordinates to [-1, 1] for fair comparison
-    gt_poses_2d_norm = normalize_gt_coordinates(gt_poses_2d_orig, args.sequence)
+    # Normalize BOTH datasets to [-1, 1] for fair comparison
+    gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
+    mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
     
     # Compute comparison metrics on normalized data
-    metrics = compute_comparison_metrics(gt_poses_2d_norm, mp_poses_2d)
+    metrics = compute_comparison_metrics(gt_poses_2d_norm, mp_poses_2d_norm)
     
     # Save analysis if requested
     if args.save_analysis and metrics:
         save_comparison_analysis(gt_data, mp_data, args.sequence, metrics, args.output_dir)
     
-    # Create visualization using normalized GT data
+    # Create visualization using normalized data
     print(f"\nCreating visualization...")
     try:
-        update_func, fig, min_frames = create_comparison_visualization(
-            gt_poses_2d_norm, mp_poses_2d, args.sequence, args)
+        result = create_comparison_visualization(
+            gt_poses_2d_norm, mp_poses_2d_norm, args.sequence, args)
+        
+        if result[0] is None:
+            return
+            
+        update_func, fig, min_frames = result
         
         if args.save_video:
             print("Creating animation...")
