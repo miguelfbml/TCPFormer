@@ -58,43 +58,30 @@ def denormalize_poses_2d_correct(poses_2d, seq_name):
     """
     Denormalize 2D poses to pixel coordinates, handling various input ranges
     """
-    print(f"\nDenormalizing {seq_name} from input coordinates to pixel coordinates...")
-    
     # Get image dimensions for this sequence
     if seq_name in ['TS5', 'TS6']:
         width, height = 1920, 1080
     else:
         width, height = 2048, 2048
     
-    print(f"Using image dimensions: {width}x{height}")
+    denorm_poses = poses_2d.copy()
     
     # Check input range
     x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
     y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
-    print(f"Input coordinate ranges: X [{x_min:.2f}, {x_max:.2f}], Y [{y_min:.2f}, {y_max:.2f}]")
-    
-    denorm_poses = poses_2d.copy()
     
     # If poses are not in [-1, 1], normalize them first assuming they are in pixel coordinates
     if x_max > 1.0 or x_min < -1.0 or y_max > 1.0 or y_min < -1.0:
-        print("Warning: Input poses not in [-1, 1] range. Assuming pixel coordinates and normalizing...")
         # Normalize to [0, 1] based on image dimensions
         denorm_poses[:, :, 0] = (poses_2d[:, :, 0] / width)
         denorm_poses[:, :, 1] = (poses_2d[:, :, 1] / height)
         # Then convert to [-1, 1]
         denorm_poses[:, :, 0] = denorm_poses[:, :, 0] * 2.0 - 1.0
         denorm_poses[:, :, 1] = denorm_poses[:, :, 1] * 2.0 - 1.0
-        print(f"Normalized to [-1, 1]: X [{np.min(denorm_poses[:, :, 0]):.2f}, {np.max(denorm_poses[:, :, 0]):.2f}], "
-              f"Y [{np.min(denorm_poses[:, :, 1]):.2f}, {np.max(denorm_poses[:, :, 1]):.2f}]")
     
     # Denormalize from [-1, 1] to pixel coordinates
-    # Formula: denorm_x = (norm_x + 1) * width / 2, denorm_y = (norm_y + 1) * height / 2
     denorm_poses[:, :, 0] = (denorm_poses[:, :, 0] + 1.0) * width / 2.0
     denorm_poses[:, :, 1] = (denorm_poses[:, :, 1] + 1.0) * height / 2.0
-    
-    print(f"Denormalized coordinate ranges:")
-    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}] pixels")
-    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}] pixels")
     
     return denorm_poses
 
@@ -146,17 +133,6 @@ def compute_mpjpe_2d(gt_poses_2d, mp_poses_2d):
         avg_mpjpe = np.mean([e for e in frame_mpjpe if not np.isnan(e)])
         joint_errors /= valid_frame_count
         
-        print(f"\n2D MPJPE Results (in pixels, root-relative):")
-        print(f"Valid frames: {valid_frame_count}/{min_frames}")
-        print(f"Average MPJPE: {avg_mpjpe:.1f} pixels")
-        print(f"Joint errors (top 5):")
-        
-        joint_error_pairs = [(i, joint_errors[i], JOINT_NAMES[i]) for i in range(17)]
-        joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
-        
-        for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
-            print(f"  {name} (joint {joint_idx}): {error:.1f} pixels")
-        
         return {
             'avg_mpjpe': float(avg_mpjpe),
             'frame_mpjpe': frame_mpjpe,
@@ -165,7 +141,97 @@ def compute_mpjpe_2d(gt_poses_2d, mp_poses_2d):
             'total_frames': int(min_frames)
         }
     else:
-        print("No valid frames found for MPJPE calculation!")
+        return None
+
+def process_single_sequence(gt_data, mp_data, seq_name):
+    """Process a single sequence and return its MPJPE metrics"""
+    # Extract 2D poses
+    gt_poses_2d_norm = gt_data[seq_name]['data_2d']
+    mp_poses_2d_norm = mp_data[seq_name]['data_2d']
+    
+    # Denormalize to pixel coordinates
+    gt_poses_2d_pixel = denormalize_poses_2d_correct(gt_poses_2d_norm, seq_name)
+    mp_poses_2d_pixel = denormalize_poses_2d_correct(mp_poses_2d_norm, seq_name)
+    
+    # Make root-relative
+    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+    mp_poses_2d_root_rel = make_root_relative_2d_pixel(mp_poses_2d_pixel, root_joint_idx=14)
+    
+    # Compute MPJPE
+    metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
+    
+    return metrics
+
+def process_all_sequences(gt_data, mp_data):
+    """Process all sequences and compute overall average MPJPE"""
+    print("\n" + "="*70)
+    print("PROCESSING ALL SEQUENCES - COMPUTING OVERALL AVERAGE MPJPE")
+    print("="*70)
+    
+    all_sequences = sorted(gt_data.keys())
+    sequence_results = {}
+    
+    # Overall statistics
+    total_valid_frames = 0
+    total_frame_errors = []
+    total_joint_errors = np.zeros(17)
+    
+    print(f"Found {len(all_sequences)} sequences: {all_sequences}")
+    print("\nProcessing sequences...")
+    
+    for seq_name in tqdm(all_sequences, desc="Sequences"):
+        if seq_name in mp_data:
+            metrics = process_single_sequence(gt_data, mp_data, seq_name)
+            
+            if metrics:
+                sequence_results[seq_name] = metrics
+                
+                # Accumulate statistics
+                total_valid_frames += metrics['valid_frames']
+                
+                # Add valid frame errors to total
+                valid_frame_errors = [e for e in metrics['frame_mpjpe'] if not np.isnan(e)]
+                total_frame_errors.extend(valid_frame_errors)
+                
+                # Add joint errors (weighted by number of valid frames)
+                joint_errors_weighted = np.array(metrics['joint_errors']) * metrics['valid_frames']
+                total_joint_errors += joint_errors_weighted
+                
+                print(f"  ✓ {seq_name}: {metrics['avg_mpjpe']:.1f} px "
+                      f"({metrics['valid_frames']}/{metrics['total_frames']} frames)")
+            else:
+                print(f"  ✗ {seq_name}: No valid data")
+        else:
+            print(f"  ✗ {seq_name}: Not found in MediaPipe data")
+    
+    # Compute overall statistics
+    if total_valid_frames > 0 and len(total_frame_errors) > 0:
+        overall_avg_mpjpe = np.mean(total_frame_errors)
+        overall_joint_errors = total_joint_errors / total_valid_frames
+        
+        print(f"\n" + "="*70)
+        print("OVERALL RESULTS ACROSS ALL SEQUENCES")
+        print("="*70)
+        print(f"Total valid frames: {total_valid_frames:,}")
+        print(f"Total sequences processed: {len(sequence_results)}")
+        print(f"Overall Average MPJPE: {overall_avg_mpjpe:.1f} pixels")
+        
+        print(f"\nOverall Joint Errors (top 5):")
+        joint_error_pairs = [(i, overall_joint_errors[i], JOINT_NAMES[i]) for i in range(17)]
+        joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
+        
+        for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
+            print(f"  {name} (joint {joint_idx}): {error:.1f} pixels")
+        
+        print(f"\nPer-sequence breakdown:")
+        for seq_name in sorted(sequence_results.keys()):
+            metrics = sequence_results[seq_name]
+            print(f"  {seq_name}: {metrics['avg_mpjpe']:.1f} px "
+                  f"({metrics['valid_frames']:,} frames)")
+        
+        return overall_avg_mpjpe
+    else:
+        print("ERROR: No valid data found across all sequences!")
         return None
 
 def analyze_coordinate_ranges(gt_poses_2d, mp_poses_2d, seq_name):
@@ -284,49 +350,39 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics,
     
     return update, fig, min_frames
 
-def save_comparison_analysis(gt_data, mp_data, seq_name, metrics, output_dir):
-    """Save detailed comparison analysis to JSON"""
-    analysis = {
-        'sequence_name': seq_name,
-        'gt_shape': list(gt_data[seq_name]['data_2d'].shape),
-        'mp_shape': list(mp_data[seq_name]['data_2d'].shape),
-        'mpjpe_results': metrics,
-        'joint_names': JOINT_NAMES,
-        'coordinate_system': 'pixel_coordinates_root_relative',
-        'note': 'All poses are root-relative (root joint at origin) in pixel coordinates'
-    }
-    
-    os.makedirs(output_dir, exist_ok=True)
-    analysis_path = os.path.join(output_dir, f'{seq_name}_mpjpe_analysis.json')
-    
-    with open(analysis_path, 'w') as f:
-        json.dump(analysis, f, indent=2)
-    
-    print(f"✓ Analysis saved to: {analysis_path}")
-
 def main():
     parser = argparse.ArgumentParser(description='Compare Ground Truth and MediaPipe 2D poses with MPJPE in pixel domain')
     parser.add_argument('--sequence', type=str, default='TS1', 
                        help='Sequence to compare (TS1, TS2, TS3, TS4, TS5, TS6)')
+    parser.add_argument('--all', action='store_true',
+                       help='Process all sequences and compute overall average (no visualization)')
     parser.add_argument('--num-frames', type=int, default=50,
-                       help='Number of frames to visualize')
+                       help='Number of frames to visualize (ignored with --all)')
     parser.add_argument('--save-video', action='store_true',
-                       help='Save comparison as GIF')
-    parser.add_argument('--save-analysis', action='store_true',
-                       help='Save detailed analysis to JSON')
+                       help='Save comparison as GIF (ignored with --all)')
     parser.add_argument('--output-dir', type=str, default='comparison_output',
                        help='Directory to save outputs')
     args = parser.parse_args()
     
     print("Ground Truth vs MediaPipe 2D Pose Comparison with MPJPE (Pixel Domain)")
     print("=" * 70)
-    print(f"Sequence: {args.sequence}")
-    print(f"Frames to visualize: {args.num_frames}")
     
+    # Load datasets
     gt_data, mp_data = load_datasets()
     if gt_data is None or mp_data is None:
         return
     
+    if args.all:
+        # Process all sequences
+        print("Processing ALL sequences (no visualization)")
+        overall_avg_mpjpe = process_all_sequences(gt_data, mp_data)
+        return
+    
+    # Single sequence processing (original functionality)
+    print(f"Sequence: {args.sequence}")
+    print(f"Frames to visualize: {args.num_frames}")
+    
+    # Check if sequence exists
     if args.sequence not in gt_data:
         print(f"ERROR: Sequence {args.sequence} not found in ground truth data")
         print(f"Available sequences: {list(gt_data.keys())}")
@@ -337,6 +393,7 @@ def main():
         print(f"Available sequences: {list(mp_data.keys())}")
         return
     
+    # Extract poses
     gt_poses_2d_norm = gt_data[args.sequence]['data_2d']
     mp_poses_2d_norm = mp_data[args.sequence]['data_2d']
     
@@ -356,9 +413,19 @@ def main():
     print(f"\nComputing MPJPE in pixel domain...")
     metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, mp_poses_2d_root_rel)
     
-    if args.save_analysis and metrics:
-        save_comparison_analysis(gt_data, mp_data, args.sequence, metrics, args.output_dir)
+    if metrics:
+        print(f"\n2D MPJPE Results (in pixels, root-relative):")
+        print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+        print(f"Average MPJPE: {metrics['avg_mpjpe']:.1f} pixels")
+        print(f"Joint errors (top 5):")
+        
+        joint_error_pairs = [(i, metrics['joint_errors'][i], JOINT_NAMES[i]) for i in range(17)]
+        joint_error_pairs.sort(key=lambda x: x[1], reverse=True)
+        
+        for i, (joint_idx, error, name) in enumerate(joint_error_pairs[:5]):
+            print(f"  {name} (joint {joint_idx}): {error:.1f} pixels")
     
+    # Create visualization
     print(f"\nCreating visualization...")
     try:
         result = create_comparison_visualization(
