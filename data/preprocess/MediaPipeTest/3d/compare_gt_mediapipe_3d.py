@@ -66,17 +66,14 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def apply_camera_transformation(poses_3d):
+def apply_camera_transformation_mediapipe(poses_3d):
     """
-    Apply camera transformation to align MediaPipe coordinates with MPI-INF-3DHP
+    Apply camera transformation to align MediaPipe coordinates with upright human pose
     
     MediaPipe world coordinates: X=right, Y=down, Z=forward (camera view)
-    MPI-INF-3DHP coordinates: X=right, Y=up, Z=backward (world view)
-    
-    Transformation matrix converts from camera to world coordinates
+    Target: X=right, Y=up, Z=backward (upright human view)
     """
-    # Camera to world transformation matrix
-    # This flips Y and Z axes to match MPI-INF-3DHP coordinate system
+    # MediaPipe camera correction transformation
     cam2world = np.array([
         [1,  0,  0],  # X stays the same (right)
         [0, -1,  0],  # Y flips (down -> up)
@@ -85,6 +82,25 @@ def apply_camera_transformation(poses_3d):
     
     # Apply transformation to all poses
     transformed_poses = poses_3d @ cam2world.T
+    
+    return transformed_poses
+
+def apply_camera_transformation_groundtruth(poses_3d):
+    """
+    Apply camera transformation to align MPI-INF-3DHP ground truth coordinates with upright human pose
+    
+    Based on your workspace's compare_gt_pred.py transformation matrix
+    Original MPI coordinates -> Upright human view
+    """
+    # From compare_gt_pred.py - this transforms MPI coordinates to upright view
+    cam2real = np.array([
+        [1,  0,  0],  # X stays the same
+        [0,  0, -1],  # Y becomes -Z (camera Z points down, we want Y up)
+        [0, -1,  0]   # Z becomes -Y (camera Y points right, we want Z back)
+    ], dtype=np.float32)
+    
+    # Apply transformation to all poses
+    transformed_poses = poses_3d @ cam2real
     
     return transformed_poses
 
@@ -180,11 +196,13 @@ def process_single_sequence(gt_data, mp_data, seq_name):
     gt_poses_3d = gt_data[seq_name]['data_3d']
     mp_poses_3d = mp_data[seq_name]['data_3d']
     
-    # CRITICAL: Apply camera transformation to MediaPipe poses FIRST
-    mp_poses_3d_transformed = apply_camera_transformation(mp_poses_3d)
+    # Apply camera transformations to BOTH datasets to get upright poses
+    print(f"  Applying camera transformations...")
+    gt_poses_3d_transformed = apply_camera_transformation_groundtruth(gt_poses_3d)
+    mp_poses_3d_transformed = apply_camera_transformation_mediapipe(mp_poses_3d)
     
     # Then make both datasets root-relative
-    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d, root_joint_idx=14)
+    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d_transformed, root_joint_idx=14)
     mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d_transformed, root_joint_idx=14)
     
     # Compute comprehensive metrics
@@ -306,7 +324,7 @@ def process_all_sequences(gt_data, mp_data):
 def analyze_coordinate_ranges(gt_poses_3d, mp_poses_3d, seq_name):
     """Analyze coordinate ranges for both 3D datasets"""
     print(f"\nCoordinate analysis for {seq_name}:")
-    print(f"Ground Truth 3D:")
+    print(f"Ground Truth 3D (after camera transformation):")
     print(f"  Shape: {gt_poses_3d.shape}")
     
     # Filter out zero poses for analysis
@@ -348,12 +366,12 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
     
     # Enhanced title with all metrics
     if metrics:
-        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Camera Corrected)\n'
+        title = (f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Both Camera Corrected)\n'
                 f'Avg MPJPE: {metrics["avg_mpjpe"]:.1f}mm | '
                 f'AUC: {metrics["auc"]:.4f} | '
                 f'PCK@80%_150mm: {metrics["pck_results"]["PCK@80%_150mm"]*100:.1f}%')
     else:
-        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Camera Corrected)'
+        title = f'3D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Both Camera Corrected)'
     
     fig.suptitle(title, fontsize=16)
     
@@ -398,7 +416,7 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
             ax.text(0, 100, 0, 'Y(U)', fontsize=10, color='green')
             ax.text(0, 0, 100, 'Z(B)', fontsize=10, color='blue')
         
-        ax1.set_title(f'Ground Truth\nFrame {frame_idx+1}/{min_frames}', fontsize=16, pad=20)
+        ax1.set_title(f'Ground Truth (Camera Corrected)\nFrame {frame_idx+1}/{min_frames}', fontsize=16, pad=20)
         gt_frame = gt_poses[frame_idx]
         
         gt_valid = not np.all(gt_frame == 0)
@@ -451,9 +469,9 @@ def create_comparison_visualization(gt_poses_3d, mp_poses_3d, seq_name, metrics,
             ax2.text(0, 0, 100, 'No MediaPipe Data', ha='center', va='center', 
                     fontsize=18, color='red', weight='bold')
         
-        # Set better viewing angles for human pose
+        # Set better viewing angles for upright human pose
         for ax in [ax1, ax2]:
-            ax.view_init(elev=20, azim=45)
+            ax.view_init(elev=10, azim=45)  # Lower elevation for better upright view
         
         plt.tight_layout()
         return [ax1, ax2]
@@ -474,9 +492,9 @@ def main():
                        help='Directory to save outputs')
     args = parser.parse_args()
     
-    print("Ground Truth vs MediaPipe 3D Pose Comparison with Camera Correction")
+    print("Ground Truth vs MediaPipe 3D Pose Comparison with Dual Camera Correction")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
-    print("Camera Transformation: MediaPipe -> MPI-INF-3DHP coordinate system")
+    print("Camera Transformation: Both GT and MediaPipe -> Upright coordinate system")
     print("=" * 80)
     
     # Load datasets
@@ -512,13 +530,14 @@ def main():
     print(f"\n✓ Loaded sequence {args.sequence}")
     print(f"GT frames: {len(gt_poses_3d)}, MP frames: {len(mp_poses_3d)}")
     
-    # Apply camera transformation to MediaPipe poses
-    print(f"\nApplying camera transformation to MediaPipe poses...")
-    mp_poses_3d_transformed = apply_camera_transformation(mp_poses_3d)
+    # Apply camera transformations to BOTH datasets
+    print(f"\nApplying camera transformations to both datasets...")
+    gt_poses_3d_transformed = apply_camera_transformation_groundtruth(gt_poses_3d)
+    mp_poses_3d_transformed = apply_camera_transformation_mediapipe(mp_poses_3d)
     
     # Make both datasets root-relative
     print(f"Making both datasets root-relative...")
-    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d, root_joint_idx=14)
+    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d_transformed, root_joint_idx=14)
     mp_poses_3d_root_rel = make_root_relative_3d(mp_poses_3d_transformed, root_joint_idx=14)
     
     analyze_coordinate_ranges(gt_poses_3d_root_rel, mp_poses_3d_root_rel, args.sequence)
@@ -552,7 +571,7 @@ def main():
         print(f"="*60)
     
     # Create visualization
-    print(f"\nCreating 3D visualization with camera correction...")
+    print(f"\nCreating 3D visualization with dual camera correction...")
     try:
         result = create_comparison_visualization(
             gt_poses_3d_root_rel, mp_poses_3d_root_rel, args.sequence, metrics, args)
@@ -569,14 +588,14 @@ def main():
             
             os.makedirs(args.output_dir, exist_ok=True)
             output_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_corrected.gif')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_dual_corrected.gif')
             
             ani.save(output_path, writer='pillow', fps=2.5, dpi=120)
             print(f"✓ Animation saved to: {output_path}")
             
             update_func(0)
             static_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_mediapipe_3d_corrected.png')
+                                     f'{args.sequence}_gt_vs_mediapipe_3d_dual_corrected.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
             
