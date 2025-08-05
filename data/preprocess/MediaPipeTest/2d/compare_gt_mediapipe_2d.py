@@ -164,7 +164,7 @@ def compute_pck_2d(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_th
     
     # Torso-based PCK if torso diameters are provided
     if torso_diameters is not None:
-        for percentage in [70, 80, 90]:
+        for percentage in [10, 20, 50, 80]:
             threshold = torso_diameters[:, None] * (percentage / 100.0)  # (N, 1)
             correct = joint_errors < threshold  # (N, 17)
             pck = np.mean(correct)  # Overall average across all joints and frames
@@ -172,7 +172,7 @@ def compute_pck_2d(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_th
     
     # Fixed threshold PCK (e.g., 150 pixels)
     if fixed_threshold is not None:
-        for percentage in [70, 80, 90]:
+        for percentage in [10, 20, 50, 80]:
             threshold = fixed_threshold * (percentage / 100.0)
             correct = joint_errors < threshold
             pck = np.mean(correct)
@@ -300,8 +300,8 @@ def process_all_sequences(gt_data, mp_data):
     
     # For PCK and AUC averaging
     total_pck_sums = {
-        'PCK@70%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@90%_torso': 0.0,
-        'PCK@70%_150px': 0.0, 'PCK@80%_150px': 0.0, 'PCK@90%_150px': 0.0
+        'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@50%_torso': 0.0, 'PCK@80%_torso': 0.0,
+        'PCK@10%_150px': 0.0, 'PCK@20%_150px': 0.0, 'PCK@50%_150px': 0.0, 'PCK@80%_150px': 0.0
     }
     total_auc_sum = 0.0
     valid_sequences = 0
@@ -338,7 +338,7 @@ def process_all_sequences(gt_data, mp_data):
                 
                 print(f"  ✓ {seq_name}: {metrics['avg_mpjpe']:.1f} px, "
                       f"AUC: {metrics['auc']:.4f}, "
-                      f"PCK@80%_150px: {metrics['pck_results']['PCK@80%_150px']*100:.1f}% "
+                      f"PCK@50%_150px: {metrics['pck_results']['PCK@50%_150px']*100:.1f}% "
                       f"({metrics['valid_frames']}/{metrics['total_frames']} frames)")
             else:
                 print(f"  ✗ {seq_name}: No valid data")
@@ -382,7 +382,7 @@ def process_all_sequences(gt_data, mp_data):
             metrics = sequence_results[seq_name]
             print(f"  {seq_name}: MPJPE={metrics['avg_mpjpe']:.1f}px, "
                   f"AUC={metrics['auc']:.3f}, "
-                  f"PCK@80%_150px={metrics['pck_results']['PCK@80%_150px']*100:.1f}% "
+                  f"PCK@50%_150px={metrics['pck_results']['PCK@50%_150px']*100:.1f}% "
                   f"({metrics['valid_frames']:,} frames)")
         
         return {
@@ -431,7 +431,7 @@ def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, metrics,
         title = (f'2D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Pixels)\n'
                 f'Avg MPJPE: {metrics["avg_mpjpe"]:.1f}px | '
                 f'AUC: {metrics["auc"]:.4f} | '
-                f'PCK@80%_150px: {metrics["pck_results"]["PCK@80%_150px"]*100:.1f}%')
+                f'PCK@50%_150px: {metrics["pck_results"]["PCK@50%_150px"]*100:.1f}%')
     else:
         title = f'2D Pose Comparison: GT vs MediaPipe - {seq_name} (Root-Relative, Pixels)'
     
