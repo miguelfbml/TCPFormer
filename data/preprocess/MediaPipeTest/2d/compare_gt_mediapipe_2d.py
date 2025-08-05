@@ -21,9 +21,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '../../../..'))
 sys.path.insert(0, project_root)
 
-# Import the denormalize function from utils/data.py
-from utils.data import denormalize
-
 print(f"Project root: {project_root}")
 
 # MPI-INF-3DHP skeleton connections for 2D visualization
@@ -67,43 +64,29 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def denormalize_poses_2d_correct(poses_2d, seq_name):
+def denormalize_poses_2d_simple(poses_2d, seq_name):
     """
     Denormalize 2D poses from [-1,1] back to pixel coordinates
-    Using the correct denormalize function from utils/data.py
+    Simple denormalization based only on image dimensions
     """
     print(f"\nDenormalizing {seq_name} from [-1,1] to pixel coordinates...")
     
-    # Convert to torch tensor if numpy array
-    if isinstance(poses_2d, np.ndarray):
-        poses_tensor = torch.from_numpy(poses_2d).float()
+    # Get image dimensions for this sequence
+    if seq_name in ['TS5', 'TS6']:
+        res_w, res_h = 1920, 1080
     else:
-        poses_tensor = poses_2d
+        res_w, res_h = 2048, 2048
     
-    # Use the denormalize function from utils/data.py
-    # This function expects sequence names as a list
-    seq_list = [seq_name] * poses_tensor.shape[0]  # Create list with sequence name for each frame
+    print(f"Using image dimensions: {res_w}x{res_h}")
     
-    try:
-        denorm_poses_tensor = denormalize(poses_tensor, seq_list)
-        denorm_poses = denorm_poses_tensor.numpy()
-    except Exception as e:
-        print(f"Error with denormalize function: {e}")
-        print("Falling back to manual denormalization...")
-        
-        # Fallback manual denormalization
-        if seq_name in ['TS5', 'TS6']:
-            res_w, res_h = 1920, 1080
-        else:
-            res_w, res_h = 2048, 2048
-        
-        print(f"Using image dimensions: {res_w}x{res_h}")
-        
-        denorm_poses = poses_2d.copy()
-        # X coordinates: [-1,1] -> [0, res_w]
-        denorm_poses[:, :, 0] = (poses_2d[:, :, 0] + 1.0) * res_w / 2.0
-        # Y coordinates: [-1,1] -> [0, res_h]  
-        denorm_poses[:, :, 1] = (poses_2d[:, :, 1] + 1.0) * res_h / 2.0
+    denorm_poses = poses_2d.copy()
+    
+    # Simple conversion from [-1,1] to pixel coordinates
+    # X coordinates: [-1,1] -> [0, res_w]
+    denorm_poses[:, :, 0] = (poses_2d[:, :, 0] + 1.0) * res_w / 2.0
+    
+    # Y coordinates: [-1,1] -> [0, res_h]
+    denorm_poses[:, :, 1] = (poses_2d[:, :, 1] + 1.0) * res_h / 2.0
     
     print(f"Denormalized coordinate ranges:")
     print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}]")
@@ -384,10 +367,10 @@ def main():
     print(f"\n✓ Loaded sequence {args.sequence}")
     print(f"GT frames: {len(gt_poses_2d_norm)}, MP frames: {len(mp_poses_2d_norm)}")
     
-    # Denormalize both datasets from [-1,1] to pixel coordinates using correct function
+    # Denormalize both datasets from [-1,1] to pixel coordinates using simple function
     print(f"\nDenormalizing poses to pixel coordinates...")
-    gt_poses_2d_pixel = denormalize_poses_2d_correct(gt_poses_2d_norm, args.sequence)
-    mp_poses_2d_pixel = denormalize_poses_2d_correct(mp_poses_2d_norm, args.sequence)
+    gt_poses_2d_pixel = denormalize_poses_2d_simple(gt_poses_2d_norm, args.sequence)
+    mp_poses_2d_pixel = denormalize_poses_2d_simple(mp_poses_2d_norm, args.sequence)
     
     # Make both datasets root-relative (root joint at origin in pixel coordinates)
     print(f"\nMaking both datasets root-relative in pixel domain...")
