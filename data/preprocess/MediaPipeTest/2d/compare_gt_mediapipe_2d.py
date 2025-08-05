@@ -251,7 +251,6 @@ def load_video_frames_for_visualization(sequence_name, num_frames=50):
     print(f"✓ Loaded {len(frames)} frames")
     return frames
 
-// ...existing code...
 
 def create_comparison_visualization(gt_poses_2d, mp_poses_2d, seq_name, args):
     """Create side-by-side comparison visualization"""
