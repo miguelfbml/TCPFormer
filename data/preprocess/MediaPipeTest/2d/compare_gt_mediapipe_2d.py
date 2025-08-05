@@ -1,6 +1,6 @@
 """
 Calculate 2D metrics (MPJPE, PCK, AUC) for MediaPipe vs Ground Truth 2D poses
-This normalizes both to [-1,1], then denormalizes to pixel coordinates for meaningful metrics
+This denormalizes the poses back to pixel coordinates for meaningful metrics
 
 Usage:
 python calculate_metrics_mediapipe.py --sequence TS1 --save-video
@@ -65,63 +65,6 @@ def load_datasets():
     
     return gt_data, mp_data
 
-def normalize_to_minus_one_plus_one(poses_2d, seq_name, data_type="Unknown"):
-    """Normalize any coordinate system to [-1, 1] range"""
-    print(f"\nNormalizing {data_type} coordinates for {seq_name}...")
-    
-    # Get image dimensions for this sequence
-    if seq_name in ['TS5', 'TS6']:
-        width, height = 1920, 1080
-    else:
-        width, height = 2048, 2048
-    
-    print(f"Using image dimensions: {width}x{height}")
-    
-    # Analyze current coordinate range
-    print(f"Original {data_type} range:")
-    print(f"  X: [{np.min(poses_2d[:, :, 0]):.3f}, {np.max(poses_2d[:, :, 0]):.3f}]")
-    print(f"  Y: [{np.min(poses_2d[:, :, 1]):.3f}, {np.max(poses_2d[:, :, 1]):.3f}]")
-    
-    normalized_poses = poses_2d.copy()
-    
-    # Detect coordinate system and normalize accordingly
-    x_min, x_max = np.min(poses_2d[:, :, 0]), np.max(poses_2d[:, :, 0])
-    y_min, y_max = np.min(poses_2d[:, :, 1]), np.max(poses_2d[:, :, 1])
-    
-    if 0 <= x_min and x_max <= 1 and 0 <= y_min and y_max <= 1:
-        # MediaPipe [0,1] format - convert to [-1,1]
-        print(f"  Detected [0,1] normalized coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = poses_2d[:, :, 0] * 2.0 - 1.0   # X: [0,1] -> [-1,1]
-        normalized_poses[:, :, 1] = poses_2d[:, :, 1] * 2.0 - 1.0   # Y: [0,1] -> [-1,1]
-        
-    elif x_min >= 0 and x_max <= width and y_min >= 0 and y_max <= height:
-        # Pixel coordinates - convert to [-1,1]
-        print(f"  Detected pixel coordinates - converting to [-1,1]")
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] / width) * 2.0 - 1.0   # X coordinates
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] / height) * 2.0 - 1.0  # Y coordinates
-        
-    elif -1 <= x_min and x_max <= 1 and -1 <= y_min and y_max <= 1:
-        # Already in [-1,1] format
-        print(f"  Already in [-1,1] normalized coordinates - no conversion needed")
-        normalized_poses = poses_2d.copy()
-        
-    else:
-        # Unknown format - try to detect if it's extended pixel coordinates
-        print(f"  Unknown coordinate format - attempting pixel coordinate normalization")
-        # Assume it's some form of pixel/camera coordinates
-        normalized_poses[:, :, 0] = (poses_2d[:, :, 0] - x_min) / (x_max - x_min) * 2.0 - 1.0
-        normalized_poses[:, :, 1] = (poses_2d[:, :, 1] - y_min) / (y_max - y_min) * 2.0 - 1.0
-    
-    # Verify final range
-    final_x_min, final_x_max = np.min(normalized_poses[:, :, 0]), np.max(normalized_poses[:, :, 0])
-    final_y_min, final_y_max = np.min(normalized_poses[:, :, 1]), np.max(normalized_poses[:, :, 1])
-    
-    print(f"Final {data_type} range:")
-    print(f"  X: [{final_x_min:.3f}, {final_x_max:.3f}]")
-    print(f"  Y: [{final_y_min:.3f}, {final_y_max:.3f}]")
-    
-    return normalized_poses
-
 def denormalize_2d_poses(poses_2d_norm, seq_name):
     """
     Denormalize 2D poses from [-1, 1] back to pixel coordinates
@@ -159,7 +102,7 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
     gt_poses = gt_poses_pixel[:min_frames]
     mp_poses = mp_poses_pixel[:min_frames]
     
-    frame_mpjpe_errors = []  # Store MPJPE per frame in pixels
+    frame_errors = []
     joint_errors = np.zeros(17)
     valid_frame_count = 0
     
@@ -174,13 +117,13 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
         if gt_valid and mp_valid:
             # Compute L2 distance per joint in pixels
             joint_diffs = np.linalg.norm(gt_frame - mp_frame, axis=1)
-            frame_mpjpe = np.mean(joint_diffs)  # MPJPE for this frame in pixels
-            frame_mpjpe_errors.append(frame_mpjpe)
+            frame_error = np.mean(joint_diffs)
+            frame_errors.append(frame_error)
             joint_errors += joint_diffs
             valid_frame_count += 1
     
     if valid_frame_count > 0:
-        avg_mpjpe = np.mean(frame_mpjpe_errors)  # Average MPJPE across all frames
+        avg_mpjpe = np.mean(frame_errors)
         joint_errors /= valid_frame_count
         
         print(f"\n2D MPJPE Results (pixel coordinates):")
@@ -200,7 +143,7 @@ def compute_2d_mpjpe(gt_poses_pixel, mp_poses_pixel):
             'joint_errors': [float(x) for x in joint_errors],
             'valid_frames': int(valid_frame_count),
             'total_frames': int(min_frames),
-            'frame_mpjpe_errors': frame_mpjpe_errors  # Individual frame MPJPE errors in pixels
+            'frame_errors': frame_errors  # Keep individual frame errors for visualization
         }
     else:
         print("No valid frames found for comparison!")
@@ -324,6 +267,9 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
     
     # Set up the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
+                f'Overall 2D MPJPE: {metrics["mpjpe_2d"]:.2f}px | Valid frames: {metrics["valid_frames"]}/{metrics["total_frames"]}', 
+                fontsize=16)
     
     def update(frame_idx):
         ax1.clear()
@@ -396,18 +342,16 @@ def create_comparison_visualization(gt_poses_pixel, mp_poses_pixel, frames, seq_
         
         # Compute and display frame MPJPE (pixel error)
         if gt_valid and mp_valid:
-            # Calculate frame MPJPE in pixels
             frame_mpjpe = np.mean(np.linalg.norm(gt_frame - mp_frame, axis=1))
-            mpjpe_text = f'Frame MPJPE: {frame_mpjpe:.2f} pixels'
+            mpjpe_text = f'Frame 2D MPJPE: {frame_mpjpe:.2f}px'
         else:
-            mpjpe_text = 'Frame MPJPE: N/A'
+            mpjpe_text = 'Frame 2D MPJPE: N/A'
         
         # Create comprehensive title with all metrics
         pck_text = " | ".join([f"{k}: {v:.1f}%" for k, v in metrics['pck_results'].items()])
         
-        # Enhanced title showing both overall and frame-specific MPJPE in pixels
         fig.suptitle(f'2D Pose Comparison: Ground Truth vs MediaPipe - {seq_name}\n'
-                    f'Average MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
+                    f'Overall 2D MPJPE: {metrics["mpjpe_2d"]:.2f}px | AUC: {metrics["auc_2d"]:.3f} | {mpjpe_text}\n'
                     f'{pck_text} | Valid: {metrics["valid_frames"]}/{metrics["total_frames"]} frames', 
                     fontsize=14, y=0.95)
         
@@ -448,31 +392,26 @@ def main():
         print(f"Available sequences: {list(mp_data.keys())}")
         return
     
-    # Extract 2D poses (in whatever format they are)
-    gt_poses_2d_orig = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
-    mp_poses_2d_orig = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    # Extract 2D poses (they should already be in normalized [-1,1] format)
+    gt_poses_2d_norm = gt_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
+    mp_poses_2d_norm = mp_data[args.sequence]['data_2d']  # (num_frames, 17, 2)
     
     print(f"\n✓ Loaded sequence {args.sequence}")
-    print(f"GT frames: {len(gt_poses_2d_orig)}, MP frames: {len(mp_poses_2d_orig)}")
-    
-    # STEP 1: Normalize BOTH datasets to [-1, 1] for fair comparison
-    print(f"\nNormalizing both datasets to [-1, 1] range...")
-    gt_poses_2d_norm = normalize_to_minus_one_plus_one(gt_poses_2d_orig, args.sequence, "Ground Truth")
-    mp_poses_2d_norm = normalize_to_minus_one_plus_one(mp_poses_2d_orig, args.sequence, "MediaPipe")
+    print(f"GT frames: {len(gt_poses_2d_norm)}, MP frames: {len(mp_poses_2d_norm)}")
     
     # Verify normalized coordinate ranges
-    print(f"\nFinal normalized coordinate ranges:")
+    print(f"\nNormalized coordinate ranges:")
     print(f"GT: X[{np.min(gt_poses_2d_norm[:, :, 0]):.3f}, {np.max(gt_poses_2d_norm[:, :, 0]):.3f}], "
           f"Y[{np.min(gt_poses_2d_norm[:, :, 1]):.3f}, {np.max(gt_poses_2d_norm[:, :, 1]):.3f}]")
     print(f"MP: X[{np.min(mp_poses_2d_norm[:, :, 0]):.3f}, {np.max(mp_poses_2d_norm[:, :, 0]):.3f}], "
           f"Y[{np.min(mp_poses_2d_norm[:, :, 1]):.3f}, {np.max(mp_poses_2d_norm[:, :, 1]):.3f}]")
     
-    # STEP 2: Denormalize both datasets back to pixel coordinates
+    # Denormalize both datasets back to pixel coordinates
     print(f"\nDenormalizing poses to pixel coordinates...")
     gt_poses_pixel = denormalize_2d_poses(gt_poses_2d_norm, args.sequence)
     mp_poses_pixel = denormalize_2d_poses(mp_poses_2d_norm, args.sequence)
     
-    # STEP 3: Calculate metrics in pixel coordinates
+    # Calculate metrics in pixel coordinates
     print(f"\nCalculating 2D metrics in pixel coordinates...")
     
     # MPJPE
@@ -503,21 +442,21 @@ def main():
     
     print(f"\n✓ Metrics saved to: {metrics_path}")
     
-    # Print final summary with AVERAGE MPJPE prominently displayed
+    # Print final summary
     print(f"\n{'='*60}")
     print(f"FINAL 2D METRICS SUMMARY FOR {args.sequence}")
     print(f"{'='*60}")
-    print(f"🎯 AVERAGE 2D MPJPE: {metrics['mpjpe_2d']:.2f} PIXELS")
-    print(f"📊 2D AUC:           {metrics['auc_2d']:.4f}")
-    print(f"✅ 2D PCK Results:")
+    print(f"2D MPJPE: {metrics['mpjpe_2d']:.2f} pixels")
+    print(f"2D AUC:   {metrics['auc_2d']:.4f}")
+    print(f"2D PCK Results:")
     for threshold, pck in pck_results.items():
-        print(f"   {threshold}: {pck:.2f}%")
-    print(f"📋 Valid frames:     {metrics['valid_frames']}/{metrics['total_frames']}")
+        print(f"  {threshold}: {pck:.2f}%")
+    print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
     print(f"{'='*60}")
     
     # Create visualization if requested
     if args.save_video:
-        print(f"\nCreating visualization with MPJPE error in pixels...")
+        print(f"\nCreating visualization...")
         
         # Load video frames for background
         frames = load_video_frames_for_visualization(args.sequence, args.num_frames)
@@ -531,18 +470,18 @@ def main():
                 
             update_func, fig, min_frames = result
             
-            print("Creating animation with pixel error display...")
+            print("Creating animation...")
             ani = FuncAnimation(fig, update_func, frames=min_frames, 
                               interval=500, repeat=True, blit=False)
             
-            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison.gif')
+            output_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics_comparison.gif')
             
             ani.save(output_path, writer='pillow', fps=2, dpi=100)
-            print(f"✓ Animation with MPJPE pixel errors saved to: {output_path}")
+            print(f"✓ Animation saved to: {output_path}")
             
             # Save static comparison
             update_func(0)
-            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_mpjpe_comparison_static.png')
+            static_path = os.path.join(args.output_dir, f'{args.sequence}_2d_metrics_comparison_static.png')
             plt.savefig(static_path, dpi=150, bbox_inches='tight')
             print(f"✓ Static image saved to: {static_path}")
             
