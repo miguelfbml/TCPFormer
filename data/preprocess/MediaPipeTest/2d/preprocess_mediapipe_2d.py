@@ -61,7 +61,6 @@ class MediaPipe2DPoseEstimator:
         
         # Missing joint estimation
         self.missing_joints_estimation = {
-            0: [11, 8],  # root from hips
             1: [5, 2],   # neck from shoulders
             14: [11, 8], # hip from left/right hips
             15: [14, 1], # spine from hip and neck
@@ -118,12 +117,34 @@ class MediaPipe2DPoseEstimator:
                         pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
                         pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
 
-                # Root joint from hips
+                # FIXED: Estimate head top (joint 0) from facial landmarks like estimate_3d_pose_realtime.py
+                if len(landmarks) > 10:
+                    # Use eyebrow landmarks for head top estimation (similar to 3D version)
+                    left_eyebrow_inner = landmarks[2] if len(landmarks) > 2 else None
+                    right_eyebrow_inner = landmarks[5] if len(landmarks) > 5 else None
+                    
+                    if left_eyebrow_inner and right_eyebrow_inner:
+                        # Calculate head top position from eyebrow landmarks
+                        if self.resize_resolution:
+                            x_left = left_eyebrow_inner.x * self.resize_resolution[0] * (original_width / self.resize_resolution[0])
+                            y_left = left_eyebrow_inner.y * self.resize_resolution[1] * (original_height / self.resize_resolution[1])
+                            x_right = right_eyebrow_inner.x * self.resize_resolution[0] * (original_width / self.resize_resolution[0])
+                            y_right = right_eyebrow_inner.y * self.resize_resolution[1] * (original_height / self.resize_resolution[1])
+                        else:
+                            x_left = left_eyebrow_inner.x * original_width
+                            y_left = left_eyebrow_inner.y * original_height
+                            x_right = right_eyebrow_inner.x * original_width
+                            y_right = right_eyebrow_inner.y * original_height
+                        
+                        # Head top is average of eyebrow positions, moved slightly up
+                        pose_2d[0, 0] = (x_left + x_right) / 2.0
+                        pose_2d[0, 1] = (y_left + y_right) / 2.0 - original_height * 0.02  # Move up by 2% of image height
+                        pose_2d[0, 2] = (left_eyebrow_inner.visibility + right_eyebrow_inner.visibility) / 2.0
+
+                # Root joint (joint 14) from hips
                 if pose_2d[11, 2] > confidence_threshold and pose_2d[8, 2] > confidence_threshold:
-                    pose_2d[0, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
-                    # Adjust root position slightly down (in pixel coordinates)
-                    pose_2d[0, 1] += original_height * 0.02  # 2% of image height down
-                    pose_2d[0, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
+                    pose_2d[14, :2] = (pose_2d[11, :2] + pose_2d[8, :2]) / 2.0
+                    pose_2d[14, 2] = min(pose_2d[11, 2], pose_2d[8, 2])
 
             return pose_2d
             

@@ -48,7 +48,6 @@ class MediaPipe2DPoseEstimator:
             28: 10,  # right_ankle -> right ankle
         }
         self.missing_joints_estimation = {
-            0: [11, 8],  # root from hips
             1: [5, 2],   # neck from shoulders
             14: [11, 8], # hip from left/right hips
             15: [14, 1], # spine from hip and neck
