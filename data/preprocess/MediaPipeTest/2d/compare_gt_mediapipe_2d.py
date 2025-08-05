@@ -24,11 +24,11 @@ print(f"Project root: {project_root}")
 
 # MPI-INF-3DHP skeleton connections for 2D visualization
 connections_2d = [
-    (0, 1), (1, 2), (2, 3), (3, 4),  # Right arm
+    (1, 2), (2, 3), (3, 4),  # Right arm
     (1, 5), (5, 6), (6, 7),          # Left arm
-    (0, 14), (14, 8), (8, 9), (9, 10),  # Right leg
+    (14, 8), (8, 9), (9, 10),  # Right leg
     (14, 11), (11, 12), (12, 13),    # Left leg
-    (0, 15), (15, 16), (0, 16)       # Spine and head
+    (0, 16), (16, 1), (1, 15), (15,14)       # Spine and head
 ]
 
 # Joint names for reference
