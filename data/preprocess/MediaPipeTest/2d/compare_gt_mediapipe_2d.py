@@ -67,7 +67,7 @@ def load_datasets():
 def denormalize_poses_2d_root_relative(poses_2d, seq_name):
     """
     Denormalize 2D poses from [-1,1] to pixel coordinates relative to root joint
-    [0,0] maps to root joint position (will become origin after making root-relative)
+    The root joint (14) will be at [0,0] and other joints relative to it
     [-1,-1] maps to [-image_size, -image_size] 
     [1,1] maps to [image_size, image_size]
     """
@@ -83,17 +83,33 @@ def denormalize_poses_2d_root_relative(poses_2d, seq_name):
     
     denorm_poses = poses_2d.copy()
     
-    # Convert from [-1,1] normalized to pixel coordinates relative to center
-    # [-1,1] -> [-image_size, image_size] in pixels
+    # First, denormalize all coordinates from [-1,1] to pixel space
     # X coordinates: [-1,1] -> [-res_w, res_w]
     denorm_poses[:, :, 0] = poses_2d[:, :, 0] * res_w
-    
     # Y coordinates: [-1,1] -> [-res_h, res_h] 
     denorm_poses[:, :, 1] = poses_2d[:, :, 1] * res_h
     
+    # Now make all poses relative to root joint (14) - subtract root position from all joints
+    for frame_idx in range(denorm_poses.shape[0]):
+        frame = denorm_poses[frame_idx]  # (17, 2)
+        
+        # Check if this frame has valid data (not all zeros)
+        if not np.all(frame == 0):
+            root_pos = frame[14]  # Root joint position (2,)
+            # Make all joints relative to root
+            denorm_poses[frame_idx] = frame - root_pos[np.newaxis, :]
+            # Root joint is now at exactly (0, 0)
+            denorm_poses[frame_idx, 14] = [0.0, 0.0]
+    
     print(f"Denormalized coordinate ranges (root-relative):")
-    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}] (should be ~[-{res_w}, {res_w}])")
-    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}] (should be ~[-{res_h}, {res_h}])")
+    print(f"  X: [{np.min(denorm_poses[:, :, 0]):.1f}, {np.max(denorm_poses[:, :, 0]):.1f}]")
+    print(f"  Y: [{np.min(denorm_poses[:, :, 1]):.1f}, {np.max(denorm_poses[:, :, 1]):.1f}]")
+    
+    # Verify root joint is at origin
+    non_zero_frames = ~np.all(denorm_poses == 0, axis=(1, 2))
+    if np.any(non_zero_frames):
+        sample_root = denorm_poses[np.where(non_zero_frames)[0][0], 14]
+        print(f"Sample root joint after making relative: [{sample_root[0]:.1f}, {sample_root[1]:.1f}] (should be [0.0, 0.0])")
     
     return denorm_poses
 
