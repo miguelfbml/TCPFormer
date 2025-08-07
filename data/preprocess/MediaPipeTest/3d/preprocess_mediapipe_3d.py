@@ -172,7 +172,6 @@ def load_sequence_images(sequence_name):
     video_path = f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{sequence_name}/imageSequence'
     
     if not os.path.exists(video_path):
-        # Try alternative paths
         alternative_paths = [
             f'/nas-ctm01/datasets/public/mpi_inf_3dhp/{sequence_name}/imageSequence',
             f'/nas-ctm01/datasets/public/mpi_inf_3dhp/test/{sequence_name}/imageSequence'

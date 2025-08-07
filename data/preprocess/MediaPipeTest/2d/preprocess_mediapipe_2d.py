@@ -117,7 +117,7 @@ class MediaPipe2DPoseEstimator:
                         pose_2d[missing_joint, :2] = np.mean([pose_2d[j, :2] for j in valid_sources], axis=0)
                         pose_2d[missing_joint, 2] = np.mean([pose_2d[j, 2] for j in valid_sources]) * 0.9
 
-                # FIXED: Estimate head top (joint 0) from facial landmarks like estimate_3d_pose_realtime.py
+                # Estimate head top (joint 0) from facial landmarks like estimate_3d_pose_realtime.py
                 if len(landmarks) > 10:
                     # Use eyebrow landmarks for head top estimation (similar to 3D version)
                     left_eyebrow_inner = landmarks[2] if len(landmarks) > 2 else None
