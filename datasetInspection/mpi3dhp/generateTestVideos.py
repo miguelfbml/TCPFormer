@@ -1,6 +1,6 @@
 '''
 python generateTestVideos.py
-python generateTestVideos.py --fps 30 --output-dir ../../test_videos
+python generateTestVideos.py --fps 30 --output-dir ./test_videos
 '''
 
 import os
