@@ -19,64 +19,68 @@ from data.const import H36M_JOINT_TO_LABEL, H36M_UPPER_BODY_JOINTS, H36M_LOWER_B
 from data.reader.h36m import DataReaderH36M
 from data.reader.motion_dataset import MotionDataset3D
 from utils.data import flip_data
-from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists, count_param_numbers
-from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially
+from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
 from torch.utils.data import DataLoader
+
+from utils.learning import AverageMeter, decay_lr_exponentially, load_model_TCPFormer
+from utils.tools import count_param_numbers
+from utils.data import Augmenter2D
 from utils.utils_3dhp import AccumLoss, calculate_torso_diameter, compute_pck, compute_auc, mpjpe_cal
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/h36m/TCPFormer_h36m_243.yaml", help="Path to the config file.")
     parser.add_argument('-c', '--checkpoint', type=str, metavar='PATH',
                         help='checkpoint directory')
-    parser.add_argument('--checkpoint-file', type=str, help="checkpoint file name")
     parser.add_argument('--new-checkpoint', type=str, metavar='PATH', default='checkpoint',
                         help='new checkpoint directory')
+    parser.add_argument('--checkpoint-file', type=str, help="checkpoint file name")
+    parser.add_argument('-sd', '--seed', default=0, type=int, help='random seed')
     parser.add_argument('--num-cpus', default=16, type=int, help='Number of CPU cores')
     parser.add_argument('--use-wandb', action='store_true')
     parser.add_argument('--wandb-name', default=None, type=str)
     parser.add_argument('--wandb-run-id', default=None, type=str)
-    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--resume', default=True, action='store_true')
     parser.add_argument('--eval-only', action='store_true')
-    parser.add_argument('-sd', '--seed', default=0, type=int, help='random seed')
     opts = parser.parse_args()
     return opts
 
 
-def train_one_epoch(args, model, train_loader, optimizer, losses):
-    model.train()
-    for batch_input, batch_gt in tqdm(train_loader):
-        batch_size = batch_input.shape[0]
-        if torch.cuda.is_available():
-            batch_input, batch_gt = batch_input.cuda(), batch_gt.cuda()
+def train_one_epoch(args, model, train_loader, optimizer, device, losses):
+    model.train()        
+    optimizer.zero_grad()
+    accumulation_steps = 1
+    i = 0
+    for x, y in tqdm(train_loader):
+        batch_size = x.shape[0]
+        x, y = x.to(device), y.to(device)
 
-        if args.flip:
-            batch_input_flip = flip_data(batch_input)
-            predicted_3d_pos_flip = model(batch_input_flip)
-            predicted_3d_pos_flip[:, :, :, 0] *= -1
-            predicted_3d_pos_flip = flip_data(predicted_3d_pos_flip)
-            predicted_3d_pos = model(batch_input)
-            predicted_3d_pos = (predicted_3d_pos + predicted_3d_pos_flip) / 2.0
-        else:
-            predicted_3d_pos = model(batch_input)
+        with torch.no_grad():
+            if args.root_rel:
+                y = y - y[..., 0:1, :]
+            else:
+                y[..., 2] = y[..., 2] - y[:, 0:1, 0:1, 2]  # Place the depth of first frame root to be 0
 
-        optimizer.zero_grad()
-        loss_3d_pos = loss_mpjpe(predicted_3d_pos, batch_gt)
-        loss_3d_scale = n_mpjpe(predicted_3d_pos, batch_gt)
-        loss_3d_velocity = loss_velocity(predicted_3d_pos, batch_gt)
-        loss_lv = loss_limb_var(predicted_3d_pos)
-        loss_lg = loss_limb_gt(predicted_3d_pos, batch_gt)
-        loss_a = loss_angle(predicted_3d_pos, batch_gt)
-        loss_av = loss_angle_velocity(predicted_3d_pos, batch_gt)
+        pred = model(x)
 
-        loss_total = args.lambda_3d_pos * loss_3d_pos + \
-                     args.lambda_scale * loss_3d_scale + \
-                     args.lambda_3d_velocity * loss_3d_velocity + \
-                     args.lambda_lv * loss_lv + \
-                     args.lambda_lg * loss_lg + \
-                     args.lambda_a * loss_a + \
-                     args.lambda_av * loss_av
+        loss_3d_pos = loss_mpjpe(pred, y)
+        loss_3d_scale = n_mpjpe(pred, y)
+        loss_3d_velocity = loss_velocity(pred, y)
+        loss_lv = loss_limb_var(pred)
+        loss_lg = loss_limb_gt(pred, y)
+        loss_a = loss_angle(pred, y)
+        loss_av = loss_angle_velocity(pred, y)
+
+        loss_total = loss_3d_pos + \
+                    args.lambda_scale * loss_3d_scale + \
+                    args.lambda_3d_velocity * loss_3d_velocity + \
+                    args.lambda_lv * loss_lv + \
+                    args.lambda_lg * loss_lg + \
+                    args.lambda_a * loss_a + \
+                    args.lambda_av * loss_av 
+                    # args.lambda_mi * loss_mi
 
         losses['3d_pose'].update(loss_3d_pos.item(), batch_size)
         losses['3d_scale'].update(loss_3d_scale.item(), batch_size)
@@ -87,9 +91,12 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
         losses['angle_velocity'].update(loss_av.item(), batch_size)
         losses['total'].update(loss_total.item(), batch_size)
 
+        loss_total = loss_total / accumulation_steps
         loss_total.backward()
-        optimizer.step()
-
+        if(i+1)%accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+        i += 1
 
 def evaluate(args, model, test_loader, datareader, device):
     print("[INFO] Evaluation with comprehensive metrics (MPJPE, P-MPJPE, PCK, AUC)")
@@ -132,7 +139,7 @@ def evaluate(args, model, test_loader, datareader, device):
             pred_frame = predicted_3d_pos[:, center_frame_idx]  # (N, 17, 3)
             gt_frame = y[:, center_frame_idx]  # (N, 17, 3)
             
-            # Make root-relative for MPJPE calculation
+            # Make root-relative for MPJPE calculation (Human3.6M uses joint 0 as root)
             pred_frame_rel = pred_frame - pred_frame[:, 0:1, :]  # Root-relative
             gt_frame_rel = gt_frame - gt_frame[:, 0:1, :]  # Root-relative
             
@@ -141,22 +148,22 @@ def evaluate(args, model, test_loader, datareader, device):
             error_sum_test.update(joint_error_test * N, N)
             
             # Calculate torso diameters for PCK (use non-root-relative poses)
-            torso_diameters = calculate_torso_diameter(gt_frame)
+            # For Human3.6M, we need to adapt the torso calculation
+            # H36M joints: 0=Hip, 1=RHip, 4=LHip, 11=LShoulder, 14=RShoulder
+            torso_diameters = calculate_torso_diameter_h36m(gt_frame)
             
             # Compute PCK for torso-based and 150mm thresholds
-            batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+            batch_pck = compute_pck_h36m(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key] * N
             
             # Compute AUC
-            auc = compute_auc(pred_frame, gt_frame)
+            auc = compute_auc_h36m(pred_frame, gt_frame)
             auc_sum += auc * N
             
             valid_samples += N
 
     results_all = np.concatenate(results_all)
-
-    # Denormalize results for standard H36M evaluation
     results_all = datareader.denormalize(results_all)
     _, split_id_test = datareader.get_split_id()
     actions = np.array(datareader.dt_dataset['test']['action'])
@@ -220,9 +227,6 @@ def evaluate(args, model, test_loader, datareader, device):
         acc_err = calculate_acc_err(pred, gt)
         acc_err_all[frame_list[:-2]] += acc_err
         e1_all[frame_list] += err1
-        oc[frame_list] += 1
-
-        # P-MPJPE
         err2 = calculate_p_mpjpe(pred, gt)
         e2_all[frame_list] += err2
         oc[frame_list] += 1
@@ -273,18 +277,18 @@ def evaluate(args, model, test_loader, datareader, device):
     print('COMPREHENSIVE HUMAN3.6M EVALUATION RESULTS')
     print('='*70)
     print('Standard Human3.6M Protocol Results:')
-    print(f'Protocol #1 Error (MPJPE): {e1:.2f} mm')
-    print(f'Protocol #2 Error (P-MPJPE): {e2:.2f} mm')
-    print(f'Acceleration error: {acceleration_error:.2f} mm/s^2')
+    print('Protocol #1 Error (MPJPE):', e1, 'mm')
+    print('Protocol #2 Error (P-MPJPE):', e2, 'mm')
+    print('Acceleration error:', acceleration_error, 'mm/s^2')
     
-    print(f'\nComprehensive Metrics (frame-wise evaluation):')
+    print('\nComprehensive Metrics (frame-wise evaluation):')
     print(f'Frame-wise MPJPE: {mpjpe_comprehensive:.2f} mm')
-    print(f'PCK Results:')
+    print('PCK Results:')
     for key, value in pck_results.items():
         print(f'  {key}: {value*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
     
-    print(f'\nPer-action breakdown (Protocol #1):')
+    print('\nPer-action breakdown (Protocol #1):')
     for i, action in enumerate(action_names):
         print(f'  {action}: {final_result[i]:.2f} mm')
     
@@ -293,9 +297,93 @@ def evaluate(args, model, test_loader, datareader, device):
     return e1, e2, joint_errors, acceleration_error, mpjpe_comprehensive, pck_results, auc_avg
 
 
+# Add Human3.6M-specific utility functions
+def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_idx=14, 
+                                  left_hip_idx=4, right_hip_idx=1):
+    """
+    Calculate torso diameter for PCK metric - Human3.6M version
+    
+    Human3.6M joint indices:
+    0: Hip (root), 1: RHip, 2: RKnee, 3: RAnkle, 4: LHip, 5: LKnee, 6: LAnkle,
+    7: Spine, 8: Thorax, 9: Neck, 10: Head, 11: LShoulder, 12: LElbow, 13: LWrist,
+    14: RShoulder, 15: RElbow, 16: RWrist
+    """
+    if isinstance(gt_3d, torch.Tensor):
+        gt_3d = gt_3d.cpu().numpy()
+    
+    # Shoulder distance
+    left_shoulder = gt_3d[:, left_shoulder_idx, :]  # (N, 3)
+    right_shoulder = gt_3d[:, right_shoulder_idx, :]  # (N, 3)
+    shoulder_dist = np.linalg.norm(left_shoulder - right_shoulder, axis=1)  # (N,)
+    
+    # Hip distance  
+    left_hip = gt_3d[:, left_hip_idx, :]  # (N, 3)
+    right_hip = gt_3d[:, right_hip_idx, :]  # (N, 3)
+    hip_dist = np.linalg.norm(left_hip - right_hip, axis=1)  # (N,)
+    
+    # Average of shoulder and hip distance as torso diameter
+    torso_diameter = (shoulder_dist + hip_dist) / 2.0
+    return torso_diameter
+
+def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.9, 0.8, 0.7]):
+    """
+    Compute PCK metrics for Human3.6M dataset
+    """
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().numpy()
+    if isinstance(gt, torch.Tensor):
+        gt = gt.cpu().numpy()
+    
+    # pred, gt shape: (N, 17, 3)
+    joint_errors = np.linalg.norm(pred - gt, axis=2)  # (N, 17)
+    
+    pck_results = {}
+    
+    # Torso-based thresholds
+    if torso_diameters is not None:
+        for percentage in pck_thresholds:
+            percentage_int = int(percentage * 100)
+            threshold = torso_diameters[:, None] * percentage  # (N, 1)
+            correct = joint_errors < threshold  # (N, 17)
+            pck = np.mean(correct, axis=0)  # (17,) - per joint
+            pck_results[f'PCK@{percentage_int}%_torso'] = np.mean(pck)  # Overall average
+    
+    # Fixed threshold (150mm)
+    for percentage in pck_thresholds:
+        percentage_int = int(percentage * 100)
+        threshold = fixed_threshold * percentage
+        correct = joint_errors < threshold
+        pck = np.mean(correct, axis=0)
+        pck_results[f'PCK@{percentage_int}%_150mm'] = np.mean(pck)
+    
+    return pck_results
+
+def compute_auc_h36m(pred, gt, max_threshold=150, num_steps=50):
+    """
+    Compute AUC (Area Under Curve) for Human3.6M dataset
+    """
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().numpy()
+    if isinstance(gt, torch.Tensor):
+        gt = gt.cpu().numpy()
+    
+    # Calculate joint errors
+    joint_errors = np.linalg.norm(pred - gt, axis=2)  # (N, 17)
+    
+    thresholds = np.linspace(0, max_threshold, num_steps)
+    pck_values = []
+    
+    for threshold in thresholds:
+        correct = joint_errors < threshold
+        pck = np.mean(correct)
+        pck_values.append(pck)
+    
+    # Compute AUC using trapezoidal rule
+    auc = np.trapz(pck_values, thresholds) / max_threshold
+    return auc
+
+
 def save_checkpoint(checkpoint_path, epoch, lr, optimizer, model, min_mpjpe, wandb_id):
-    if not os.path.exists(os.path.dirname(checkpoint_path)):
-        os.makedirs(os.path.dirname(checkpoint_path))
     torch.save({
         'epoch': epoch + 1,
         'lr': lr,
@@ -328,25 +416,22 @@ def train(args, opts):
                                 data_stride_train=args.n_frames // 3, data_stride_test=args.n_frames,
                                 dt_root='data/motion3d', dt_file=args.dt_file)  # Used for H36m evaluation
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = load_model_TCPFormer(args)
     if torch.cuda.is_available():
         model = torch.nn.DataParallel(model)
-        model = model.cuda()
+    model.to(device)
 
     n_params = count_param_numbers(model)
     print(f"[INFO] Number of parameters: {n_params:,}")
 
     lr = args.learning_rate
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                            lr=lr,
+                            weight_decay=args.weight_decay)
     lr_decay = args.lr_decay
-    lr_gamma = args.lr_gamma
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                           lr=lr,
-                           amsgrad=True)
-
     epoch_start = 0
-    min_mpjpe = float('inf')
+    min_mpjpe = float('inf')  # Used for storing the best model
     wandb_id = opts.wandb_run_id if opts.wandb_run_id is not None else wandb.util.generate_id()
 
     if opts.checkpoint:
@@ -370,16 +455,16 @@ def train(args, opts):
         if opts.resume:
             if opts.use_wandb:
                 wandb.init(id=wandb_id,
-                          project='TCPFormer',
-                          resume="must",
-                          settings=wandb.Settings(start_method='fork'))
+                        project='MemoryInducedTransformer',
+                        resume="must",
+                        settings=wandb.Settings(start_method='fork'))
         else:
+            print(f"Run ID: {wandb_id}")
             if opts.use_wandb:
-                print(f"Run ID: {wandb_id}")
                 wandb.init(id=wandb_id,
-                          name=opts.wandb_name,
-                          project='TCPFormer',
-                          settings=wandb.Settings(start_method='fork'))
+                        name=opts.wandb_name,
+                        project='MemoryInducedTransformer',
+                        settings=wandb.Settings(start_method='fork'))
                 wandb.config.update({"run_id": wandb_id})
                 wandb.config.update(args)
                 installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
@@ -404,13 +489,13 @@ def train(args, opts):
             exit()
 
         print(f"[INFO] epoch {epoch}")
-        loss_names = ['3d_pose', '3d_scale', '3d_velocity', 'lv', 'lg', 'angle', 'angle_velocity', 'total']
+        loss_names = ['3d_pose', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
         losses = {name: AverageMeter() for name in loss_names}
 
-        train_one_epoch(args, model, train_loader, optimizer, losses)
-        with torch.no_grad():
-            mpjpe, p_mpjpe, joints_error, acceleration_error, mpjpe_comprehensive, pck_results, auc = evaluate(
-                args, model, test_loader, datareader, device)
+        train_one_epoch(args, model, train_loader, optimizer, device, losses)
+
+        mpjpe, p_mpjpe, joints_error, acceleration_error, mpjpe_comprehensive, pck_results, auc = evaluate(
+            args, model, test_loader, datareader, device)
 
         if mpjpe < min_mpjpe:
             min_mpjpe = mpjpe
@@ -427,25 +512,29 @@ def train(args, opts):
                 'train/loss_3d_pose': losses['3d_pose'].avg,
                 'train/loss_3d_scale': losses['3d_scale'].avg,
                 'train/loss_3d_velocity': losses['3d_velocity'].avg,
-                'train/loss_lv': losses['lv'].avg,
+                'train/loss_2d_proj': losses['2d_proj'].avg,
                 'train/loss_lg': losses['lg'].avg,
+                'train/loss_lv': losses['lv'].avg,
                 'train/loss_angle': losses['angle'].avg,
-                'train/loss_angle_velocity': losses['angle_velocity'].avg,
-                'train/loss_total': losses['total'].avg,
+                'train/angle_velocity': losses['angle_velocity'].avg,
+                'train/total': losses['total'].avg,
                 'eval/mpjpe': mpjpe,
-                'eval/p_mpjpe': p_mpjpe,
                 'eval/mpjpe_comprehensive': mpjpe_comprehensive,
-                'eval/auc': auc,
                 'eval/acceleration_error': acceleration_error,
                 'eval/min_mpjpe': min_mpjpe,
+                'eval/p-mpjpe': p_mpjpe,
+                'eval/auc': auc,
+                'eval_additional/upper_body_error': np.mean(joints_error[H36M_UPPER_BODY_JOINTS]),
+                'eval_additional/lower_body_error': np.mean(joints_error[H36M_LOWER_BODY_JOINTS]),
+                'eval_additional/1_DF_error': np.mean(joints_error[H36M_1_DF]),
+                'eval_additional/2_DF_error': np.mean(joints_error[H36M_2_DF]),
+                'eval_additional/3_DF_error': np.mean(joints_error[H36M_3_DF]),
+                **joint_label_errors
             }
             
             # Add PCK results
             for key, value in pck_results.items():
                 wandb_log_dict[f'eval/{key}'] = value
-            
-            # Add joint errors
-            wandb_log_dict.update(joint_label_errors)
             
             wandb.log(wandb_log_dict, step=epoch + 1)
 
@@ -462,11 +551,10 @@ def main():
     opts = parse_args()
     set_random_seed(opts.seed)
     torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
     args = get_config(opts.config)
-
+    
     train(args, opts)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
