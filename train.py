@@ -22,7 +22,7 @@ from utils.data import flip_data
 from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
 from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially
 from torch.utils.data import DataLoader
-from utils.utils_H3_6 import (AccumLoss, calculate_torso_diameter_h36m, compute_pck_h36m, 
+from utils.utils_H36 import (AccumLoss, calculate_torso_diameter_h36m, compute_pck_h36m, 
                               compute_auc_h36m, mpjpe_cal, count_param_numbers, 
                               make_root_relative_h36m, H36M_CONNECTIONS, H36M_JOINT_NAMES)
 
