@@ -103,13 +103,17 @@ def evaluate(args, model, test_loader, datareader, device):
     results_all = []
     model.eval()
     
-    # Initialize comprehensive metrics tracking (same PCK thresholds as train_3dhp.py)
+    # Initialize comprehensive metrics tracking
     pck_results = {
         'PCK@30%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@10%_torso': 0.0,
         'PCK@30%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@10%_150mm': 0.0
     }
     auc_sum = 0.0
     valid_samples = 0
+    
+    # Collect predictions in the same format as MPJPE calculation
+    all_preds_denorm = []
+    all_gts_denorm = []
     
     with torch.no_grad():
         for x, y in tqdm(test_loader, desc="Evaluating"):
@@ -129,29 +133,8 @@ def evaluate(args, model, test_loader, datareader, device):
                 y[:, 0, 0, 2] = 0
 
             results_all.append(predicted_3d_pos.cpu().numpy())
-            
-            # Calculate comprehensive metrics for each batch
-            N = predicted_3d_pos.shape[0]
-            
-            # Extract center frame for PCK/AUC calculations (same as train_3dhp.py)
-            center_frame_idx = predicted_3d_pos.shape[1] // 2
-            pred_frame = predicted_3d_pos[:, center_frame_idx]  # (N, 17, 3)
-            gt_frame = y[:, center_frame_idx]  # (N, 17, 3)
-            
-            # Calculate torso diameters for PCK (use original poses, not root-relative)
-            torso_diameters = calculate_torso_diameter_h36m(gt_frame)
-            
-            # Compute PCK for torso-based and 150mm thresholds (same logic as train_3dhp.py)
-            batch_pck = compute_pck_h36m(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
-            for key in pck_results:
-                pck_results[key] += batch_pck[key] * N
-            
-            # Compute AUC (same as train_3dhp.py)
-            auc = compute_auc_h36m(pred_frame, gt_frame)
-            auc_sum += auc * N
-            
-            valid_samples += N
 
+    # Use the exact same denormalization process as MPJPE calculation
     results_all = np.concatenate(results_all)
     results_all = datareader.denormalize(results_all)
     _, split_id_test = datareader.get_split_id()
@@ -195,6 +178,11 @@ def evaluate(args, model, test_loader, datareader, device):
     block_list = ['s_09_act_05_subact_02',
                   's_09_act_10_subact_02',
                   's_09_act_13_subact_01']
+    
+    # Collect data for PCK calculation using same processing as MPJPE
+    pck_pred_frames = []
+    pck_gt_frames = []
+    
     for idx in range(len(action_clips)):
         source = source_clips[idx][0][:-6]
         if source in block_list:
@@ -206,7 +194,12 @@ def evaluate(args, model, test_loader, datareader, device):
         pred = results_all[idx]
         pred *= factor
 
-        # Root-relative Errors
+        # Store denormalized data for PCK calculation (center frame only)
+        center_frame_idx = pred.shape[0] // 2
+        pck_pred_frames.append(pred[center_frame_idx])  # Shape: (17, 3)
+        pck_gt_frames.append(gt[center_frame_idx])      # Shape: (17, 3)
+
+        # Root-relative Errors (same as before)
         pred = pred - pred[:, 0:1, :]
         gt = gt - gt[:, 0:1, :]
         err1 = calculate_mpjpe(pred, gt)
@@ -219,6 +212,25 @@ def evaluate(args, model, test_loader, datareader, device):
         err2 = calculate_p_mpjpe(pred, gt)
         e2_all[frame_list] += err2
         oc[frame_list] += 1
+    
+    # Calculate PCK using denormalized data (same scale as MPJPE)
+    if pck_pred_frames:
+        pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3)
+        pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3)
+        
+        # Calculate torso diameters for PCK
+        torso_diameters = calculate_torso_diameter_h36m(pck_gt_frames)
+        
+        # Compute PCK for torso-based and 150mm thresholds
+        batch_pck = compute_pck_h36m(pck_pred_frames, pck_gt_frames, torso_diameters, fixed_threshold=150.0)
+        for key in batch_pck:
+            pck_results[key] = batch_pck[key]
+        
+        # Compute AUC
+        auc_avg = compute_auc_h36m(pck_pred_frames, pck_gt_frames)
+    else:
+        auc_avg = 0.0
+    
     for idx in range(num_test_frames):
         if e1_all[idx] > 0:
             err1 = e1_all[idx] / oc[idx]
@@ -255,12 +267,7 @@ def evaluate(args, model, test_loader, datareader, device):
     acceleration_error = np.mean(np.array(final_result_acceleration))
     e2 = np.mean(np.array(final_result_procrustes))
     
-    # Calculate comprehensive metrics averages (same as train_3dhp.py)
-    for key in pck_results:
-        pck_results[key] /= valid_samples
-    auc_avg = auc_sum / valid_samples
-    
-    # Print comprehensive results (same detailed format as train_3dhp.py)
+    # Print comprehensive results
     print('\n' + '='*70)
     print('COMPREHENSIVE HUMAN3.6M EVALUATION RESULTS')
     print('='*70)
@@ -314,8 +321,7 @@ def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_id
 
 def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.3, 0.2, 0.1]):
     """
-    Compute PCK metrics for Human3.6M dataset - using same logic as utils_3dhp.py
-    PCK@30%, PCK@20%, PCK@10% for both torso-based and 150mm fixed thresholds
+    Compute PCK metrics for Human3.6M dataset - corrected version
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.cpu().numpy()
@@ -327,39 +333,39 @@ def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_
     if fixed_threshold is not None:
         pck_results.update({f'PCK@{int(t*100)}%_150mm': 0.0 for t in pck_thresholds})
     
-    valid_samples_torso = 0
-    valid_samples_fixed = N if fixed_threshold is not None else 0
-
-    for i in range(N):
-        # Calculate joint errors for this sample
-        joint_errors = np.linalg.norm(pred[i] - gt[i], axis=-1)  # (J,)
+    # Calculate joint errors for all samples at once
+    joint_errors = np.linalg.norm(pred - gt, axis=-1)  # (N, J)
+    
+    # Fixed threshold PCK (150 mm)
+    if fixed_threshold is not None:
+        correct_keypoints_fixed = (joint_errors <= fixed_threshold).astype(float)  # (N, J)
+        pck_per_sample_fixed = correct_keypoints_fixed.mean(axis=1)  # (N,) - PCK per sample
         
-        # Torso-based PCK (same threshold factor as utils_3dhp.py: 0.1 * torso_diameter)
-        if torso_diameters is not None and torso_diameters[i] != 0:
-            threshold_factor = 0.1  # Same as utils_3dhp.py
-            threshold = threshold_factor * torso_diameters[i]
-            correct_keypoints = (joint_errors <= threshold).astype(float)
-            for t in pck_thresholds:
-                # PCK@X% means X% of joints should be correct
-                pck = (correct_keypoints.mean() >= t).astype(float)
-                pck_results[f'PCK@{int(t*100)}%_torso'] += pck
-            valid_samples_torso += 1
-
-        # Fixed threshold PCK (150 mm) - same logic as train_3dhp.py
-        if fixed_threshold is not None:
-            correct_keypoints = (joint_errors <= fixed_threshold).astype(float)
-            for t in pck_thresholds:
-                # PCK@X% means X% of joints should be correct
-                pck = (correct_keypoints.mean() >= t).astype(float)
-                pck_results[f'PCK@{int(t*100)}%_150mm'] += pck
-
-    # Average the results (same as train_3dhp.py)
-    if valid_samples_torso > 0:
         for t in pck_thresholds:
-            pck_results[f'PCK@{int(t*100)}%_torso'] /= valid_samples_torso
-    if fixed_threshold is not None and valid_samples_fixed > 0:
-        for t in pck_thresholds:
-            pck_results[f'PCK@{int(t*100)}%_150mm'] /= valid_samples_fixed
+            # Count samples where at least t% of joints are correct
+            samples_above_threshold = (pck_per_sample_fixed >= t).astype(float)
+            pck_results[f'PCK@{int(t*100)}%_150mm'] = samples_above_threshold.mean()
+    
+    # Torso-based PCK
+    if torso_diameters is not None:
+        valid_samples = 0
+        torso_pck_accumulator = {f'PCK@{int(t*100)}%_torso': 0.0 for t in pck_thresholds}
+        
+        for i in range(N):
+            if torso_diameters[i] > 0:
+                threshold = 0.1 * torso_diameters[i]  # 10% of torso diameter
+                correct_keypoints = (joint_errors[i] <= threshold).astype(float)  # (J,)
+                pck_per_sample = correct_keypoints.mean()  # Scalar
+                
+                for t in pck_thresholds:
+                    if pck_per_sample >= t:
+                        torso_pck_accumulator[f'PCK@{int(t*100)}%_torso'] += 1.0
+                valid_samples += 1
+        
+        # Average over valid samples
+        if valid_samples > 0:
+            for key in torso_pck_accumulator:
+                pck_results[key] = torso_pck_accumulator[key] / valid_samples
 
     return pck_results
 
