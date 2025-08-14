@@ -20,9 +20,11 @@ from data.reader.h36m import DataReaderH36M
 from data.reader.motion_dataset import MotionDataset3D
 from utils.data import flip_data
 from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
-from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially, count_param_numbers, sch_decay
+from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially, sch_decay
 from torch.utils.data import DataLoader
-from utils.utils_3dhp import AccumLoss, calculate_torso_diameter, compute_pck, compute_auc, mpjpe_cal
+from utils.utils_H3_6 import (AccumLoss, calculate_torso_diameter_h36m, compute_pck_h36m, 
+                              compute_auc_h36m, mpjpe_cal, count_param_numbers, 
+                              make_root_relative_h36m, H36M_CONNECTIONS, H36M_JOINT_NAMES)
 
 
 def parse_args():
@@ -132,24 +134,24 @@ def evaluate(args, model, test_loader, datareader, device):
             pred_frame = predicted_3d_pos[:, center_frame_idx]  # (N, 17, 3)
             gt_frame = y[:, center_frame_idx]  # (N, 17, 3)
             
-            # Make root-relative for MPJPE calculation
-            pred_frame_rel = pred_frame - pred_frame[:, 0:1, :]  # Root-relative
-            gt_frame_rel = gt_frame - gt_frame[:, 0:1, :]  # Root-relative
+            # Make root-relative for MPJPE calculation (Human3.6M uses joint 0 as root)
+            pred_frame_rel = make_root_relative_h36m(pred_frame, root_joint_idx=0)
+            gt_frame_rel = make_root_relative_h36m(gt_frame, root_joint_idx=0)
             
-            # Calculate MPJPE using same function as train_3dhp.py
+            # Calculate MPJPE using Human3.6M function
             joint_error_test = mpjpe_cal(pred_frame_rel, gt_frame_rel).item()
             error_sum_test.update(joint_error_test * N, N)
             
             # Calculate torso diameters for PCK (use non-root-relative poses)
-            torso_diameters = calculate_torso_diameter(gt_frame)
+            torso_diameters = calculate_torso_diameter_h36m(gt_frame)
             
             # Compute PCK for torso-based and 150mm thresholds
-            batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+            batch_pck = compute_pck_h36m(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key] * N
             
             # Compute AUC
-            auc = compute_auc(pred_frame, gt_frame)
+            auc = compute_auc_h36m(pred_frame, gt_frame)
             auc_sum += auc * N
             
             valid_samples += N
@@ -287,6 +289,11 @@ def evaluate(args, model, test_loader, datareader, device):
     print(f'\nPer-action breakdown (Protocol #1):')
     for i, action in enumerate(action_names):
         print(f'  {action}: {final_result[i]:.2f} mm')
+    
+    print(f'\nJoint-wise breakdown (Protocol #1):')
+    for joint_idx in range(args.num_joints):
+        joint_name = H36M_JOINT_NAMES[joint_idx] if joint_idx < len(H36M_JOINT_NAMES) else f"Joint_{joint_idx}"
+        print(f'  {joint_name}: {joint_errors[joint_idx]:.2f} mm')
     
     print('='*70)
     
