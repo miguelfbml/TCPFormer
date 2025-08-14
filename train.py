@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 from utils.learning import AverageMeter, decay_lr_exponentially, load_model_TCPFormer
 from utils.tools import count_param_numbers
 from utils.data import Augmenter2D
-from utils.utils_3dhp import AccumLoss, calculate_torso_diameter, compute_pck, compute_auc, mpjpe_cal
+from utils.utils_3dhp import AccumLoss
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 
@@ -104,7 +104,6 @@ def evaluate(args, model, test_loader, datareader, device):
     model.eval()
     
     # Initialize comprehensive metrics tracking (same PCK thresholds as train_3dhp.py)
-    error_sum_test = AccumLoss()
     pck_results = {
         'PCK@30%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@10%_torso': 0.0,
         'PCK@30%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@10%_150mm': 0.0
@@ -139,20 +138,10 @@ def evaluate(args, model, test_loader, datareader, device):
             pred_frame = predicted_3d_pos[:, center_frame_idx]  # (N, 17, 3)
             gt_frame = y[:, center_frame_idx]  # (N, 17, 3)
             
-            # Make root-relative for MPJPE calculation (Human3.6M uses joint 0 as root)
-            pred_frame_rel = pred_frame - pred_frame[:, 0:1, :]  # Root-relative
-            gt_frame_rel = gt_frame - gt_frame[:, 0:1, :]  # Root-relative
-            
-            # Calculate MPJPE using same function as train_3dhp.py
-            joint_error_test = mpjpe_cal(pred_frame_rel, gt_frame_rel).item()
-            error_sum_test.update(joint_error_test * N, N)
-            
-            # Calculate torso diameters for PCK (use non-root-relative poses)
-            # For Human3.6M, we need to adapt the torso calculation
-            # H36M joints: 0=Hip, 1=RHip, 4=LHip, 11=LShoulder, 14=RShoulder
+            # Calculate torso diameters for PCK (use original poses, not root-relative)
             torso_diameters = calculate_torso_diameter_h36m(gt_frame)
             
-            # Compute PCK for torso-based and 150mm thresholds (same as train_3dhp.py)
+            # Compute PCK for torso-based and 150mm thresholds (same logic as train_3dhp.py)
             batch_pck = compute_pck_h36m(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
             for key in pck_results:
                 pck_results[key] += batch_pck[key] * N
@@ -267,7 +256,6 @@ def evaluate(args, model, test_loader, datareader, device):
     e2 = np.mean(np.array(final_result_procrustes))
     
     # Calculate comprehensive metrics averages (same as train_3dhp.py)
-    mpjpe_comprehensive = error_sum_test.avg
     for key in pck_results:
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
@@ -281,8 +269,7 @@ def evaluate(args, model, test_loader, datareader, device):
     print('Protocol #2 Error (P-MPJPE):', e2, 'mm')
     print('Acceleration error:', acceleration_error, 'mm/s^2')
     
-    print('\nComprehensive Metrics (frame-wise evaluation):')
-    print(f'Frame-wise MPJPE: {mpjpe_comprehensive:.2f} mm')
+    print('\nComprehensive Metrics:')
     print('PCK Results:')
     for key, value in pck_results.items():
         print(f'{key}: {value*100:.2f}%')
@@ -294,7 +281,7 @@ def evaluate(args, model, test_loader, datareader, device):
     
     print('='*70)
     
-    return e1, e2, joint_errors, acceleration_error, mpjpe_comprehensive, pck_results, auc_avg
+    return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg
 
 
 # Add Human3.6M-specific utility functions (adapted from utils_3dhp.py)
@@ -327,7 +314,7 @@ def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_id
 
 def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.3, 0.2, 0.1]):
     """
-    Compute PCK metrics for Human3.6M dataset - using same thresholds as utils_3dhp.py
+    Compute PCK metrics for Human3.6M dataset - using same logic as utils_3dhp.py
     PCK@30%, PCK@20%, PCK@10% for both torso-based and 150mm fixed thresholds
     """
     if isinstance(pred, torch.Tensor):
@@ -347,24 +334,26 @@ def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_
         # Calculate joint errors for this sample
         joint_errors = np.linalg.norm(pred[i] - gt[i], axis=-1)  # (J,)
         
-        # Torso-based PCK (same threshold factor as utils_3dhp.py)
+        # Torso-based PCK (same threshold factor as utils_3dhp.py: 0.1 * torso_diameter)
         if torso_diameters is not None and torso_diameters[i] != 0:
             threshold_factor = 0.1  # Same as utils_3dhp.py
             threshold = threshold_factor * torso_diameters[i]
             correct_keypoints = (joint_errors <= threshold).astype(float)
             for t in pck_thresholds:
+                # PCK@X% means X% of joints should be correct
                 pck = (correct_keypoints.mean() >= t).astype(float)
                 pck_results[f'PCK@{int(t*100)}%_torso'] += pck
             valid_samples_torso += 1
 
-        # Fixed threshold PCK (150 mm)
+        # Fixed threshold PCK (150 mm) - same logic as train_3dhp.py
         if fixed_threshold is not None:
             correct_keypoints = (joint_errors <= fixed_threshold).astype(float)
             for t in pck_thresholds:
+                # PCK@X% means X% of joints should be correct
                 pck = (correct_keypoints.mean() >= t).astype(float)
                 pck_results[f'PCK@{int(t*100)}%_150mm'] += pck
 
-    # Average the results
+    # Average the results (same as train_3dhp.py)
     if valid_samples_torso > 0:
         for t in pck_thresholds:
             pck_results[f'PCK@{int(t*100)}%_torso'] /= valid_samples_torso
@@ -491,12 +480,11 @@ def train(args, opts):
         if opts.eval_only:
             with torch.no_grad():
                 # Run comprehensive evaluation
-                mpjpe, p_mpjpe, joints_error, acceleration_error, mpjpe_comprehensive, pck_results, auc = evaluate(
+                mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
                     args, model, test_loader, datareader, device)
                 print(f"\nFinal Comprehensive Results Summary:")
                 print(f"Protocol #1 (MPJPE): {mpjpe:.2f} mm")
                 print(f"Protocol #2 (P-MPJPE): {p_mpjpe:.2f} mm")
-                print(f"Frame-wise MPJPE: {mpjpe_comprehensive:.2f} mm")
                 print(f"AUC: {auc:.4f}")
                 print(f"PCK@30%_150mm: {pck_results['PCK@30%_150mm']*100:.2f}%")
                 print(f"PCK@20%_150mm: {pck_results['PCK@20%_150mm']*100:.2f}%")
@@ -513,7 +501,7 @@ def train(args, opts):
 
         train_one_epoch(args, model, train_loader, optimizer, device, losses)
 
-        mpjpe, p_mpjpe, joints_error, acceleration_error, mpjpe_comprehensive, pck_results, auc = evaluate(
+        mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
             args, model, test_loader, datareader, device)
 
         if mpjpe < min_mpjpe:
@@ -538,7 +526,6 @@ def train(args, opts):
                 'train/angle_velocity': losses['angle_velocity'].avg,
                 'train/total': losses['total'].avg,
                 'eval/mpjpe': mpjpe,
-                'eval/mpjpe_comprehensive': mpjpe_comprehensive,
                 'eval/acceleration_error': acceleration_error,
                 'eval/min_mpjpe': min_mpjpe,
                 'eval/p-mpjpe': p_mpjpe,
