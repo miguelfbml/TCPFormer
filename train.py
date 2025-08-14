@@ -19,8 +19,8 @@ from data.const import H36M_JOINT_TO_LABEL, H36M_UPPER_BODY_JOINTS, H36M_LOWER_B
 from data.reader.h36m import DataReaderH36M
 from data.reader.motion_dataset import MotionDataset3D
 from utils.data import flip_data
-from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
-from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially, count_param_numbers, sch_decay
+from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists, count_param_numbers
+from utils.learning import load_model_TCPFormer, AverageMeter, decay_lr_exponentially
 from torch.utils.data import DataLoader
 from utils.utils_3dhp import AccumLoss, calculate_torso_diameter, compute_pck, compute_auc, mpjpe_cal
 
