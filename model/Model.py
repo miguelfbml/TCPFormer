@@ -446,28 +446,28 @@ def _test():
     for parameter in model.parameters():
         model_params = model_params + parameter.numel()
     print(f"Model parameter #: {model_params:,}")
-    # print(f"Model FLOPS #: {profile_macs(model, random_x):,}")
+    print(f"Model FLOPS #: {profile_macs(model, random_x):,}")
 
-    # # Warm-up to avoid timing fluctuations
-    # for _ in range(10):
-    #     _ = model(random_x)
+    # Warm-up to avoid timing fluctuations
+    for _ in range(10):
+        _ = model(random_x)
 
-    # import time
-    # num_iterations = 100 
-    # # Measure the inference time for 'num_iterations' iterations
-    # start_time = time.time()
-    # for _ in range(num_iterations):
-    #     with torch.no_grad():
-    #         _ = model(random_x)
-    # end_time = time.time()
+    import time
+    num_iterations = 100 
+    # Measure the inference time for 'num_iterations' iterations
+    start_time = time.time()
+    for _ in range(num_iterations):
+        with torch.no_grad():
+            _ = model(random_x)
+    end_time = time.time()
 
-    # # Calculate the average inference time per iteration
-    # average_inference_time = (end_time - start_time) / num_iterations
+    # Calculate the average inference time per iteration
+    average_inference_time = (end_time - start_time) / num_iterations
 
-    # # Calculate FPS
-    # fps = 1.0 / average_inference_time
+    # Calculate FPS
+    fps = 1.0 / average_inference_time
 
-    # print(f"FPS: {fps}")
+    print(f"FPS: {fps}")
     
 
     out = model(random_x)
