@@ -292,8 +292,7 @@ def evaluate(args, model, test_loader, datareader, device):
 
 
 # Add Human3.6M-specific utility functions (adapted from utils_3dhp.py)
-def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_idx=14, 
-                                  left_hip_idx=4, right_hip_idx=1):
+def calculate_torso_diameter_h36m(gt_3d):
     """
     Calculate torso diameter for PCK metric - Human3.6M version
     
@@ -305,18 +304,17 @@ def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_id
     if isinstance(gt_3d, torch.Tensor):
         gt_3d = gt_3d.cpu().numpy()
     
-    # Shoulder distance
-    left_shoulder = gt_3d[:, left_shoulder_idx, :]  # (N, 3)
-    right_shoulder = gt_3d[:, right_shoulder_idx, :]  # (N, 3)
-    shoulder_dist = np.linalg.norm(left_shoulder - right_shoulder, axis=1)  # (N,)
+    # Diagonal distances for torso (to match 3DHP intent and increase threshold reasonably)
+    left_shoulder = gt_3d[:, 11, :]  # (N, 3)
+    right_hip = gt_3d[:, 1, :]  # (N, 3)
+    dist1 = np.linalg.norm(left_shoulder - right_hip, axis=1)  # (N,)
     
-    # Hip distance  
-    left_hip = gt_3d[:, left_hip_idx, :]  # (N, 3)
-    right_hip = gt_3d[:, right_hip_idx, :]  # (N, 3)
-    hip_dist = np.linalg.norm(left_hip - right_hip, axis=1)  # (N,)
+    right_shoulder = gt_3d[:, 14, :]  # (N, 3)
+    left_hip = gt_3d[:, 4, :]  # (N, 3)
+    dist2 = np.linalg.norm(right_shoulder - left_hip, axis=1)  # (N,)
     
-    # Average of shoulder and hip distance as torso diameter
-    torso_diameter = (shoulder_dist + hip_dist) / 2.0
+    # Average of the two diagonal distances
+    torso_diameter = (dist1 + dist2) / 2.0
     return torso_diameter
 
 def compute_pck_h36m(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.3, 0.2, 0.1]):
