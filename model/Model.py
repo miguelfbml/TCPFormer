@@ -435,7 +435,7 @@ def _test():
     from torchprofile import profile_macs
     import warnings
     warnings.filterwarnings('ignore')
-    b, c, t, j = 1, 3, 243, 17
+    b, c, t, j = 1, 3, 27, 17
     random_x = torch.randn((b, t, j, c)).to('cuda')
 
     model = MemoryInducedTransformer(n_layers=16, dim_in=3, dim_feat=128, mlp_ratio=4, hierarchical=False,
