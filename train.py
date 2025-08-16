@@ -175,9 +175,10 @@ def evaluate(args, model, test_loader, datareader, device):
                   's_09_act_10_subact_02',
                   's_09_act_13_subact_01']
     
-    # Collect data for PCK calculation using ABSOLUTE coordinates (NOT root-relative)
-    pck_pred_frames = []
-    pck_gt_frames = []
+    # Collect data for PCK calculation using ROOT-RELATIVE coordinates for errors, ABSOLUTE for torso
+    pck_pred_frames = []  # root-rel
+    pck_gt_frames = []  # root-rel
+    pck_gt_abs_frames = []  # absolute for torso diameter
     
     for idx in range(len(action_clips)):
         source = source_clips[idx][0][:-6]
@@ -190,14 +191,18 @@ def evaluate(args, model, test_loader, datareader, device):
         pred = results_all[idx]
         pred *= factor
 
-        # Store ABSOLUTE (denormalized) data for PCK calculation (center frame only)
+        # Store ABSOLUTE gt for torso calculation (center frame only)
         center_frame_idx = pred.shape[0] // 2
-        pck_pred_frames.append(pred[center_frame_idx])  # Shape: (17, 3) - ABSOLUTE coords
-        pck_gt_frames.append(gt[center_frame_idx])      # Shape: (17, 3) - ABSOLUTE coords
+        pck_gt_abs_frames.append(gt[center_frame_idx])
 
-        # Root-relative Errors (for MPJPE calculation only)
+        # Root-relative Errors (for MPJPE and PCK calculation)
         pred = pred - pred[:, 0:1, :]
         gt = gt - gt[:, 0:1, :]
+
+        # Store ROOT-RELATIVE for PCK calculation (center frame only)
+        pck_pred_frames.append(pred[center_frame_idx])
+        pck_gt_frames.append(gt[center_frame_idx])
+
         err1 = calculate_mpjpe(pred, gt)
         jpe = calculate_jpe(pred, gt)
         for joint_idx in range(args.num_joints):
@@ -209,25 +214,27 @@ def evaluate(args, model, test_loader, datareader, device):
         e2_all[frame_list] += err2
         oc[frame_list] += 1
     
-    # Calculate PCK using ABSOLUTE coordinates - same logic as train_3dhp.py
+    # Calculate PCK using ROOT-RELATIVE coordinates, torso from ABSOLUTE
     if pck_pred_frames:
-        pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3) - ABSOLUTE
-        pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3) - ABSOLUTE
+        pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3) - ROOT-REL
+        pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3) - ROOT-REL
+        pck_gt_abs_frames = np.array(pck_gt_abs_frames)  # Shape: (N, 17, 3) - ABSOLUTE
         
         # Convert to torch tensors for compatibility with train_3dhp.py functions
         pck_pred_tensor = torch.from_numpy(pck_pred_frames).float()
         pck_gt_tensor = torch.from_numpy(pck_gt_frames).float()
+        pck_gt_abs_tensor = torch.from_numpy(pck_gt_abs_frames).float()
         
         # Calculate torso diameters for PCK using ABSOLUTE coordinates
-        torso_diameters = calculate_torso_diameter_h36m(pck_gt_tensor)
+        torso_diameters = calculate_torso_diameter_h36m(pck_gt_abs_tensor)
         
-        # Compute PCK using same logic as train_3dhp.py
+        # Compute PCK using same logic as train_3dhp.py (on root-rel)
         batch_pck = compute_pck_h36m(pck_pred_tensor, pck_gt_tensor, torso_diameters, fixed_threshold=150.0)
         for key in pck_results:
             if key in batch_pck:
                 pck_results[key] = batch_pck[key]
         
-        # Compute AUC using same logic as train_3dhp.py
+        # Compute AUC using same logic as train_3dhp.py (on root-rel)
         auc_avg = compute_auc_h36m(pck_pred_tensor, pck_gt_tensor)
         valid_samples = len(pck_pred_frames)
     else:
