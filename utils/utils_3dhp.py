@@ -86,14 +86,14 @@ def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_hip_idx=8):
             torso_diameters[i] = 0  # Mark as invalid
     return torso_diameters
 
-def compute_pck(pred, gt, torso_diameters, threshold_factor=0.1, fixed_threshold=None, pck_thresholds=[0.9, 0.8, 0.7]):
+def compute_pck(pred, gt, torso_diameters, threshold_factor=1, fixed_threshold=None, pck_thresholds=[0.9, 0.8, 0.7]):
     """
-    Compute PCK at specified thresholds (90%, 80%, 70%) using 0.1 * torso diameter and/or fixed threshold (e.g., 150 mm).
+    Compute PCK at specified thresholds (90%, 80%, 70%) using 1 * torso diameter and/or fixed threshold (e.g., 150 mm).
     Args:
         pred: Tensor of shape (N, J, 3) with predicted keypoints.
         gt: Tensor of shape (N, J, 3) with ground truth keypoints.
         torso_diameters: Tensor of shape (N,) with torso diameters (0 for invalid samples).
-        threshold_factor: Fraction of torso diameter for error threshold (default: 0.1).
+        threshold_factor: Fraction of torso diameter for error threshold (default: 1).
         fixed_threshold: Fixed threshold in mm (e.g., 150). If None, only torso-based PCK is computed.
         pck_thresholds: List of PCK thresholds (e.g., [0.9, 0.8, 0.7]).
     Returns:
