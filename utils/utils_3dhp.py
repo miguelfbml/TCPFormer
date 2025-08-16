@@ -86,7 +86,7 @@ def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_hip_idx=8):
             torso_diameters[i] = 0  # Mark as invalid
     return torso_diameters
 
-def compute_pck(pred, gt, torso_diameters, threshold_factor=1, fixed_threshold=None, pck_thresholds=[0.9, 0.8, 0.7]):
+def compute_pck(pred, gt, torso_diameters, threshold_factor=0.1, fixed_threshold=None, pck_thresholds=[0.9, 0.8, 0.7]):
     """
     Compute PCK at specified thresholds (90%, 80%, 70%) using 1 * torso diameter and/or fixed threshold (e.g., 150 mm).
     Args:
