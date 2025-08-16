@@ -164,9 +164,11 @@ def evaluate(model, test_loader, n_frames):
 
     data_inference = {}
     error_sum_test = AccumLoss()
+    
+    # Updated to match the corrected utils_3dhp.py key names
     pck_results = {
-        'PCK@90%_torso': 0.0, 'PCK@80%_torso': 0.0, 'PCK@70%_torso': 0.0,
-        'PCK@90%_150mm': 0.0, 'PCK@80%_150mm': 0.0, 'PCK@70%_150mm': 0.0
+        'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@30%_torso': 0.0,
+        'PCK@10%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@30%_150mm': 0.0
     }
     auc_sum = 0.0
     valid_samples = 0
@@ -205,8 +207,11 @@ def evaluate(model, test_loader, n_frames):
         pred_frame = pred_out[:, 0]  # Shape: (N, 17, 3)
         gt_frame = out_target[:, 0]  # Shape: (N, 17, 3)
         batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
+        
+        # Now the keys should match
         for key in pck_results:
-            pck_results[key] += batch_pck[key] * N
+            if key in batch_pck:
+                pck_results[key] += batch_pck[key] * N
 
         # Compute AUC
         auc = compute_auc(pred_frame, gt_frame)
@@ -232,12 +237,17 @@ def evaluate(model, test_loader, n_frames):
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
 
-    # Print results
+    # Print results in ascending order (10%, 20%, 30%)
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
-    for key, value in pck_results.items():
-        print(f'{key}: {value*100:.2f}%')
+    
+    # Print in ascending order as requested
+    print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
+    print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
+    print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
+    print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
+    print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
+    print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
-
 
     return mpjpe_avg, data_inference
 
