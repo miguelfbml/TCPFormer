@@ -103,10 +103,10 @@ def evaluate(args, model, test_loader, datareader, device):
     results_all = []
     model.eval()
     
-    # Initialize comprehensive metrics tracking - CORRECTED PCK thresholds
+    # Initialize comprehensive metrics tracking - same as train_3dhp.py
     pck_results = {
-        'PCK@150mm': 0.0, 'PCK@100mm': 0.0, 'PCK@50mm': 0.0,
-        'PCK@30%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@10%_torso': 0.0
+        'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@30%_torso': 0.0, 'PCK@100%_torso': 0.0,
+        'PCK@10%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@30%_150mm': 0.0, 'PCK@100%_150mm': 0.0
     }
     auc_sum = 0.0
     valid_samples = 0
@@ -209,21 +209,27 @@ def evaluate(args, model, test_loader, datareader, device):
         e2_all[frame_list] += err2
         oc[frame_list] += 1
     
-    # Calculate PCK using ABSOLUTE coordinates (same scale as real-world measurements)
+    # Calculate PCK using ABSOLUTE coordinates - same logic as train_3dhp.py
     if pck_pred_frames:
         pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3) - ABSOLUTE
         pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3) - ABSOLUTE
         
+        # Convert to torch tensors for compatibility with train_3dhp.py functions
+        pck_pred_tensor = torch.from_numpy(pck_pred_frames).float()
+        pck_gt_tensor = torch.from_numpy(pck_gt_frames).float()
+        
         # Calculate torso diameters for PCK using ABSOLUTE coordinates
-        torso_diameters = calculate_torso_diameter_h36m(pck_gt_frames)
+        torso_diameters = calculate_torso_diameter_h36m(pck_gt_tensor)
         
-        # Compute PCK for torso-based and fixed mm thresholds using CORRECTED logic
-        batch_pck = compute_pck_h36m(pck_pred_frames, pck_gt_frames, torso_diameters)
-        for key in batch_pck:
-            pck_results[key] = batch_pck[key]
+        # Compute PCK using same logic as train_3dhp.py
+        batch_pck = compute_pck_h36m(pck_pred_tensor, pck_gt_tensor, torso_diameters, fixed_threshold=150.0)
+        for key in pck_results:
+            if key in batch_pck:
+                pck_results[key] = batch_pck[key]
         
-        # Compute AUC using ABSOLUTE coordinates
-        auc_avg = compute_auc_h36m(pck_pred_frames, pck_gt_frames)
+        # Compute AUC using same logic as train_3dhp.py
+        auc_avg = compute_auc_h36m(pck_pred_tensor, pck_gt_tensor)
+        valid_samples = len(pck_pred_frames)
     else:
         auc_avg = 0.0
     
@@ -263,7 +269,7 @@ def evaluate(args, model, test_loader, datareader, device):
     acceleration_error = np.mean(np.array(final_result_acceleration))
     e2 = np.mean(np.array(final_result_procrustes))
     
-    # Print comprehensive results
+    # Print comprehensive results - same format as train_3dhp.py
     print('\n' + '='*70)
     print('COMPREHENSIVE HUMAN3.6M EVALUATION RESULTS')
     print('='*70)
@@ -273,9 +279,15 @@ def evaluate(args, model, test_loader, datareader, device):
     print('Acceleration error:', acceleration_error, 'mm/s^2')
     
     print('\nComprehensive Metrics:')
-    print('PCK Results:')
-    for key, value in pck_results.items():
-        print(f'{key}: {value*100:.2f}%')
+    # Print in ascending order like train_3dhp.py
+    print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
+    print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
+    print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
+    print(f'PCK@100%_torso: {pck_results["PCK@100%_torso"]*100:.2f}%')
+    print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
+    print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
+    print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
+    print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
     
     print('\nPer-action breakdown (Protocol #1):')
@@ -287,79 +299,89 @@ def evaluate(args, model, test_loader, datareader, device):
     return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg
 
 
-# Add Human3.6M-specific utility functions (CORRECTED logic)
+# Add Human3.6M-specific utility functions - same logic as train_3dhp.py
 def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_idx=14, 
                                   left_hip_idx=4, right_hip_idx=1):
     """
-    Calculate torso diameter for PCK metric - Human3.6M version
-    Same logic as utils_3dhp.py but adapted for H36M joint indices
+    Calculate torso diameter using shoulder and hip distances (same as MPI-INF-3DHP standard)
+    Human3.6M joint indices:
+    0: Hip (root), 1: RHip, 2: RKnee, 3: RAnkle, 4: LHip, 5: LKnee, 6: LAnkle,
+    7: Spine, 8: Thorax, 9: Neck, 10: Head, 11: LShoulder, 12: LElbow, 13: LWrist,
+    14: RShoulder, 15: RElbow, 16: RWrist
     """
-    if isinstance(gt_3d, torch.Tensor):
-        gt_3d = gt_3d.cpu().numpy()
+    if gt_3d.dim() == 4:
+        gt_3d = gt_3d[:, 0]  # Take first frame if temporal
+    N = gt_3d.shape[0]
+    torso_diameters = torch.zeros(N, device=gt_3d.device)
     
-    # Shoulder distance
-    left_shoulder = gt_3d[:, left_shoulder_idx, :]  # (N, 3)
-    right_shoulder = gt_3d[:, right_shoulder_idx, :]  # (N, 3)
-    shoulder_dist = np.linalg.norm(left_shoulder - right_shoulder, axis=1)  # (N,)
+    for i in range(N):
+        # Shoulder distance
+        left_shoulder = gt_3d[i, left_shoulder_idx]   # (3,)
+        right_shoulder = gt_3d[i, right_shoulder_idx] # (3,)
+        shoulder_dist = torch.norm(left_shoulder - right_shoulder)
+        
+        # Hip distance  
+        left_hip = gt_3d[i, left_hip_idx]   # (3,)
+        right_hip = gt_3d[i, right_hip_idx] # (3,)
+        hip_dist = torch.norm(left_hip - right_hip)
+        
+        # Average of shoulder and hip distance as torso diameter
+        torso_diameters[i] = (shoulder_dist + hip_dist) / 2.0
     
-    # Hip distance  
-    left_hip = gt_3d[:, left_hip_idx, :]  # (N, 3)
-    right_hip = gt_3d[:, right_hip_idx, :]  # (N, 3)
-    hip_dist = np.linalg.norm(left_hip - right_hip, axis=1)  # (N,)
-    
-    # Average of shoulder and hip distance as torso diameter
-    torso_diameter = (shoulder_dist + hip_dist) / 2.0
-    return torso_diameter
+    return torso_diameters
 
-def compute_pck_h36m_CORRECTED(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.9, 0.8, 0.7]):
-    """CORRECTED PCK calculation matching utils_3dhp.py"""
+def compute_pck_h36m(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds=[0.1, 0.2, 0.3, 1.0]):
+    """
+    Compute traditional PCK metric: percentage of keypoints within threshold
+    Same logic as train_3dhp.py but adapted for Human3.6M
+    """
     N, J, _ = pred.shape
-    joint_errors = np.linalg.norm(pred - gt, axis=-1)  # (N, J)
+    joint_errors = torch.norm(pred - gt, dim=-1)  # (N, J) - per-joint distances
     
     pck_results = {}
     
-    # Torso-based PCK
-    if torso_diameters is not None:
-        for t in pck_thresholds:
-            samples_passed = 0
-            for i in range(N):
-                if torso_diameters[i] > 0:
-                    threshold = 0.1 * torso_diameters[i]  # 10% of torso diameter
-                    correct_joints = (joint_errors[i] <= threshold).astype(float)
-                    joint_accuracy = correct_joints.mean()  # Percentage of joints correct for this sample
-                    if joint_accuracy >= t:  # Does this sample have ≥90% joints correct?
-                        samples_passed += 1
-            pck_results[f'PCK@{int(t*100)}%_torso'] = samples_passed / N
+    # Torso-based PCK: percentage of keypoints within X% of torso diameter
+    for thresh_pct in pck_thresholds:
+        thresh_pct_int = int(thresh_pct * 100)
+        
+        # Calculate threshold for each sample: thresh_pct * torso_diameter
+        thresholds = torso_diameters.unsqueeze(1) * thresh_pct  # (N, 1)
+        
+        # Check which keypoints are within threshold
+        correct_keypoints = (joint_errors <= thresholds).float()  # (N, J)
+        
+        # PCK = percentage of ALL keypoints (across all samples and joints) that are correct
+        pck = correct_keypoints.mean().item()
+        pck_results[f'PCK@{thresh_pct_int}%_torso'] = pck
     
-    # Fixed threshold PCK  
-    for t in pck_thresholds:
-        samples_passed = 0
-        for i in range(N):
-            correct_joints = (joint_errors[i] <= fixed_threshold).astype(float)
-            joint_accuracy = correct_joints.mean()
-            if joint_accuracy >= t:
-                samples_passed += 1
-        pck_results[f'PCK@{int(t*100)}%_150mm'] = samples_passed / N
+    # Fixed threshold PCK: percentage of keypoints within X% of fixed threshold (150mm)
+    for thresh_pct in pck_thresholds:
+        thresh_pct_int = int(thresh_pct * 100)
+        
+        # Calculate threshold: thresh_pct * 150mm (e.g., 10% of 150mm = 15mm, 100% of 150mm = 150mm)
+        threshold = fixed_threshold * thresh_pct
+        
+        # Check which keypoints are within threshold
+        correct_keypoints = (joint_errors <= threshold).float()  # (N, J)
+        
+        # PCK = percentage of ALL keypoints (across all samples and joints) that are correct
+        pck = correct_keypoints.mean().item()
+        pck_results[f'PCK@{thresh_pct_int}%_150mm'] = pck
     
     return pck_results
 
 def compute_auc_h36m(pred, gt, max_threshold=150, num_steps=50):
     """
-    Compute AUC (Area Under Curve) for Human3.6M dataset
+    Compute AUC by evaluating PCK over a range of thresholds.
+    Same logic as train_3dhp.py
     """
-    if isinstance(pred, torch.Tensor):
-        pred = pred.cpu().numpy()
-    if isinstance(gt, torch.Tensor):
-        gt = gt.cpu().numpy()
-    
     N, J, _ = pred.shape
     thresholds = np.linspace(0, max_threshold, num_steps)
     pck_values = []
     
     for thresh in thresholds:
-        joint_errors = np.linalg.norm(pred - gt, axis=-1)  # (N, J)
-        correct_keypoints = (joint_errors <= thresh).astype(float)
-        pck = correct_keypoints.mean()  # Average across all samples and joints
+        correct_keypoints = (torch.norm(pred - gt, dim=-1) <= thresh).float()
+        pck = correct_keypoints.mean().item()  # Average across all keypoints
         pck_values.append(pck)
     
     auc = np.trapz(pck_values, thresholds) / max_threshold
@@ -466,12 +488,14 @@ def train(args, opts):
                 print(f"Protocol #1 (MPJPE): {mpjpe:.2f} mm")
                 print(f"Protocol #2 (P-MPJPE): {p_mpjpe:.2f} mm")
                 print(f"AUC: {auc:.4f}")
-                print(f"PCK@150mm: {pck_results['PCK@150mm']*100:.2f}%")
-                print(f"PCK@100mm: {pck_results['PCK@100mm']*100:.2f}%")
-                print(f"PCK@50mm: {pck_results['PCK@50mm']*100:.2f}%")
-                print(f"PCK@30%_torso: {pck_results['PCK@30%_torso']*100:.2f}%")
-                print(f"PCK@20%_torso: {pck_results['PCK@20%_torso']*100:.2f}%")
                 print(f"PCK@10%_torso: {pck_results['PCK@10%_torso']*100:.2f}%")
+                print(f"PCK@20%_torso: {pck_results['PCK@20%_torso']*100:.2f}%")
+                print(f"PCK@30%_torso: {pck_results['PCK@30%_torso']*100:.2f}%")
+                print(f"PCK@100%_torso: {pck_results['PCK@100%_torso']*100:.2f}%")
+                print(f"PCK@10%_150mm: {pck_results['PCK@10%_150mm']*100:.2f}%")
+                print(f"PCK@20%_150mm: {pck_results['PCK@20%_150mm']*100:.2f}%")
+                print(f"PCK@30%_150mm: {pck_results['PCK@30%_150mm']*100:.2f}%")
+                print(f"PCK@100%_150mm: {pck_results['PCK@100%_150mm']*100:.2f}%")
                 print(f"Acceleration Error: {acceleration_error:.2f} mm/s^2")
             exit()
 
