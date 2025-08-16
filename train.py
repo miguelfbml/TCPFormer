@@ -259,22 +259,11 @@ def evaluate(args, model, test_loader, datareader, device):
     final_result_acceleration = []
     final_result = []
 
-    # PRINT PER-ACTION RESULTS AS WE CALCULATE THEM
-    print('\n' + '='*70)
-    print('PER-ACTION RESULTS (Human3.6M Protocol)')
-    print('='*70)
-    
+    # Calculate overall results first
     for action in action_names:
-        action_mpjpe = np.mean(results[action])
-        action_p_mpjpe = np.mean(results_procrustes[action])
-        action_acc = np.mean(results_accelaration[action])
-        
-        final_result.append(action_mpjpe)
-        final_result_procrustes.append(action_p_mpjpe)
-        final_result_acceleration.append(action_acc)
-        
-        print(f"{action:15} | P1: {action_mpjpe:6.2f}mm | P2: {action_p_mpjpe:6.2f}mm | Acc: {action_acc:6.2f}mm/s²")
-        
+        final_result.append(np.mean(results[action]))
+        final_result_procrustes.append(np.mean(results_procrustes[action]))
+        final_result_acceleration.append(np.mean(results_accelaration[action]))
         for joint_idx in range(args.num_joints):
             final_result_joints[joint_idx].append(np.mean(results_joints[joint_idx][action]))
 
@@ -309,6 +298,23 @@ def evaluate(args, model, test_loader, datareader, device):
     print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
     print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
+    
+    # Per-action breakdown
+    print('\nPer-action breakdown (Protocol #1):')
+    for i, action in enumerate(action_names):
+        print(f'  {action}: {final_result[i]:.2f} mm')
+    
+    # Joint-wise error analysis
+    print('\nJoint-wise errors (Protocol #1):')
+    for joint_idx in range(args.num_joints):
+        joint_name = H36M_JOINT_TO_LABEL[joint_idx] if joint_idx < len(H36M_JOINT_TO_LABEL) else f"Joint_{joint_idx}"
+        print(f'  {joint_name}: {joint_errors[joint_idx]:.2f} mm')
+    
+    # Body part analysis
+    print('\nBody part analysis (Protocol #1):')
+    print(f'  Upper body: {np.mean(joint_errors[H36M_UPPER_BODY_JOINTS]):.2f} mm')
+    print(f'  Lower body: {np.mean(joint_errors[H36M_LOWER_BODY_JOINTS]):.2f} mm')
+    
     print('='*70)
     
     # FORCE FLUSH ALL PRINT STATEMENTS
