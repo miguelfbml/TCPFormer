@@ -501,56 +501,15 @@ def train(args, opts):
             with torch.no_grad():
                 # Run comprehensive evaluation
                 print("[INFO] Starting evaluation...")
-                import sys
                 sys.stdout.flush()
                 
                 mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
                     args, model, test_loader, datareader, device)
                 
-                # PRINT EVERYTHING - DON'T RELY ON evaluate() function prints
-                print(f"\n" + "="*80)
-                print("FINAL COMPREHENSIVE RESULTS SUMMARY")
-                print("="*80)
-                
-                # Protocol Results
-                print('Standard Human3.6M Protocol Results:')
-                print(f"Protocol #1 Error (MPJPE): {mpjpe:.2f} mm")
-                print(f"Protocol #2 Error (P-MPJPE): {p_mpjpe:.2f} mm") 
-                print(f"Acceleration error: {acceleration_error:.2f} mm/s^2")
-                
-                # PCK Results
-                print('\nComprehensive Metrics:')
-                print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
-                print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
-                print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
-                print(f'PCK@100%_torso: {pck_results["PCK@100%_torso"]*100:.2f}%')
-                print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
-                print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
-                print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
-                print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
-                print(f'AUC: {auc:.4f}')
-                
-                # Per-joint breakdown
-                print('\nPer-joint breakdown (Protocol #1):')
-                joint_names = ['Hip', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle', 
-                              'Spine', 'Thorax', 'Neck', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-                              'RShoulder', 'RElbow', 'RWrist']
-                for joint_idx in range(len(joints_error)):
-                    if joint_idx < len(joint_names):
-                        print(f'  {joint_names[joint_idx]}: {joints_error[joint_idx]:.2f} mm')
-                    else:
-                        print(f'  Joint{joint_idx}: {joints_error[joint_idx]:.2f} mm')
-                
-                # Additional body part analysis
-                print('\nBody part analysis (Protocol #1):')
-                if hasattr(args, 'num_joints') and args.num_joints == 17:
-                    # Human3.6M specific joint groups
-                    upper_body_joints = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]  # Spine to arms
-                    lower_body_joints = [0, 1, 2, 3, 4, 5, 6]  # Hip to feet
-                    print(f'  Upper body: {np.mean(joints_error[upper_body_joints]):.2f} mm')
-                    print(f'  Lower body: {np.mean(joints_error[lower_body_joints]):.2f} mm')
-                
-                print("="*80)
+                # The evaluate() function already prints everything we need
+                # Just add a final summary line
+                print(f"\n✓ Evaluation completed successfully!")
+                print(f"Final MPJPE: {mpjpe:.2f}mm | P-MPJPE: {p_mpjpe:.2f}mm | AUC: {auc:.4f}")
                 sys.stdout.flush()
             exit()
 
