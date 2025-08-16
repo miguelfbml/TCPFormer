@@ -219,6 +219,8 @@ def evaluate(args, model, test_loader, datareader, device):
         
         # Debug: Print coordinate ranges to verify
         print(f"\n[DEBUG] PCK calculation using ROOT-RELATIVE coordinates:")
+        print(f"  Pred shape: {pck_pred_frames.shape}")
+        print(f"  GT shape: {pck_gt_frames.shape}")
         print(f"  Pred range: X[{np.min(pck_pred_frames[:,:,0]):.1f}, {np.max(pck_pred_frames[:,:,0]):.1f}], "
               f"Y[{np.min(pck_pred_frames[:,:,1]):.1f}, {np.max(pck_pred_frames[:,:,1]):.1f}], "
               f"Z[{np.min(pck_pred_frames[:,:,2]):.1f}, {np.max(pck_pred_frames[:,:,2]):.1f}] mm")
@@ -358,6 +360,13 @@ def compute_pck_h36m(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thres
     Compute traditional PCK metric: percentage of keypoints within threshold
     Same logic as train_3dhp.py but adapted for Human3.6M
     """
+    # Handle both 2D (17, 3) and 3D (N, 17, 3) inputs
+    if pred.dim() == 2:
+        pred = pred.unsqueeze(0)  # (17, 3) -> (1, 17, 3)
+        gt = gt.unsqueeze(0)      # (17, 3) -> (1, 17, 3)
+        if torso_diameters.dim() == 0:
+            torso_diameters = torso_diameters.unsqueeze(0)  # scalar -> (1,)
+    
     N, J, _ = pred.shape
     joint_errors = torch.norm(pred - gt, dim=-1)  # (N, J) - per-joint distances
     
@@ -398,6 +407,11 @@ def compute_auc_h36m(pred, gt, max_threshold=150, num_steps=50):
     Compute AUC by evaluating PCK over a range of thresholds.
     Same logic as train_3dhp.py
     """
+    # Handle both 2D (17, 3) and 3D (N, 17, 3) inputs
+    if pred.dim() == 2:
+        pred = pred.unsqueeze(0)  # (17, 3) -> (1, 17, 3)
+        gt = gt.unsqueeze(0)      # (17, 3) -> (1, 17, 3)
+    
     N, J, _ = pred.shape
     thresholds = np.linspace(0, max_threshold, num_steps)
     pck_values = []
