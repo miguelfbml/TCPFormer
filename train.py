@@ -195,7 +195,7 @@ def evaluate(args, model, test_loader, datareader, device):
         center_frame_idx = pred.shape[0] // 2
         pck_gt_abs_frames.append(gt[center_frame_idx])
 
-        # Root-relative Errors (for MPJPE and PCK calculation)
+        # Root-relative Errors (for MPJPE and PCK calculation only)
         pred = pred - pred[:, 0:1, :]
         gt = gt - gt[:, 0:1, :]
 
