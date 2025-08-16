@@ -303,7 +303,7 @@ def evaluate(args, model, test_loader, datareader, device):
     
     print('='*70)
     
-    return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg, action_names, final_result
+    return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg
 
 
 # Add Human3.6M-specific utility functions - same logic as train_3dhp.py
@@ -489,29 +489,8 @@ def train(args, opts):
         if opts.eval_only:
             with torch.no_grad():
                 # Run comprehensive evaluation
-                mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc, action_names, final_result = evaluate(
+                evaluate(
                     args, model, test_loader, datareader, device)
-                print('\n' + '='*70)
-                print('COMPREHENSIVE HUMAN3.6M EVALUATION RESULTS')
-                print('='*70)
-                print('Standard Human3.6M Protocol Results:')
-                print(f'Protocol #1 Error (MPJPE): {mpjpe:.2f} mm')
-                print(f'Protocol #2 Error (P-MPJPE): {p_mpjpe:.2f} mm')
-                print(f'Acceleration error: {acceleration_error:.2f} mm/s^2')
-                print('\nComprehensive Metrics:')
-                print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
-                print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
-                print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
-                print(f'PCK@100%_torso: {pck_results["PCK@100%_torso"]*100:.2f}%')
-                print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
-                print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
-                print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
-                print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
-                print(f'AUC: {auc:.4f}')
-                print('\nPer-action breakdown (Protocol #1):')
-                for i, action in enumerate(action_names):
-                    print(f'  {action}: {final_result[i]:.2f} mm')
-                print('='*70)
             exit()
 
         print(f"[INFO] epoch {epoch}")
@@ -520,7 +499,7 @@ def train(args, opts):
 
         train_one_epoch(args, model, train_loader, optimizer, device, losses)
 
-        mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc, action_names, final_result = evaluate(
+        mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
             args, model, test_loader, datareader, device)
 
         if mpjpe < min_mpjpe:
