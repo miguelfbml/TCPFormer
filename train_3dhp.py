@@ -265,9 +265,8 @@ def evaluate(model, test_loader, n_frames):
 
 def compute_flops(model, input_shape, device):
     model.eval()
-    input_tensor = torch.randn(input_shape).to(device)
     flops, params = get_model_complexity_info(
-        model, input_shape[1:], input_res=input_tensor.shape[1:], as_strings=False
+        model, input_shape[1:], as_strings=False, print_per_layer_stat=False
     )
     return flops, params
 
@@ -439,7 +438,7 @@ def main():
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     args = get_config(opts.config)
-
+    args.n_frames = 27  # Ensure T=27 as specified
     train(args, opts)
 
 if __name__ == '__main__':
