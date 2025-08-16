@@ -1,13 +1,17 @@
 import argparse
 import os
 import pkg_resources
-
+import time
+import pynvml
+import threading
+from statistics import mean
 import numpy as np
 import scipy.io as scio
 import torch
 import wandb
 from torch import optim
 from tqdm import tqdm
+from ptflops import get_model_complexity_info
 
 from loss.pose3d import loss_mpjpe, n_mpjpe, loss_velocity, loss_limb_var, loss_limb_gt, loss_angle, \
     loss_angle_velocity
@@ -15,12 +19,44 @@ from utils.data import denormalize
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
 from torch.utils.data import DataLoader
-
-from utils.learning import AverageMeter, decay_lr_exponentially,load_model_TCPFormer
+from utils.learning import AverageMeter, decay_lr_exponentially, load_model_TCPFormer
 from utils.tools import count_param_numbers
 from utils.utils_3dhp import *
-os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+class GPUUtilizationMonitor:
+    def __init__(self, device_idx=0):
+        pynvml.nvmlInit()
+        self.device = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
+        self.utilization_rates = []
+        self.memory_usage = []
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor)
+        self.thread.start()
+
+    def _monitor(self):
+        while self.running:
+            util = pynvml.nvmlDeviceGetUtilizationRates(self.device)
+            memory_info = pynvml.nvmlDeviceGetMemoryInfo(self.device)
+            self.utilization_rates.append(util.gpu)
+            self.memory_usage.append(memory_info.used / memory_info.total * 100)
+            time.sleep(0.1)  # Poll every 0.1 seconds for finer granularity
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+        pynvml.nvmlShutdown()
+
+    def get_stats(self):
+        avg_util = mean(self.utilization_rates) if self.utilization_rates else 0
+        avg_mem = mean(self.memory_usage) if self.memory_usage else 0
+        return avg_util, avg_mem
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -40,10 +76,17 @@ def parse_args():
     opts = parser.parse_args()
     return opts
 
-
 def train_one_epoch(args, model, train_loader, optimizer, losses):
     model.train()
-    for x, y in tqdm(train_loader):
+    gpu_monitor = GPUUtilizationMonitor(device_idx=0)
+    gpu_monitor.start()
+    batch_times = []
+    n_frames = args.n_frames
+    
+    for x, y in tqdm(train_loader, desc="Training"):
+        batch_start = time.perf_counter()
+        torch.cuda.synchronize()  # Ensure GPU operations are complete
+        
         batch_size = x.shape[0]
         if torch.cuda.is_available():
             x, y = x.cuda(), y.cuda()
@@ -80,28 +123,37 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
         loss_total.backward()
         optimizer.step()
 
+        torch.cuda.synchronize()
+        batch_time = time.perf_counter() - batch_start
+        batch_times.append(batch_time)
+
+    gpu_monitor.stop()
+    avg_gpu_util, avg_gpu_mem = gpu_monitor.get_stats()
+    mean_batch_time = sum(batch_times) / len(batch_times) if batch_times else 0
+    mean_frame_time = mean_batch_time / n_frames if n_frames > 0 else 0
+    
+    print(f"Training Mean Batch Time: {mean_batch_time:.4f} seconds")
+    print(f"Training Mean Frame Time: {mean_frame_time:.6f} seconds")
+    print(f"Training GPU Utilization: {avg_gpu_util:.2f}%")
+    print(f"Training GPU Memory Usage: {avg_gpu_mem:.2f}%")
+    
+    return mean_frame_time, avg_gpu_util, avg_gpu_mem
 
 def input_augmentation(input_2D, model, joints_left, joints_right):
-    N, _, T, J, C = input_2D.shape 
-
+    N, _, T, J, C = input_2D.shape
     input_2D_flip = input_2D[:, 1]
     input_2D_non_flip = input_2D[:, 0]
 
     output_3D_flip = model(input_2D_flip)
-
     output_3D_flip[..., 0] *= -1
-
     output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
 
     output_3D_non_flip = model(input_2D_non_flip)
-
     output_3D = (output_3D_non_flip + output_3D_flip) / 2
 
     input_2D = input_2D_non_flip
-
     return input_2D, output_3D
 
-'''
 def evaluate(model, test_loader, n_frames):
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
@@ -109,73 +161,21 @@ def evaluate(model, test_loader, n_frames):
 
     data_inference = {}
     error_sum_test = AccumLoss()
-
-
-    for data in tqdm(test_loader, 0):
-        batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
-
-        [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
-        N = input_2D.size(0)
-
-        out_target = gt_3D.clone().view(N, -1, 17, 3)
-        out_target[:, :, 14] = 0
-        gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
-
-        input_2D, output_3D = input_augmentation(input_2D, model, joints_left, joints_right)
-
-        output_3D = output_3D * scale.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
-        pad = (n_frames - 1) // 2
-        pred_out = output_3D[:, pad].unsqueeze(1)
-
-        pred_out[..., 14, :] = 0
-        pred_out = denormalize(pred_out, seq)
-
-        pred_out = pred_out - pred_out[..., 14:15, :] # Root-relative prediction
-        
-        inference_out = pred_out + out_target[..., 14:15, :] # final inference (for PCK and AUC) is not root relative
-
-        out_target = out_target - out_target[..., 14:15, :] # Root-relative prediction
-
-        joint_error_test = mpjpe_cal(pred_out, out_target).item()
-
-        for seq_cnt in range(len(seq)):
-            seq_name = seq[seq_cnt]
-            if seq_name in data_inference:
-                data_inference[seq_name] = np.concatenate(
-                    (data_inference[seq_name], inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()), axis=2)
-            else:
-                data_inference[seq_name] = inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
-        
-        error_sum_test.update(joint_error_test * N, N)
-
-    for seq_name in data_inference.keys():
-        data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
-    
-    print(f'Protocol #1 Error (MPJPE): {error_sum_test.avg:.2f} mm')
-
-    return error_sum_test.avg, data_inference
-'''
-
-#new evaluate function with PCK and AUC calculations
-def evaluate(model, test_loader, n_frames):
-    model.eval()
-    joints_left = [5, 6, 7, 11, 12, 13]
-    joints_right = [2, 3, 4, 8, 9, 10]
-
-    data_inference = {}
-    error_sum_test = AccumLoss()
-    
-    # Updated to include 100% thresholds
     pck_results = {
         'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@30%_torso': 0.0, 'PCK@100%_torso': 0.0,
         'PCK@10%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@30%_150mm': 0.0, 'PCK@100%_150mm': 0.0
     }
     auc_sum = 0.0
     valid_samples = 0
-
-    for data in tqdm(test_loader, 0):
+    gpu_monitor = GPUUtilizationMonitor(device_idx=0)
+    gpu_monitor.start()
+    batch_times = []
+    
+    for data in tqdm(test_loader, desc="Evaluating"):
+        batch_start = time.perf_counter()
+        torch.cuda.synchronize()
+        
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
-
         [input_2D, gt_3D, batch_cam, scale, bb_box] = get_variable('test', [input_2D, gt_3D, batch_cam, scale, bb_box])
         N = input_2D.size(0)
 
@@ -203,12 +203,11 @@ def evaluate(model, test_loader, n_frames):
         # Calculate torso diameters
         torso_diameters = calculate_torso_diameter(gt_3D)
 
-        # Compute PCK for torso-based and 150 mm thresholds (now includes 100%)
+        # Compute PCK for torso-based and 150 mm thresholds
         pred_frame = pred_out[:, 0]  # Shape: (N, 17, 3)
         gt_frame = out_target[:, 0]  # Shape: (N, 17, 3)
         batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
         
-        # Now the keys should match (including 100%)
         for key in pck_results:
             if key in batch_pck:
                 pck_results[key] += batch_pck[key] * N
@@ -228,6 +227,10 @@ def evaluate(model, test_loader, n_frames):
             else:
                 data_inference[seq_name] = inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
 
+        torch.cuda.synchronize()
+        batch_time = time.perf_counter() - batch_start
+        batch_times.append(batch_time)
+
     for seq_name in data_inference.keys():
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]
 
@@ -237,10 +240,17 @@ def evaluate(model, test_loader, n_frames):
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
 
-    # Print results in ascending order (10%, 20%, 30%, 100%)
+    gpu_monitor.stop()
+    avg_gpu_util, avg_gpu_mem = gpu_monitor.get_stats()
+    mean_batch_time = sum(batch_times) / len(batch_times) if batch_times else 0
+    mean_frame_time = mean_batch_time / n_frames if n_frames > 0 else 0
+
+    # Print results
+    print(f'Evaluation Mean Batch Time: {mean_batch_time:.4f} seconds')
+    print(f'Evaluation Mean Frame Time: {mean_frame_time:.6f} seconds')
+    print(f'Evaluation GPU Utilization: {avg_gpu_util:.2f}%')
+    print(f'Evaluation GPU Memory Usage: {avg_gpu_mem:.2f}%')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
-    
-    # Print in ascending order as requested (including 100%)
     print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
     print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
     print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
@@ -251,8 +261,15 @@ def evaluate(model, test_loader, n_frames):
     print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
 
-    return mpjpe_avg, data_inference
+    return mpjpe_avg, data_inference, mean_frame_time, avg_gpu_util, avg_gpu_mem
 
+def compute_flops(model, input_shape, device):
+    model.eval()
+    input_tensor = torch.randn(input_shape).to(device)
+    flops, params = get_model_complexity_info(
+        model, input_shape[1:], input_res=input_tensor.shape[1:], as_strings=False
+    )
+    return flops, params
 
 def save_checkpoint(checkpoint_path, epoch, lr, optimizer, model, min_mpjpe, wandb_id):
     if not os.path.exists('checkpoint'):
@@ -289,20 +306,28 @@ def train(args, opts):
     train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size, **common_loader_params)
     test_loader = DataLoader(test_dataset, shuffle=False, batch_size=args.test_batch_size, **common_loader_params)
     model = load_model_TCPFormer(args)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if torch.cuda.is_available():
-        model = torch.nn.DataParallel(model,device_ids=[0])
+        model = torch.nn.DataParallel(model, device_ids=[0])
         model = model.cuda()
 
     n_params = count_param_numbers(model)
     print(f"[INFO] Number of parameters: {n_params:,}")
 
+    # Compute FLOPs
+    input_shape = (args.test_batch_size, args.n_frames, 17, 3)  # [B, T=27, J=17, C=3]
+    flops, params = compute_flops(model.module if isinstance(model, torch.nn.DataParallel) else model, input_shape, device)
+    training_flops = flops * 3  # Approximate: forward + 2x backward
+    print(f"Model FLOPs (forward pass): {flops / 1e9:.2f} GFLOPs")
+    print(f"Training FLOPs per sample (approx): {training_flops / 1e9:.2f} GFLOPs")
+
     lr = args.learning_rate
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=lr,
-                            amsgrad=True)
+                           lr=lr,
+                           amsgrad=True)
     lr_decay = args.lr_decay
     epoch_start = 0
-    min_mpjpe = float('inf')  # Used for storing the best model
+    min_mpjpe = float('inf')
     wandb_id = opts.wandb_run_id if opts.wandb_run_id is not None else wandb.util.generate_id()
 
     if opts.checkpoint:
@@ -326,16 +351,16 @@ def train(args, opts):
         if opts.resume:
             if opts.use_wandb:
                 wandb.init(id=wandb_id,
-                        project='MemoryInducedTransformer',
-                        resume="must",
-                        settings=wandb.Settings(start_method='fork'))
+                          project='MemoryInducedTransformer',
+                          resume="must",
+                          settings=wandb.Settings(start_method='fork'))
         else:
             if opts.use_wandb:
                 print(f"Run ID: {wandb_id}")
                 wandb.init(id=wandb_id,
-                        name=opts.wandb_name,
-                        project='MemoryInducedTransformer',
-                        settings=wandb.Settings(start_method='fork'))
+                          name=opts.wandb_name,
+                          project='MemoryInducedTransformer',
+                          settings=wandb.Settings(start_method='fork'))
                 wandb.config.update({"run_id": wandb_id})
                 wandb.config.update(args)
                 installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
@@ -347,18 +372,26 @@ def train(args, opts):
     for epoch in range(epoch_start, args.epochs):
         if opts.eval_only:
             with torch.no_grad():
-                mpjpe, data_inference = evaluate(model, test_loader, args.n_frames)
+                mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem = evaluate(model, test_loader, args.n_frames)
                 save_data_inference(opts.new_checkpoint, data_inference, latest=True)
                 print(f"Inference data saved to: {os.path.join(opts.new_checkpoint, 'inference_data.mat')}")
+                if opts.use_wandb:
+                    wandb.log({
+                        'eval/mean_frame_time': eval_frame_time,
+                        'eval/gpu_utilization': eval_gpu_util,
+                        'eval/gpu_memory_usage': eval_gpu_mem,
+                        'eval/flops_per_sample': flops / 1e9
+                    })
                 exit()
-            
+
         print(f"[INFO] epoch {epoch}")
         loss_names = ['3d_pose', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
         losses = {name: AverageMeter() for name in loss_names}
-    
-        train_one_epoch(args, model, train_loader, optimizer, losses)
+
+        train_frame_time, train_gpu_util, train_gpu_mem = train_one_epoch(args, model, train_loader, optimizer, losses)
+        
         with torch.no_grad():
-            mpjpe, data_inference = evaluate(model, test_loader, args.n_frames)
+            mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem = evaluate(model, test_loader, args.n_frames)
 
         if mpjpe < min_mpjpe:
             min_mpjpe = mpjpe
@@ -368,7 +401,7 @@ def train(args, opts):
         save_data_inference(opts.new_checkpoint, data_inference, latest=True)
 
         if opts.use_wandb:
-            wandb.log({
+            wandb_log_dict = {
                 'lr': lr,
                 'train/loss_3d_pose': losses['3d_pose'].avg,
                 'train/loss_3d_scale': losses['3d_scale'].avg,
@@ -381,7 +414,16 @@ def train(args, opts):
                 'train/total': losses['total'].avg,
                 'eval/mpjpe': mpjpe,
                 'eval/min_mpjpe': min_mpjpe,
-            }, step=epoch + 1)
+                'train/mean_frame_time': train_frame_time,
+                'train/gpu_utilization': train_gpu_util,
+                'train/gpu_memory_usage': train_gpu_mem,
+                'eval/mean_frame_time': eval_frame_time,
+                'eval/gpu_utilization': eval_gpu_util,
+                'eval/gpu_memory_usage': eval_gpu_mem,
+                'train/flops_per_sample': training_flops / 1e9,
+                'eval/flops_per_sample': flops / 1e9
+            }
+            wandb.log(wandb_log_dict, step=epoch + 1)
 
         lr = decay_lr_exponentially(lr, lr_decay, optimizer)
 
@@ -391,7 +433,6 @@ def train(args, opts):
         artifact.add_file(checkpoint_path_best)
         wandb.log_artifact(artifact)
 
-
 def main():
     opts = parse_args()
     set_random_seed(opts.seed)
@@ -400,7 +441,6 @@ def main():
     args = get_config(opts.config)
 
     train(args, opts)
-
 
 if __name__ == '__main__':
     main()
