@@ -165,10 +165,10 @@ def evaluate(model, test_loader, n_frames):
     data_inference = {}
     error_sum_test = AccumLoss()
     
-    # Updated to match the corrected utils_3dhp.py key names
+    # Updated to include 100% thresholds
     pck_results = {
-        'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@30%_torso': 0.0,
-        'PCK@10%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@30%_150mm': 0.0
+        'PCK@10%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@30%_torso': 0.0, 'PCK@100%_torso': 0.0,
+        'PCK@10%_150mm': 0.0, 'PCK@20%_150mm': 0.0, 'PCK@30%_150mm': 0.0, 'PCK@100%_150mm': 0.0
     }
     auc_sum = 0.0
     valid_samples = 0
@@ -203,12 +203,12 @@ def evaluate(model, test_loader, n_frames):
         # Calculate torso diameters
         torso_diameters = calculate_torso_diameter(gt_3D)
 
-        # Compute PCK for torso-based and 150 mm thresholds
+        # Compute PCK for torso-based and 150 mm thresholds (now includes 100%)
         pred_frame = pred_out[:, 0]  # Shape: (N, 17, 3)
         gt_frame = out_target[:, 0]  # Shape: (N, 17, 3)
         batch_pck = compute_pck(pred_frame, gt_frame, torso_diameters, fixed_threshold=150.0)
         
-        # Now the keys should match
+        # Now the keys should match (including 100%)
         for key in pck_results:
             if key in batch_pck:
                 pck_results[key] += batch_pck[key] * N
@@ -237,16 +237,18 @@ def evaluate(model, test_loader, n_frames):
         pck_results[key] /= valid_samples
     auc_avg = auc_sum / valid_samples
 
-    # Print results in ascending order (10%, 20%, 30%)
+    # Print results in ascending order (10%, 20%, 30%, 100%)
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
     
-    # Print in ascending order as requested
+    # Print in ascending order as requested (including 100%)
     print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
     print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
     print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
+    print(f'PCK@100%_torso: {pck_results["PCK@100%_torso"]*100:.2f}%')
     print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
     print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
     print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
+    print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
 
     return mpjpe_avg, data_inference

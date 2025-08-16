@@ -88,7 +88,7 @@ def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_shoulder_idx=2, l
     
     return torso_diameters
 
-def compute_pck(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds=[0.1, 0.2, 0.3]):
+def compute_pck(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds=[0.1, 0.2, 0.3, 1.0]):
     """
     Compute traditional PCK metric: percentage of keypoints within threshold
     
@@ -97,7 +97,7 @@ def compute_pck(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds
         gt: Tensor of shape (N, J, 3) with ground truth keypoints  
         torso_diameters: Tensor of shape (N,) with torso diameters
         fixed_threshold: Fixed threshold in mm (default: 150mm)
-        pck_thresholds: List of threshold percentages (default: [0.1, 0.2, 0.3] = 10%, 20%, 30%)
+        pck_thresholds: List of threshold percentages (default: [0.1, 0.2, 0.3, 1.0] = 10%, 20%, 30%, 100%)
     
     Returns:
         pck_results: Dict with PCK values for each threshold
@@ -125,7 +125,7 @@ def compute_pck(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds
     for thresh_pct in pck_thresholds:
         thresh_pct_int = int(thresh_pct * 100)
         
-        # Calculate threshold: thresh_pct * 150mm (e.g., 10% of 150mm = 15mm)
+        # Calculate threshold: thresh_pct * 150mm (e.g., 10% of 150mm = 15mm, 100% of 150mm = 150mm)
         threshold = fixed_threshold * thresh_pct
         
         # Check which keypoints are within threshold
@@ -159,4 +159,3 @@ def compute_auc(pred, gt, max_threshold=150, num_steps=50):
     
     auc = np.trapz(pck_values, thresholds) / max_threshold
     return auc
-
