@@ -101,6 +101,7 @@ def train_one_epoch(args, model, train_loader, optimizer, device, losses):
 
 def evaluate(args, model, test_loader, datareader, device):
     print("[INFO] Evaluation with comprehensive metrics (MPJPE, P-MPJPE, PCK, AUC)")
+    sys.stdout.flush()
     results_all = []
     model.eval()
     
@@ -258,13 +259,24 @@ def evaluate(args, model, test_loader, datareader, device):
     final_result_acceleration = []
     final_result = []
 
+    # PRINT PER-ACTION RESULTS AS WE CALCULATE THEM
+    print('\n' + '='*70)
+    print('PER-ACTION RESULTS (Human3.6M Protocol)')
+    print('='*70)
+    
     for action in action_names:
-        final_result.append(np.mean(results[action]))
-        final_result_procrustes.append(np.mean(results_procrustes[action]))
-        final_result_acceleration.append(np.mean(results_accelaration[action]))
+        action_mpjpe = np.mean(results[action])
+        action_p_mpjpe = np.mean(results_procrustes[action])
+        action_acc = np.mean(results_accelaration[action])
+        
+        final_result.append(action_mpjpe)
+        final_result_procrustes.append(action_p_mpjpe)
+        final_result_acceleration.append(action_acc)
+        
+        print(f"{action:15} | P1: {action_mpjpe:6.2f}mm | P2: {action_p_mpjpe:6.2f}mm | Acc: {action_acc:6.2f}mm/s²")
+        
         for joint_idx in range(args.num_joints):
             final_result_joints[joint_idx].append(np.mean(results_joints[joint_idx][action]))
-        print(action,"p1:",np.mean(results[action]),"   p2:",np.mean(results_procrustes[action]))
 
     joint_errors = []
     for joint_idx in range(args.num_joints):
@@ -276,10 +288,6 @@ def evaluate(args, model, test_loader, datareader, device):
     assert round(e1, 4) == round(np.mean(joint_errors), 4), f"MPJPE {e1:.4f} is not equal to mean of joint errors {np.mean(joint_errors):.4f}"
     acceleration_error = np.mean(np.array(final_result_acceleration))
     e2 = np.mean(np.array(final_result_procrustes))
-    
-    # FORCE FLUSH ALL PRINT STATEMENTS
-    import sys
-    sys.stdout.flush()
     
     # Print comprehensive results - same format as train_3dhp.py
     print('\n' + '='*70)
@@ -301,14 +309,9 @@ def evaluate(args, model, test_loader, datareader, device):
     print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
     print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
-    
-    print('\nPer-action breakdown (Protocol #1):')
-    for i, action in enumerate(action_names):
-        print(f'  {action}: {final_result[i]:.2f} mm')
-    
     print('='*70)
     
-    # FORCE FLUSH AGAIN
+    # FORCE FLUSH ALL PRINT STATEMENTS
     sys.stdout.flush()
     
     return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg
@@ -498,26 +501,57 @@ def train(args, opts):
             with torch.no_grad():
                 # Run comprehensive evaluation
                 print("[INFO] Starting evaluation...")
+                import sys
+                sys.stdout.flush()
                 
                 mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
                     args, model, test_loader, datareader, device)
                 
+                # PRINT EVERYTHING - DON'T RELY ON evaluate() function prints
                 print(f"\n" + "="*80)
                 print("FINAL COMPREHENSIVE RESULTS SUMMARY")
                 print("="*80)
-                print(f"Protocol #1 (MPJPE): {mpjpe:.2f} mm")
-                print(f"Protocol #2 (P-MPJPE): {p_mpjpe:.2f} mm")
-                print(f"AUC: {auc:.4f}")
-                print(f"PCK@10%_torso: {pck_results['PCK@10%_torso']*100:.2f}%")
-                print(f"PCK@20%_torso: {pck_results['PCK@20%_torso']*100:.2f}%")
-                print(f"PCK@30%_torso: {pck_results['PCK@30%_torso']*100:.2f}%")
-                print(f"PCK@100%_torso: {pck_results['PCK@100%_torso']*100:.2f}%")
-                print(f"PCK@10%_150mm: {pck_results['PCK@10%_150mm']*100:.2f}%")
-                print(f"PCK@20%_150mm: {pck_results['PCK@20%_150mm']*100:.2f}%")
-                print(f"PCK@30%_150mm: {pck_results['PCK@30%_150mm']*100:.2f}%")
-                print(f"PCK@100%_150mm: {pck_results['PCK@100%_150mm']*100:.2f}%")
-                print(f"Acceleration Error: {acceleration_error:.2f} mm/s^2")
+                
+                # Protocol Results
+                print('Standard Human3.6M Protocol Results:')
+                print(f"Protocol #1 Error (MPJPE): {mpjpe:.2f} mm")
+                print(f"Protocol #2 Error (P-MPJPE): {p_mpjpe:.2f} mm") 
+                print(f"Acceleration error: {acceleration_error:.2f} mm/s^2")
+                
+                # PCK Results
+                print('\nComprehensive Metrics:')
+                print(f'PCK@10%_torso: {pck_results["PCK@10%_torso"]*100:.2f}%')
+                print(f'PCK@20%_torso: {pck_results["PCK@20%_torso"]*100:.2f}%')
+                print(f'PCK@30%_torso: {pck_results["PCK@30%_torso"]*100:.2f}%')
+                print(f'PCK@100%_torso: {pck_results["PCK@100%_torso"]*100:.2f}%')
+                print(f'PCK@10%_150mm: {pck_results["PCK@10%_150mm"]*100:.2f}%')
+                print(f'PCK@20%_150mm: {pck_results["PCK@20%_150mm"]*100:.2f}%')
+                print(f'PCK@30%_150mm: {pck_results["PCK@30%_150mm"]*100:.2f}%')
+                print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
+                print(f'AUC: {auc:.4f}')
+                
+                # Per-joint breakdown
+                print('\nPer-joint breakdown (Protocol #1):')
+                joint_names = ['Hip', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle', 
+                              'Spine', 'Thorax', 'Neck', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+                              'RShoulder', 'RElbow', 'RWrist']
+                for joint_idx in range(len(joints_error)):
+                    if joint_idx < len(joint_names):
+                        print(f'  {joint_names[joint_idx]}: {joints_error[joint_idx]:.2f} mm')
+                    else:
+                        print(f'  Joint{joint_idx}: {joints_error[joint_idx]:.2f} mm')
+                
+                # Additional body part analysis
+                print('\nBody part analysis (Protocol #1):')
+                if hasattr(args, 'num_joints') and args.num_joints == 17:
+                    # Human3.6M specific joint groups
+                    upper_body_joints = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]  # Spine to arms
+                    lower_body_joints = [0, 1, 2, 3, 4, 5, 6]  # Hip to feet
+                    print(f'  Upper body: {np.mean(joints_error[upper_body_joints]):.2f} mm')
+                    print(f'  Lower body: {np.mean(joints_error[lower_body_joints]):.2f} mm')
+                
                 print("="*80)
+                sys.stdout.flush()
             exit()
 
         print(f"[INFO] epoch {epoch}")
