@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import numpy as np
 import pkg_resources
@@ -175,10 +176,10 @@ def evaluate(args, model, test_loader, datareader, device):
                   's_09_act_10_subact_02',
                   's_09_act_13_subact_01']
     
-    # Collect data for PCK calculation using ROOT-RELATIVE coordinates for errors, ABSOLUTE for torso
-    pck_pred_frames = []  # root-rel
-    pck_gt_frames = []  # root-rel
-    pck_gt_abs_frames = []  # absolute for torso diameter
+    # Collect data for PCK calculation using ROOT-RELATIVE coordinates
+    pck_pred_frames = []
+    pck_gt_frames = []
+    pck_gt_abs_frames = []  # For torso diameter calculation
     
     for idx in range(len(action_clips)):
         source = source_clips[idx][0][:-6]
@@ -276,6 +277,10 @@ def evaluate(args, model, test_loader, datareader, device):
     acceleration_error = np.mean(np.array(final_result_acceleration))
     e2 = np.mean(np.array(final_result_procrustes))
     
+    # FORCE FLUSH ALL PRINT STATEMENTS
+    import sys
+    sys.stdout.flush()
+    
     # Print comprehensive results - same format as train_3dhp.py
     print('\n' + '='*70)
     print('COMPREHENSIVE HUMAN3.6M EVALUATION RESULTS')
@@ -302,6 +307,9 @@ def evaluate(args, model, test_loader, datareader, device):
         print(f'  {action}: {final_result[i]:.2f} mm')
     
     print('='*70)
+    
+    # FORCE FLUSH AGAIN
+    sys.stdout.flush()
     
     return e1, e2, joint_errors, acceleration_error, pck_results, auc_avg
 
@@ -489,8 +497,27 @@ def train(args, opts):
         if opts.eval_only:
             with torch.no_grad():
                 # Run comprehensive evaluation
-                evaluate(
+                print("[INFO] Starting evaluation...")
+                
+                mpjpe, p_mpjpe, joints_error, acceleration_error, pck_results, auc = evaluate(
                     args, model, test_loader, datareader, device)
+                
+                print(f"\n" + "="*80)
+                print("FINAL COMPREHENSIVE RESULTS SUMMARY")
+                print("="*80)
+                print(f"Protocol #1 (MPJPE): {mpjpe:.2f} mm")
+                print(f"Protocol #2 (P-MPJPE): {p_mpjpe:.2f} mm")
+                print(f"AUC: {auc:.4f}")
+                print(f"PCK@10%_torso: {pck_results['PCK@10%_torso']*100:.2f}%")
+                print(f"PCK@20%_torso: {pck_results['PCK@20%_torso']*100:.2f}%")
+                print(f"PCK@30%_torso: {pck_results['PCK@30%_torso']*100:.2f}%")
+                print(f"PCK@100%_torso: {pck_results['PCK@100%_torso']*100:.2f}%")
+                print(f"PCK@10%_150mm: {pck_results['PCK@10%_150mm']*100:.2f}%")
+                print(f"PCK@20%_150mm: {pck_results['PCK@20%_150mm']*100:.2f}%")
+                print(f"PCK@30%_150mm: {pck_results['PCK@30%_150mm']*100:.2f}%")
+                print(f"PCK@100%_150mm: {pck_results['PCK@100%_150mm']*100:.2f}%")
+                print(f"Acceleration Error: {acceleration_error:.2f} mm/s^2")
+                print("="*80)
             exit()
 
         print(f"[INFO] epoch {epoch}")
