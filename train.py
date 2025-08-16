@@ -175,7 +175,7 @@ def evaluate(args, model, test_loader, datareader, device):
                   's_09_act_10_subact_02',
                   's_09_act_13_subact_01']
     
-    # Collect data for PCK calculation using ABSOLUTE coordinates (NOT root-relative)
+    # Collect data for PCK calculation using ROOT-RELATIVE coordinates (FIXED)
     pck_pred_frames = []
     pck_gt_frames = []
     
@@ -190,10 +190,13 @@ def evaluate(args, model, test_loader, datareader, device):
         pred = results_all[idx]
         pred *= factor
 
-        # Store ABSOLUTE (denormalized) data for PCK calculation (center frame only)
+        # FIXED: Store ROOT-RELATIVE data for PCK calculation (center frame only)
         center_frame_idx = pred.shape[0] // 2
-        pck_pred_frames.append(pred[center_frame_idx])  # Shape: (17, 3) - ABSOLUTE coords
-        pck_gt_frames.append(gt[center_frame_idx])      # Shape: (17, 3) - ABSOLUTE coords
+        pred_center = pred[center_frame_idx] - pred[center_frame_idx:center_frame_idx+1, 0:1, :]  # Root-relative
+        gt_center = gt[center_frame_idx] - gt[center_frame_idx:center_frame_idx+1, 0:1, :]      # Root-relative
+        
+        pck_pred_frames.append(pred_center)  # Shape: (17, 3) - ROOT-RELATIVE
+        pck_gt_frames.append(gt_center)      # Shape: (17, 3) - ROOT-RELATIVE
 
         # Root-relative Errors (for MPJPE calculation only)
         pred = pred - pred[:, 0:1, :]
@@ -209,17 +212,30 @@ def evaluate(args, model, test_loader, datareader, device):
         e2_all[frame_list] += err2
         oc[frame_list] += 1
     
-    # Calculate PCK using ABSOLUTE coordinates - same logic as train_3dhp.py
+    # Calculate PCK using ROOT-RELATIVE coordinates - FIXED
     if pck_pred_frames:
-        pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3) - ABSOLUTE
-        pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3) - ABSOLUTE
+        pck_pred_frames = np.array(pck_pred_frames)  # Shape: (N, 17, 3) - ROOT-RELATIVE
+        pck_gt_frames = np.array(pck_gt_frames)      # Shape: (N, 17, 3) - ROOT-RELATIVE
+        
+        # Debug: Print coordinate ranges to verify
+        print(f"\n[DEBUG] PCK calculation using ROOT-RELATIVE coordinates:")
+        print(f"  Pred range: X[{np.min(pck_pred_frames[:,:,0]):.1f}, {np.max(pck_pred_frames[:,:,0]):.1f}], "
+              f"Y[{np.min(pck_pred_frames[:,:,1]):.1f}, {np.max(pck_pred_frames[:,:,1]):.1f}], "
+              f"Z[{np.min(pck_pred_frames[:,:,2]):.1f}, {np.max(pck_pred_frames[:,:,2]):.1f}] mm")
+        print(f"  GT range: X[{np.min(pck_gt_frames[:,:,0]):.1f}, {np.max(pck_gt_frames[:,:,0]):.1f}], "
+              f"Y[{np.min(pck_gt_frames[:,:,1]):.1f}, {np.max(pck_gt_frames[:,:,1]):.1f}], "
+              f"Z[{np.min(pck_gt_frames[:,:,2]):.1f}, {np.max(pck_gt_frames[:,:,2]):.1f}] mm")
         
         # Convert to torch tensors for compatibility with train_3dhp.py functions
         pck_pred_tensor = torch.from_numpy(pck_pred_frames).float()
         pck_gt_tensor = torch.from_numpy(pck_gt_frames).float()
         
-        # Calculate torso diameters for PCK using ABSOLUTE coordinates
+        # Calculate torso diameters for PCK using ROOT-RELATIVE coordinates
         torso_diameters = calculate_torso_diameter_h36m(pck_gt_tensor)
+        
+        # Debug: Print torso diameter statistics
+        print(f"  Torso diameters: mean={torch.mean(torso_diameters):.1f}mm, "
+              f"min={torch.min(torso_diameters):.1f}mm, max={torch.max(torso_diameters):.1f}mm")
         
         # Compute PCK using same logic as train_3dhp.py
         batch_pck = compute_pck_h36m(pck_pred_tensor, pck_gt_tensor, torso_diameters, fixed_threshold=150.0)
@@ -230,6 +246,13 @@ def evaluate(args, model, test_loader, datareader, device):
         # Compute AUC using same logic as train_3dhp.py
         auc_avg = compute_auc_h36m(pck_pred_tensor, pck_gt_tensor)
         valid_samples = len(pck_pred_frames)
+        
+        # Debug: Print sample joint errors
+        sample_errors = torch.norm(pck_pred_tensor - pck_gt_tensor, dim=-1)  # (N, 17)
+        print(f"  Sample joint errors: mean={torch.mean(sample_errors):.1f}mm, "
+              f"min={torch.min(sample_errors):.1f}mm, max={torch.max(sample_errors):.1f}mm")
+        print(f"  Percentage within 15mm: {(sample_errors <= 15.0).float().mean()*100:.2f}%")
+        print(f"  Percentage within 150mm: {(sample_errors <= 150.0).float().mean()*100:.2f}%")
     else:
         auc_avg = 0.0
     
