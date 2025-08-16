@@ -311,59 +311,35 @@ def calculate_torso_diameter_h36m(gt_3d, left_shoulder_idx=11, right_shoulder_id
     torso_diameter = (shoulder_dist + hip_dist) / 2.0
     return torso_diameter
 
-def compute_pck_h36m(pred, gt, torso_diameters=None):
-    """
-    Compute PCK metrics for Human3.6M dataset - CORRECTED VERSION
-    
-    PCK@X means: keypoint is correct if distance <= X
-    - PCK@150mm: keypoint correct if distance <= 150mm
-    - PCK@30%_torso: keypoint correct if distance <= 30% * torso_diameter
-    """
-    if isinstance(pred, torch.Tensor):
-        pred = pred.cpu().numpy()
-    if isinstance(gt, torch.Tensor):
-        gt = gt.cpu().numpy()
-    
+def compute_pck_h36m_CORRECTED(pred, gt, torso_diameters=None, fixed_threshold=150.0, pck_thresholds=[0.9, 0.8, 0.7]):
+    """CORRECTED PCK calculation matching utils_3dhp.py"""
     N, J, _ = pred.shape
-    
-    # Initialize PCK results
-    pck_results = {
-        'PCK@150mm': 0.0, 'PCK@100mm': 0.0, 'PCK@50mm': 0.0,
-        'PCK@30%_torso': 0.0, 'PCK@20%_torso': 0.0, 'PCK@10%_torso': 0.0
-    }
-    
-    # Calculate joint errors for all samples
     joint_errors = np.linalg.norm(pred - gt, axis=-1)  # (N, J)
     
-    # Fixed threshold PCK (absolute millimeter values)
-    fixed_thresholds = [150.0, 100.0, 50.0]
-    threshold_names = ['PCK@150mm', 'PCK@100mm', 'PCK@50mm']
+    pck_results = {}
     
-    for thresh, name in zip(fixed_thresholds, threshold_names):
-        correct_keypoints = (joint_errors <= thresh).astype(float)  # (N, J)
-        pck_results[name] = correct_keypoints.mean()  # Mean across all samples and joints
-    
-    # Torso-based PCK (percentage of torso diameter)
+    # Torso-based PCK
     if torso_diameters is not None:
-        torso_percentages = [0.30, 0.20, 0.10]  # 30%, 20%, 10% of torso diameter
-        torso_names = ['PCK@30%_torso', 'PCK@20%_torso', 'PCK@10%_torso']
-        
-        # Initialize counters
-        torso_correct_counts = {name: 0.0 for name in torso_names}
-        total_valid_keypoints = 0
-        
+        for t in pck_thresholds:
+            samples_passed = 0
+            for i in range(N):
+                if torso_diameters[i] > 0:
+                    threshold = 0.1 * torso_diameters[i]  # 10% of torso diameter
+                    correct_joints = (joint_errors[i] <= threshold).astype(float)
+                    joint_accuracy = correct_joints.mean()  # Percentage of joints correct for this sample
+                    if joint_accuracy >= t:  # Does this sample have ≥90% joints correct?
+                        samples_passed += 1
+            pck_results[f'PCK@{int(t*100)}%_torso'] = samples_passed / N
+    
+    # Fixed threshold PCK  
+    for t in pck_thresholds:
+        samples_passed = 0
         for i in range(N):
-            if torso_diameters[i] > 0:
-                for perc, name in zip(torso_percentages, torso_names):
-                    threshold = perc * torso_diameters[i]  # e.g., 30% of torso diameter
-                    correct_keypoints = (joint_errors[i] <= threshold).astype(float)  # (J,)
-                    torso_correct_counts[name] += correct_keypoints.sum()
-                total_valid_keypoints += J  # 17 joints per sample
-        
-        # Calculate final PCK percentages for torso-based metrics
-        if total_valid_keypoints > 0:
-            for name in torso_names:
-                pck_results[name] = torso_correct_counts[name] / total_valid_keypoints
+            correct_joints = (joint_errors[i] <= fixed_threshold).astype(float)
+            joint_accuracy = correct_joints.mean()
+            if joint_accuracy >= t:
+                samples_passed += 1
+        pck_results[f'PCK@{int(t*100)}%_150mm'] = samples_passed / N
     
     return pck_results
 

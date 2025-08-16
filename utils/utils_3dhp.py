@@ -55,19 +55,17 @@ def save_checkpoint(checkpoint_path, epoch, lr, optimizer, model, min_p1, wandb_
     }, os.path.join(checkpoint_path, file_name))
 
 
-
-
-
-def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_hip_idx=8):
+def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_shoulder_idx=2, left_hip_idx=11, right_hip_idx=8):
     """
-    Calculate torso diameter as Euclidean distance between left shoulder and right hip.
-    Returns None if keypoints are invalid (e.g., zeros or NaNs).
+    Calculate torso diameter using shoulder and hip distances (same as MPI-INF-3DHP standard)
     Args:
         gt_3d: Tensor of shape (N, T, J, 3) or (N, J, 3) with 3D ground truth keypoints.
-        left_shoulder_idx: Index of left shoulder joint.
-        right_hip_idx: Index of right hip joint.
+        left_shoulder_idx: Index of left shoulder joint (default: 5)
+        right_shoulder_idx: Index of right shoulder joint (default: 2)  
+        left_hip_idx: Index of left hip joint (default: 11)
+        right_hip_idx: Index of right hip joint (default: 8)
     Returns:
-        torso_diameters: Tensor of shape (N,) with torso diameters, or None for invalid samples.
+        torso_diameters: Tensor of shape (N,) with torso diameters
     """
     if gt_3d.dim() == 4:
         gt_3d = gt_3d[:, 0]  # Take first frame if temporal
@@ -75,64 +73,68 @@ def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_hip_idx=8):
     torso_diameters = torch.zeros(N, device=gt_3d.device)
     
     for i in range(N):
-        ls = gt_3d[i, left_shoulder_idx]  # Left shoulder
-        rh = gt_3d[i, right_hip_idx]      # Right hip
-        # Check if keypoints are valid (non-zero and non-NaN)
-        if (torch.all(ls != 0) and torch.all(rh != 0) and
-            not torch.any(torch.isnan(ls)) and not torch.any(torch.isnan(rh))):
-            distance = torch.norm(ls - rh)
-            torso_diameters[i] = distance
-        else:
-            torso_diameters[i] = 0  # Mark as invalid
+        # Shoulder distance
+        left_shoulder = gt_3d[i, left_shoulder_idx]   # (3,)
+        right_shoulder = gt_3d[i, right_shoulder_idx] # (3,)
+        shoulder_dist = torch.norm(left_shoulder - right_shoulder)
+        
+        # Hip distance  
+        left_hip = gt_3d[i, left_hip_idx]   # (3,)
+        right_hip = gt_3d[i, right_hip_idx] # (3,)
+        hip_dist = torch.norm(left_hip - right_hip)
+        
+        # Average of shoulder and hip distance as torso diameter
+        torso_diameters[i] = (shoulder_dist + hip_dist) / 2.0
+    
     return torso_diameters
 
-def compute_pck(pred, gt, torso_diameters, threshold_factor=0.1, fixed_threshold=None, pck_thresholds=[0.9, 0.8, 0.7]):
+def compute_pck(pred, gt, torso_diameters, fixed_threshold=150.0, pck_thresholds=[0.1, 0.2, 0.3]):
     """
-    Compute PCK at specified thresholds (90%, 80%, 70%) using 1 * torso diameter and/or fixed threshold (e.g., 150 mm).
+    Compute traditional PCK metric: percentage of keypoints within threshold
+    
     Args:
-        pred: Tensor of shape (N, J, 3) with predicted keypoints.
-        gt: Tensor of shape (N, J, 3) with ground truth keypoints.
-        torso_diameters: Tensor of shape (N,) with torso diameters (0 for invalid samples).
-        threshold_factor: Fraction of torso diameter for error threshold (default: 1).
-        fixed_threshold: Fixed threshold in mm (e.g., 150). If None, only torso-based PCK is computed.
-        pck_thresholds: List of PCK thresholds (e.g., [0.9, 0.8, 0.7]).
+        pred: Tensor of shape (N, J, 3) with predicted keypoints
+        gt: Tensor of shape (N, J, 3) with ground truth keypoints  
+        torso_diameters: Tensor of shape (N,) with torso diameters
+        fixed_threshold: Fixed threshold in mm (default: 150mm)
+        pck_thresholds: List of threshold percentages (default: [0.1, 0.2, 0.3] = 10%, 20%, 30%)
+    
     Returns:
-        pck_results: Dict with PCK values for each threshold (torso-based and fixed, if specified).
+        pck_results: Dict with PCK values for each threshold
     """
     N, J, _ = pred.shape
-    pck_results = {f'PCK@{int(t*100)}%_torso': 0.0 for t in pck_thresholds}
-    if fixed_threshold is not None:
-        pck_results.update({f'PCK@{int(t*100)}%_150mm': 0.0 for t in pck_thresholds})
-    valid_samples_torso = 0
-    valid_samples_fixed = N if fixed_threshold is not None else 0
-
-    for i in range(N):
-        errors = torch.norm(pred[i] - gt[i], dim=-1)  # Per-joint Euclidean distance
-        correct_keypoints = torch.zeros(J, device=pred.device)
-
-        # Torso-based PCK (0.1 * torso diameter)
-        if torso_diameters[i] != 0:
-            threshold = threshold_factor * torso_diameters[i]
-            correct_keypoints = (errors <= threshold).float()
-            for t in pck_thresholds:
-                pck = (correct_keypoints.mean() >= t).float()
-                pck_results[f'PCK@{int(t*100)}%_torso'] += pck.item()
-            valid_samples_torso += 1
-
-        # Fixed threshold PCK (150 mm)
-        if fixed_threshold is not None:
-            correct_keypoints = (errors <= fixed_threshold).float()
-            for t in pck_thresholds:
-                pck = (correct_keypoints.mean() >= t).float()
-                pck_results[f'PCK@{int(t*100)}%_150mm'] += pck.item()
-
-    if valid_samples_torso > 0:
-        for t in pck_thresholds:
-            pck_results[f'PCK@{int(t*100)}%_torso'] /= valid_samples_torso
-    if fixed_threshold is not None and valid_samples_fixed > 0:
-        for t in pck_thresholds:
-            pck_results[f'PCK@{int(t*100)}%_150mm'] /= valid_samples_fixed
-
+    joint_errors = torch.norm(pred - gt, dim=-1)  # (N, J) - per-joint distances
+    
+    pck_results = {}
+    
+    # Torso-based PCK: percentage of keypoints within X% of torso diameter
+    for thresh_pct in pck_thresholds:
+        thresh_pct_int = int(thresh_pct * 100)
+        
+        # Calculate threshold for each sample: thresh_pct * torso_diameter
+        thresholds = torso_diameters.unsqueeze(1) * thresh_pct  # (N, 1)
+        
+        # Check which keypoints are within threshold
+        correct_keypoints = (joint_errors <= thresholds).float()  # (N, J)
+        
+        # PCK = percentage of ALL keypoints (across all samples and joints) that are correct
+        pck = correct_keypoints.mean().item()
+        pck_results[f'PCK@{thresh_pct_int}%_torso'] = pck
+    
+    # Fixed threshold PCK: percentage of keypoints within X% of fixed threshold (150mm)
+    for thresh_pct in pck_thresholds:
+        thresh_pct_int = int(thresh_pct * 100)
+        
+        # Calculate threshold: thresh_pct * 150mm (e.g., 10% of 150mm = 15mm)
+        threshold = fixed_threshold * thresh_pct
+        
+        # Check which keypoints are within threshold
+        correct_keypoints = (joint_errors <= threshold).float()  # (N, J)
+        
+        # PCK = percentage of ALL keypoints (across all samples and joints) that are correct
+        pck = correct_keypoints.mean().item()
+        pck_results[f'PCK@{thresh_pct_int}%_150mm'] = pck
+    
     return pck_results
 
 def compute_auc(pred, gt, max_threshold=150, num_steps=50):
@@ -141,7 +143,7 @@ def compute_auc(pred, gt, max_threshold=150, num_steps=50):
     Args:
         pred: Tensor of shape (N, J, 3) with predicted keypoints.
         gt: Tensor of shape (N, J, 3) with ground truth keypoints.
-        max_threshold: Maximum threshold in mm (default: 500).
+        max_threshold: Maximum threshold in mm (default: 150).
         num_steps: Number of threshold steps (default: 50).
     Returns:
         auc: Area under the PCK curve.
@@ -152,12 +154,9 @@ def compute_auc(pred, gt, max_threshold=150, num_steps=50):
     
     for thresh in thresholds:
         correct_keypoints = (torch.norm(pred - gt, dim=-1) <= thresh).float()
-        pck = correct_keypoints.mean(dim=-1).mean().item()
+        pck = correct_keypoints.mean().item()  # Average across all keypoints
         pck_values.append(pck)
     
     auc = np.trapz(pck_values, thresholds) / max_threshold
     return auc
-
-
-
 
