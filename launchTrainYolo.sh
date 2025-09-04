@@ -1,17 +1,20 @@
-# Convert dataset and train with full monitoring
-python train.py --epochs 100 --batch-size 16 --use-wandb
+#!/bin/bash
+#SBATCH --partition=gpu_min8gb
+#SBATCH --qos=gpu_min8gb
+#SBATCH --job-name=YoloTrain
+#SBATCH --output=slurm_%x.%j.out
+#SBATCH --error=slurm_%x.%j.err
 
-# With custom paths
+echo "Starting YOLO training on MPI-INF-3DHP"
+
+cd data/preprocess/Yolov11
+
 python train.py \
     --base-path /nas-ctm01/datasets/public/mpi_inf_3dhp \
     --annotations-path ../../motion3d/data_train_3dhp.npz \
     --epochs 100 \
     --batch-size 16 \
-    --use-wandb \
-    --wandb-project "YOLO_MPI_3DHP_Custom"
-
-# Convert only
-python train.py --convert-only
-
-# Train only (if dataset exists)
-python train.py --train-only --epochs 50 --use-wandb
+    --img-size 640 \
+    --device 0 \
+    --workers 8 \
+    --use-wandb
