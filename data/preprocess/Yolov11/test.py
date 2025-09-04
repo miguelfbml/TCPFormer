@@ -201,7 +201,7 @@ def main():
                        help='Number of images to process')
     parser.add_argument('--output-dir', type=str, default='output',
                        help='Output directory for visualization results')
-    parser.add_argument('--model-path', type=str, default='model/yolov11x-pose.pt',
+    parser.add_argument('--model-path', type=str, default='model/yolo11x-pose.pt',
                        help='Path to YOLO model file')
     parser.add_argument('--confidence', type=float, default=0.5,
                        help='Confidence threshold for keypoint visualization')
