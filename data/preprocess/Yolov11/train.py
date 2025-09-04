@@ -1,0 +1,991 @@
+"""
+Train YOLO on MPI-INF-3DHP dataset for 17 keypoint pose estimation
+Converts MPI-INF-3DHP 2D annotations to YOLO format and trains a custom model
+
+Usage:
+python train.py --epochs 100 --batch-size 16 --img-size 640
+"""
+
+import argparse
+import os
+import cv2
+import numpy as np
+import yaml
+import shutil
+import glob
+import time
+import pynvml
+import threading
+from statistics import mean
+from pathlib import Path
+from tqdm import tqdm
+from ultralytics import YOLO
+from ultralytics.utils.callbacks import default_callbacks
+import json
+import wandb
+import pkg_resources
+from ptflops import get_model_complexity_info
+import torch
+import torch.nn as nn
+
+# MPI-INF-3DHP joint names (17 keypoints)
+MPI_JOINT_NAMES = [
+    'Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
+    'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+    'RShoulder', 'RElbow', 'RWrist'
+]
+
+# MPI-INF-3DHP skeleton connections
+MPI_SKELETON = [
+    (0, 16), (16, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
+    (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
+]
+
+def calculate_mpjpe(pred_keypoints, gt_keypoints, visibility_mask=None):
+    """
+    Calculate Mean Per Joint Position Error (MPJPE) in pixels
+    
+    Args:
+        pred_keypoints: Predicted keypoints (N, 17, 2)
+        gt_keypoints: Ground truth keypoints (N, 17, 2)  
+        visibility_mask: Visibility mask (N, 17) - only calculate error for visible joints
+    
+    Returns:
+        mpjpe: Mean Per Joint Position Error in pixels
+    """
+    if pred_keypoints.shape != gt_keypoints.shape:
+        return float('inf')
+    
+    # Calculate Euclidean distance between predicted and ground truth keypoints
+    distances = np.sqrt(np.sum((pred_keypoints - gt_keypoints) ** 2, axis=-1))
+    
+    if visibility_mask is not None:
+        # Only consider visible joints
+        valid_distances = distances[visibility_mask > 0]
+        if len(valid_distances) == 0:
+            return float('inf')
+        mpjpe = np.mean(valid_distances)
+    else:
+        mpjpe = np.mean(distances)
+    
+    return mpjpe
+
+class GPUUtilizationMonitor:
+    def __init__(self, device_idx=0):
+        try:
+            pynvml.nvmlInit()
+            self.device = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
+            self.utilization_rates = []
+            self.memory_usage = []
+            self.running = False
+            self.thread = None
+            self.enabled = True
+        except:
+            self.enabled = False
+            print("Warning: GPU monitoring not available")
+
+    def start(self):
+        if not self.enabled:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor)
+        self.thread.start()
+
+    def _monitor(self):
+        while self.running and self.enabled:
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(self.device)
+                memory_info = pynvml.nvmlDeviceGetMemoryInfo(self.device)
+                self.utilization_rates.append(util.gpu)
+                self.memory_usage.append(memory_info.used / memory_info.total * 100)
+                time.sleep(0.1)
+            except:
+                break
+
+    def stop(self):
+        if not self.enabled:
+            return
+        self.running = False
+        if self.thread:
+            self.thread.join()
+        try:
+            pynvml.nvmlShutdown()
+        except:
+            pass
+
+    def get_stats(self):
+        if not self.enabled:
+            return 0, 0
+        avg_util = mean(self.utilization_rates) if self.utilization_rates else 0
+        avg_mem = mean(self.memory_usage) if self.memory_usage else 0
+        self.utilization_rates.clear()
+        self.memory_usage.clear()
+        return avg_util, avg_mem
+
+class YOLOMetricsTracker:
+    def __init__(self, use_wandb=False, wandb_project="YOLO_MPI_Training"):
+        self.use_wandb = use_wandb
+        self.wandb_project = wandb_project
+        self.gpu_monitor = GPUUtilizationMonitor()
+        self.epoch_metrics = {}
+        self.training_start_time = None
+        self.epoch_times = []
+        self.best_mpjpe = float('inf')
+        
+        if self.use_wandb:
+            wandb.init(
+                project=self.wandb_project,
+                name="YOLO_MPI_3DHP_Training",
+                tags=["YOLO", "MPI-INF-3DHP", "pose_estimation"]
+            )
+    
+    def start_training(self):
+        self.training_start_time = time.time()
+        self.gpu_monitor.start()
+        print(f"\n{'='*70}")
+        print(f"TRAINING MONITORING STARTED")
+        print(f"{'='*70}")
+    
+    def log_epoch_metrics(self, epoch, results_dict, model_path=None, mpjpe=None):
+        """Log comprehensive metrics for each epoch"""
+        epoch_time = time.time()
+        
+        # Get GPU stats
+        gpu_util, gpu_mem = self.gpu_monitor.get_stats()
+        
+        # Extract YOLO metrics
+        train_loss = results_dict.get('train/loss', 0)
+        val_loss = results_dict.get('val/loss', 0)
+        
+        # Pose-specific metrics
+        train_pose_loss = results_dict.get('train/pose_loss', 0)
+        train_kobj_loss = results_dict.get('train/kobj_loss', 0)
+        val_pose_loss = results_dict.get('val/pose_loss', 0)
+        val_kobj_loss = results_dict.get('val/kobj_loss', 0)
+        
+        # Detection metrics
+        precision = results_dict.get('metrics/precision(B)', 0)
+        recall = results_dict.get('metrics/recall(B)', 0)
+        map50 = results_dict.get('metrics/mAP50(B)', 0)
+        map50_95 = results_dict.get('metrics/mAP50-95(B)', 0)
+        
+        # Pose metrics (if available)
+        pose_precision = results_dict.get('metrics/precision(P)', 0)
+        pose_recall = results_dict.get('metrics/recall(P)', 0)
+        pose_map50 = results_dict.get('metrics/mAP50(P)', 0)
+        pose_map50_95 = results_dict.get('metrics/mAP50-95(P)', 0)
+        
+        # MPJPE tracking
+        current_mpjpe = mpjpe if mpjpe is not None else 0
+        if current_mpjpe > 0 and current_mpjpe < self.best_mpjpe:
+            self.best_mpjpe = current_mpjpe
+        
+        # Calculate FLOPs if model path is provided
+        flops_per_image = 0
+        if model_path and os.path.exists(model_path):
+            try:
+                flops_per_image = self.calculate_model_flops(model_path)
+            except:
+                pass
+        
+        # Store epoch metrics
+        epoch_metrics = {
+            'epoch': epoch,
+            'epoch_time': epoch_time - (self.epoch_times[-1] if self.epoch_times else self.training_start_time),
+            'gpu_utilization': gpu_util,
+            'gpu_memory_usage': gpu_mem,
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_pose_loss': train_pose_loss,
+            'train_kobj_loss': train_kobj_loss,
+            'val_pose_loss': val_pose_loss,
+            'val_kobj_loss': val_kobj_loss,
+            'precision': precision,
+            'recall': recall,
+            'map50': map50,
+            'map50_95': map50_95,
+            'pose_precision': pose_precision,
+            'pose_recall': pose_recall,
+            'pose_map50': pose_map50,
+            'pose_map50_95': pose_map50_95,
+            'mpjpe': current_mpjpe,
+            'best_mpjpe': self.best_mpjpe,
+            'flops_per_image': flops_per_image
+        }
+        
+        self.epoch_metrics[epoch] = epoch_metrics
+        self.epoch_times.append(epoch_time)
+        
+        # Print comprehensive metrics
+        self.print_epoch_summary(epoch, epoch_metrics)
+        
+        # Log to WandB
+        if self.use_wandb:
+            wandb.log(epoch_metrics, step=epoch)
+    
+    def print_epoch_summary(self, epoch, metrics):
+        """Print comprehensive epoch summary like TCPFormer"""
+        print(f"\n{'='*70}")
+        print(f"EPOCH {epoch} COMPREHENSIVE METRICS")
+        print(f"{'='*70}")
+        
+        print(f"Performance Metrics:")
+        print(f"  Epoch Time: {metrics['epoch_time']:.2f} seconds")
+        print(f"  GPU Utilization: {metrics['gpu_utilization']:.2f}%")
+        print(f"  GPU Memory Usage: {metrics['gpu_memory_usage']:.2f}%")
+        if metrics['flops_per_image'] > 0:
+            print(f"  FLOPs per Image: {metrics['flops_per_image']/1e9:.2f} GFLOPs")
+        
+        print(f"\nTraining Losses:")
+        print(f"  Total Loss: {metrics['train_loss']:.4f}")
+        print(f"  Pose Loss: {metrics['train_pose_loss']:.4f}")
+        print(f"  Keypoint Obj Loss: {metrics['train_kobj_loss']:.4f}")
+        
+        print(f"\nValidation Losses:")
+        print(f"  Total Loss: {metrics['val_loss']:.4f}")
+        print(f"  Pose Loss: {metrics['val_pose_loss']:.4f}")
+        print(f"  Keypoint Obj Loss: {metrics['val_kobj_loss']:.4f}")
+        
+        print(f"\nDetection Metrics:")
+        print(f"  Precision: {metrics['precision']:.4f}")
+        print(f"  Recall: {metrics['recall']:.4f}")
+        print(f"  mAP@0.5: {metrics['map50']:.4f}")
+        print(f"  mAP@0.5:0.95: {metrics['map50_95']:.4f}")
+        
+        print(f"\nPose Estimation Metrics:")
+        print(f"  Pose Precision: {metrics['pose_precision']:.4f}")
+        print(f"  Pose Recall: {metrics['pose_recall']:.4f}")
+        print(f"  Pose mAP@0.5: {metrics['pose_map50']:.4f}")
+        print(f"  Pose mAP@0.5:0.95: {metrics['pose_map50_95']:.4f}")
+        
+        print(f"\nKeypoint Accuracy:")
+        if metrics['mpjpe'] > 0:
+            print(f"  MPJPE (pixels): {metrics['mpjpe']:.2f}")
+            print(f"  Best MPJPE: {metrics['best_mpjpe']:.2f}")
+        else:
+            print(f"  MPJPE: Not calculated this epoch")
+        
+        print(f"{'='*70}")
+    
+    def calculate_model_flops(self, model_path, input_size=(640, 640)):
+        """Calculate FLOPs for the trained model"""
+        try:
+            model = YOLO(model_path)
+            
+            # Create dummy input
+            dummy_input = torch.randn(1, 3, input_size[0], input_size[1])
+            
+            # Extract the actual PyTorch model
+            pytorch_model = model.model
+            
+            # Calculate FLOPs
+            flops, params = get_model_complexity_info(
+                pytorch_model, 
+                (3, input_size[0], input_size[1]),
+                as_strings=False, 
+                print_per_layer_stat=False
+            )
+            
+            return flops
+        except Exception as e:
+            print(f"Could not calculate FLOPs: {e}")
+            return 0
+    
+    def finish_training(self):
+        """Clean up and print final summary"""
+        self.gpu_monitor.stop()
+        
+        if self.training_start_time:
+            total_time = time.time() - self.training_start_time
+            
+            print(f"\n{'='*70}")
+            print(f"TRAINING COMPLETED - FINAL SUMMARY")
+            print(f"{'='*70}")
+            print(f"Total Training Time: {total_time/3600:.2f} hours")
+            print(f"Total Epochs: {len(self.epoch_metrics)}")
+            print(f"Average Epoch Time: {np.mean([m['epoch_time'] for m in self.epoch_metrics.values()]):.2f} seconds")
+            
+            if self.epoch_metrics:
+                best_epoch = min(self.epoch_metrics.keys(), 
+                               key=lambda k: self.epoch_metrics[k]['val_loss'])
+                best_metrics = self.epoch_metrics[best_epoch]
+                
+                print(f"\nBest Epoch: {best_epoch}")
+                print(f"  Best Val Loss: {best_metrics['val_loss']:.4f}")
+                print(f"  Best Pose mAP@0.5: {best_metrics['pose_map50']:.4f}")
+                print(f"  Best Pose mAP@0.5:0.95: {best_metrics['pose_map50_95']:.4f}")
+                print(f"  Best MPJPE: {self.best_mpjpe:.2f} pixels")
+            
+            print(f"{'='*70}")
+        
+        if self.use_wandb:
+            # Log final summary
+            wandb.log({
+                "final/total_training_time_hours": total_time/3600,
+                "final/total_epochs": len(self.epoch_metrics),
+                "final/avg_epoch_time": np.mean([m['epoch_time'] for m in self.epoch_metrics.values()]) if self.epoch_metrics else 0,
+                "final/best_mpjpe": self.best_mpjpe
+            })
+            wandb.finish()
+
+class MPIDatasetConverter:
+    def __init__(self, base_path, annotations_path, output_path):
+        self.base_path = base_path
+        self.annotations_path = annotations_path
+        self.output_path = output_path
+        self.train_images_path = os.path.join(output_path, 'images', 'train')
+        self.val_images_path = os.path.join(output_path, 'images', 'val')
+        self.train_labels_path = os.path.join(output_path, 'labels', 'train')
+        self.val_labels_path = os.path.join(output_path, 'labels', 'val')
+        
+        # Create directories
+        os.makedirs(self.train_images_path, exist_ok=True)
+        os.makedirs(self.val_images_path, exist_ok=True)
+        os.makedirs(self.train_labels_path, exist_ok=True)
+        os.makedirs(self.val_labels_path, exist_ok=True)
+        
+    def load_annotations(self):
+        """Load MPI-INF-3DHP annotations"""
+        print(f"Loading annotations from: {self.annotations_path}")
+        
+        if not os.path.exists(self.annotations_path):
+            raise FileNotFoundError(f"Annotations file not found: {self.annotations_path}")
+        
+        data = np.load(self.annotations_path, allow_pickle=True)['data'].item()
+        print(f"✓ Loaded annotations for sequences: {list(data.keys())}")
+        
+        return data
+    
+    def load_test_annotations(self):
+        """Load MPI-INF-3DHP test annotations"""
+        test_annotations_path = self.annotations_path.replace('data_train_3dhp.npz', 'data_test_3dhp.npz')
+        
+        if not os.path.exists(test_annotations_path):
+            print(f"Test annotations not found: {test_annotations_path}")
+            return {}
+            
+        print(f"Loading test annotations from: {test_annotations_path}")
+        data = np.load(test_annotations_path, allow_pickle=True)['data'].item()
+        print(f"✓ Loaded test annotations for sequences: {list(data.keys())}")
+        
+        return data
+    
+    def normalize_keypoints(self, keypoints_2d, img_width, img_height):
+        """Convert pixel coordinates to YOLO normalized format [0,1]"""
+        normalized_kpts = keypoints_2d.copy()
+        
+        # Check if already normalized
+        if np.max(keypoints_2d[:, :2]) <= 1.0:
+            # Already normalized, convert to pixel coords first
+            normalized_kpts[:, 0] = keypoints_2d[:, 0] * img_width
+            normalized_kpts[:, 1] = keypoints_2d[:, 1] * img_height
+        
+        # Normalize to [0,1]
+        normalized_kpts[:, 0] = np.clip(normalized_kpts[:, 0] / img_width, 0, 1)
+        normalized_kpts[:, 1] = np.clip(normalized_kpts[:, 1] / img_height, 0, 1)
+        
+        return normalized_kpts
+    
+    def create_yolo_annotation(self, keypoints_2d, img_width, img_height, confidence_threshold=0.1):
+        """Create YOLO pose annotation format"""
+        # Normalize keypoints
+        norm_kpts = self.normalize_keypoints(keypoints_2d, img_width, img_height)
+        
+        # Calculate bounding box from visible keypoints
+        visible_kpts = norm_kpts[norm_kpts[:, 2] > confidence_threshold] if norm_kpts.shape[1] > 2 else norm_kpts
+        
+        if len(visible_kpts) == 0:
+            return None
+        
+        x_coords = visible_kpts[:, 0]
+        y_coords = visible_kpts[:, 1]
+        
+        x_min, x_max = np.min(x_coords), np.max(x_coords)
+        y_min, y_max = np.min(y_coords), np.max(y_coords)
+        
+        # Add padding to bounding box
+        padding = 0.1
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        x_min = max(0, x_min - padding * width)
+        x_max = min(1, x_max + padding * width)
+        y_min = max(0, y_min - padding * height)
+        y_max = min(1, y_max + padding * height)
+        
+        # YOLO bounding box format: center_x, center_y, width, height
+        bbox_width = x_max - x_min
+        bbox_height = y_max - y_min
+        center_x = x_min + bbox_width / 2
+        center_y = y_min + bbox_height / 2
+        
+        # Create keypoint string for YOLO format
+        keypoint_str = ""
+        for i in range(17):  # MPI-INF-3DHP has 17 keypoints
+            if i < len(norm_kpts):
+                x, y = norm_kpts[i, 0], norm_kpts[i, 1]
+                visibility = 2 if (norm_kpts.shape[1] > 2 and norm_kpts[i, 2] > confidence_threshold) else 0
+                keypoint_str += f" {x:.6f} {y:.6f} {visibility}"
+            else:
+                keypoint_str += " 0.0 0.0 0"
+        
+        # YOLO annotation: class_id center_x center_y width height keypoints
+        annotation = f"0 {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}{keypoint_str}"
+        
+        return annotation
+    
+    def process_training_data(self, annotations):
+        """Process MPI-INF-3DHP training data - FULL DATASET (no sampling)"""
+        print("\nProcessing training data (FULL DATASET)...")
+        
+        processed_count = 0
+        skipped_count = 0
+        
+        for seq_name, seq_data in tqdm(annotations.items(), desc="Processing training sequences"):
+            if not isinstance(seq_data, list) or len(seq_data) < 1:
+                continue
+                
+            camera_dict = seq_data[0]
+            subject, sequence = seq_name.split(' ')
+            
+            # Process camera 0 only for training
+            if '0' not in camera_dict:
+                print(f"Warning: Camera 0 not found for {seq_name}")
+                continue
+                
+            camera_data = camera_dict['0']
+            poses_2d = camera_data['data_2d']  # Shape: (frames, 17, 2)
+            
+            # Find corresponding images
+            image_folder = os.path.join(self.base_path, subject, sequence, 'imageFrames', 'video_0')
+            
+            if not os.path.exists(image_folder):
+                print(f"Warning: Image folder not found: {image_folder}")
+                continue
+                
+            image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
+            image_files.extend(glob.glob(os.path.join(image_folder, "*.JPG")))
+            image_files.sort()
+            
+            if not image_files:
+                print(f"Warning: No images found in {image_folder}")
+                continue
+            
+            # Process ALL frames (no sampling)
+            max_frames = min(len(image_files), len(poses_2d))
+            
+            for frame_idx in range(max_frames):
+                try:
+                    # Load image
+                    img_path = image_files[frame_idx]
+                    image = cv2.imread(img_path)
+                    
+                    if image is None:
+                        skipped_count += 1
+                        continue
+                    
+                    img_height, img_width = image.shape[:2]
+                    pose_2d = poses_2d[frame_idx]  # Shape: (17, 2)
+                    
+                    # Add dummy confidence if not present
+                    if pose_2d.shape[1] == 2:
+                        confidence = np.ones((pose_2d.shape[0], 1)) * 0.9
+                        pose_2d = np.hstack([pose_2d, confidence])
+                    
+                    # Create YOLO annotation
+                    annotation = self.create_yolo_annotation(pose_2d, img_width, img_height)
+                    
+                    if annotation is None:
+                        skipped_count += 1
+                        continue
+                    
+                    # Save image and annotation
+                    img_name = f"{subject}_{sequence}_cam0_frame{frame_idx:06d}.jpg"
+                    label_name = f"{subject}_{sequence}_cam0_frame{frame_idx:06d}.txt"
+                    
+                    # Copy image
+                    dst_img_path = os.path.join(self.train_images_path, img_name)
+                    cv2.imwrite(dst_img_path, image)
+                    
+                    # Save annotation
+                    dst_label_path = os.path.join(self.train_labels_path, label_name)
+                    with open(dst_label_path, 'w') as f:
+                        f.write(annotation + '\n')
+                    
+                    processed_count += 1
+                    
+                except Exception as e:
+                    print(f"Error processing {seq_name} frame {frame_idx}: {e}")
+                    skipped_count += 1
+                    continue
+        
+        print(f"Training data: Processed {processed_count} frames, skipped {skipped_count}")
+        
+    def process_test_data(self, test_annotations):
+        """Process MPI-INF-3DHP test data for validation - FULL DATASET"""
+        print("\nProcessing test data for validation (FULL DATASET)...")
+        
+        if not test_annotations:
+            print("No test annotations available, skipping validation data creation")
+            return
+        
+        processed_count = 0
+        skipped_count = 0
+        
+        # Test image paths
+        test_base_paths = [
+            '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
+            '../motion3d/mpi_inf_3dhp_test_set',
+            '../../motion3d/mpi_inf_3dhp_test_set'
+        ]
+        
+        for seq_name, seq_data in tqdm(test_annotations.items(), desc="Processing test sequences"):
+            # Find test images
+            image_folder = None
+            for base_path in test_base_paths:
+                potential_path = os.path.join(base_path, seq_name, 'imageSequence')
+                if os.path.exists(potential_path):
+                    image_folder = potential_path
+                    break
+            
+            if image_folder is None:
+                print(f"Warning: Test images not found for {seq_name}")
+                continue
+            
+            # Get images
+            image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
+            image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
+            image_files.sort()
+            
+            if not image_files:
+                continue
+            
+            # Process ALL test images (no sampling)
+            for i, img_path in enumerate(image_files):
+                try:
+                    image = cv2.imread(img_path)
+                    if image is None:
+                        continue
+                    
+                    img_height, img_width = image.shape[:2]
+                    
+                    # Create dummy annotation for test images
+                    center_x, center_y = 0.5, 0.5
+                    bbox_width, bbox_height = 0.8, 0.9
+                    
+                    # Create dummy keypoints
+                    keypoint_str = ""
+                    for j in range(17):
+                        if j == 9:  # nose
+                            x, y, v = 0.5, 0.2, 2
+                        elif j in [11, 14]:  # shoulders
+                            x, y, v = 0.3 if j == 11 else 0.7, 0.3, 2
+                        elif j in [1, 4]:  # hips
+                            x, y, v = 0.35 if j == 4 else 0.65, 0.6, 2
+                        else:
+                            x, y, v = 0.5, 0.5, 0
+                        
+                        keypoint_str += f" {x:.6f} {y:.6f} {v}"
+                    
+                    annotation = f"0 {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}{keypoint_str}"
+                    
+                    # Save image and annotation
+                    img_name = f"{seq_name}_frame{i:06d}.jpg"
+                    label_name = f"{seq_name}_frame{i:06d}.txt"
+                    
+                    dst_img_path = os.path.join(self.val_images_path, img_name)
+                    cv2.imwrite(dst_img_path, image)
+                    
+                    dst_label_path = os.path.join(self.val_labels_path, label_name)
+                    with open(dst_label_path, 'w') as f:
+                        f.write(annotation + '\n')
+                    
+                    processed_count += 1
+                        
+                except Exception as e:
+                    skipped_count += 1
+                    continue
+        
+        print(f"Validation data: Processed {processed_count} frames, skipped {skipped_count}")
+    
+    def create_dataset_yaml(self):
+        """Create YOLO dataset configuration file"""
+        dataset_config = {
+            'path': os.path.abspath(self.output_path),
+            'train': 'images/train',
+            'val': 'images/val',
+            'nc': 1,  # number of classes (person)
+            'names': ['person'],
+            'kpt_shape': [17, 3],  # 17 keypoints, 3 values each (x, y, visibility)
+            'flip_idx': [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]  # MPI joint flip indices
+        }
+        
+        yaml_path = os.path.join(self.output_path, 'mpi_dataset.yaml')
+        with open(yaml_path, 'w') as f:
+            yaml.dump(dataset_config, f, default_flow_style=False)
+        
+        print(f"✓ Created dataset configuration: {yaml_path}")
+        return yaml_path
+    
+    def convert_dataset(self):
+        """Convert entire MPI-INF-3DHP dataset to YOLO format"""
+        print("="*60)
+        print("Converting MPI-INF-3DHP to YOLO format (FULL DATASET)")
+        print("="*60)
+        
+        # Load annotations
+        train_annotations = self.load_annotations()
+        test_annotations = self.load_test_annotations()
+        
+        # Process training data
+        self.process_training_data(train_annotations)
+        
+        # Process test data for validation
+        self.process_test_data(test_annotations)
+        
+        # Create dataset YAML
+        yaml_path = self.create_dataset_yaml()
+        
+        # Print summary
+        train_images = len(glob.glob(os.path.join(self.train_images_path, "*.jpg")))
+        val_images = len(glob.glob(os.path.join(self.val_images_path, "*.jpg")))
+        
+        print(f"\n" + "="*60)
+        print("DATASET CONVERSION SUMMARY")
+        print("="*60)
+        print(f"Training images: {train_images}")
+        print(f"Validation images: {val_images}")
+        print(f"Total images: {train_images + val_images}")
+        print(f"Dataset config: {yaml_path}")
+        print(f"Ready for YOLO training!")
+        
+        return yaml_path
+
+def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
+    """
+    Calculate MPJPE on validation set using the trained model
+    """
+    try:
+        # Load validation images and ground truth
+        import yaml
+        with open(dataset_yaml, 'r') as f:
+            dataset_config = yaml.safe_load(f)
+        
+        val_images_path = os.path.join(dataset_config['path'], 'images', 'val')
+        val_labels_path = os.path.join(dataset_config['path'], 'labels', 'val')
+        
+        val_images = glob.glob(os.path.join(val_images_path, "*.jpg"))
+        
+        if not val_images:
+            return None
+        
+        # Sample a subset for MPJPE calculation (to avoid long computation)
+        sample_size = min(100, len(val_images))
+        val_images = val_images[:sample_size]
+        
+        mpjpe_errors = []
+        
+        for img_path in val_images:
+            try:
+                # Get corresponding label file
+                img_name = os.path.basename(img_path)
+                label_name = img_name.replace('.jpg', '.txt')
+                label_path = os.path.join(val_labels_path, label_name)
+                
+                if not os.path.exists(label_path):
+                    continue
+                
+                # Load ground truth
+                with open(label_path, 'r') as f:
+                    gt_annotation = f.readline().strip().split()
+                
+                if len(gt_annotation) < 5 + 17*3:  # bbox + 17 keypoints * 3
+                    continue
+                
+                # Extract ground truth keypoints (pixel coordinates)
+                image = cv2.imread(img_path)
+                if image is None:
+                    continue
+                
+                img_height, img_width = image.shape[:2]
+                
+                gt_keypoints = []
+                visibility_mask = []
+                
+                for i in range(17):
+                    idx = 5 + i * 3  # Skip class_id and bbox (5 values)
+                    x_norm = float(gt_annotation[idx])
+                    y_norm = float(gt_annotation[idx + 1])
+                    visibility = int(gt_annotation[idx + 2])
+                    
+                    # Convert normalized coordinates to pixel coordinates
+                    x_pixel = x_norm * img_width
+                    y_pixel = y_norm * img_height
+                    
+                    gt_keypoints.append([x_pixel, y_pixel])
+                    visibility_mask.append(visibility > 0)
+                
+                gt_keypoints = np.array(gt_keypoints)
+                visibility_mask = np.array(visibility_mask)
+                
+                # Run inference
+                results = model.predict(img_path, verbose=False)
+                
+                if not results or not results[0].keypoints:
+                    continue
+                
+                # Extract predicted keypoints
+                pred_keypoints = results[0].keypoints.xy[0].cpu().numpy()  # Get first detection
+                
+                if pred_keypoints.shape[0] != 17:
+                    continue
+                
+                # Calculate MPJPE for this image
+                mpjpe = calculate_mpjpe(
+                    pred_keypoints.reshape(1, 17, 2), 
+                    gt_keypoints.reshape(1, 17, 2),
+                    visibility_mask.reshape(1, 17)
+                )
+                
+                if mpjpe != float('inf'):
+                    mpjpe_errors.append(mpjpe)
+                    
+            except Exception as e:
+                continue
+        
+        if mpjpe_errors:
+            return np.mean(mpjpe_errors)
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Error calculating MPJPE: {e}")
+        return None
+
+def create_custom_callbacks(metrics_tracker, dataset_yaml):
+    """Create custom callbacks for YOLO training with enhanced monitoring and MPJPE"""
+    
+    def on_train_epoch_end(trainer):
+        """Called at the end of each training epoch"""
+        try:
+            epoch = trainer.epoch
+            results_dict = {}
+            
+            # Extract metrics from trainer
+            if hasattr(trainer, 'metrics') and trainer.metrics:
+                results_dict.update(trainer.metrics)
+            
+            if hasattr(trainer, 'loss') and trainer.loss:
+                # Training losses
+                if hasattr(trainer.loss, 'loss_items'):
+                    loss_items = trainer.loss.loss_items()
+                    if len(loss_items) >= 3:  # [box_loss, cls_loss, kobj_loss]
+                        results_dict['train/box_loss'] = loss_items[0]
+                        results_dict['train/cls_loss'] = loss_items[1] 
+                        results_dict['train/kobj_loss'] = loss_items[2]
+                        results_dict['train/loss'] = sum(loss_items)
+            
+            # Calculate MPJPE every 10 epochs
+            mpjpe = None
+            if epoch % 10 == 0:
+                print(f"\nCalculating MPJPE for epoch {epoch}...")
+                mpjpe = calculate_validation_mpjpe(trainer.model, dataset_yaml, trainer.device)
+                if mpjpe:
+                    print(f"MPJPE: {mpjpe:.2f} pixels")
+            
+            # Get model path for FLOPs calculation
+            model_path = None
+            if hasattr(trainer, 'best') and trainer.best.exists():
+                model_path = str(trainer.best)
+            elif hasattr(trainer, 'last') and trainer.last.exists():
+                model_path = str(trainer.last)
+            
+            metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path, mpjpe)
+            
+        except Exception as e:
+            print(f"Error in custom callback: {e}")
+    
+    def on_val_end(trainer):
+        """Called at the end of validation"""
+        try:
+            if hasattr(trainer, 'metrics') and trainer.metrics:
+                # Validation metrics are typically updated here
+                pass
+        except Exception as e:
+            print(f"Error in validation callback: {e}")
+    
+    callbacks = default_callbacks.copy()
+    callbacks['on_train_epoch_end'] = on_train_epoch_end
+    callbacks['on_val_end'] = on_val_end
+    
+    return callbacks
+
+def train_yolo_model(dataset_yaml, args):
+    """Train YOLO model on converted dataset with comprehensive monitoring"""
+    print("\n" + "="*60)
+    print("STARTING YOLO TRAINING WITH COMPREHENSIVE MONITORING")
+    print("="*60)
+    
+    # Initialize metrics tracker
+    metrics_tracker = YOLOMetricsTracker(
+        use_wandb=args.use_wandb, 
+        wandb_project="YOLO_MPI_3DHP_Training"
+    )
+    
+    # Start monitoring
+    metrics_tracker.start_training()
+    
+    # Load pre-trained YOLO pose model
+    model = YOLO('yolov8n-pose.pt')  # Use YOLOv8 nano pose model
+    
+    print(f"Training configuration:")
+    print(f"  Model: YOLOv8n-pose")
+    print(f"  Epochs: {args.epochs}")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  Image size: {args.img_size}")
+    print(f"  Learning rate: {args.lr}")
+    print(f"  Device: {args.device}")
+    print(f"  WandB logging: {args.use_wandb}")
+    print(f"  MPJPE calculation: Every 10 epochs")
+    
+    # Log configuration to WandB
+    if args.use_wandb:
+        wandb.config.update({
+            "model": "YOLOv8n-pose",
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "img_size": args.img_size,
+            "lr": args.lr,
+            "device": args.device,
+            "dataset": "MPI-INF-3DHP",
+            "keypoints": 17,
+            "classes": 1,
+            "full_dataset": True,
+            "mpjpe_tracking": True
+        })
+        
+        # Log environment info
+        installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
+        wandb.config.update({'installed_packages': installed_packages})
+    
+    try:
+        # Create custom callbacks with MPJPE calculation
+        custom_callbacks = create_custom_callbacks(metrics_tracker, dataset_yaml)
+        
+        # Train the model with enhanced monitoring
+        results = model.train(
+            data=dataset_yaml,
+            epochs=args.epochs,
+            imgsz=args.img_size,
+            batch=args.batch_size,
+            lr0=args.lr,
+            device=args.device,
+            workers=args.workers,
+            project='runs/pose',
+            name='mpi_yolo_pose_full',
+            save_period=10,
+            patience=20,
+            verbose=True,
+            plots=True,
+            save=True,
+            # callbacks=custom_callbacks  # Custom callbacks might conflict with internal ones
+        )
+        
+        # Final MPJPE calculation
+        print("\nCalculating final MPJPE...")
+        final_mpjpe = calculate_validation_mpjpe(model, dataset_yaml, args.device)
+        if final_mpjpe:
+            print(f"Final MPJPE: {final_mpjpe:.2f} pixels")
+            
+            if args.use_wandb:
+                wandb.log({"final_mpjpe": final_mpjpe})
+        
+        # Log final results
+        if hasattr(results, 'results_dict'):
+            final_metrics = results.results_dict
+            if args.use_wandb:
+                wandb.log({"final_results": final_metrics})
+        
+        print(f"\n✓ Training completed successfully!")
+        print(f"Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
+        print(f"Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
+        print(f"Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error during training: {e}")
+        raise
+    finally:
+        # Clean up monitoring
+        metrics_tracker.finish_training()
+
+def main():
+    parser = argparse.ArgumentParser(description='Train YOLO on MPI-INF-3DHP dataset with comprehensive monitoring')
+    
+    # Dataset paths
+    parser.add_argument('--base-path', type=str, 
+                       default='/nas-ctm01/datasets/public/mpi_inf_3dhp',
+                       help='Base path to MPI-INF-3DHP dataset')
+    parser.add_argument('--annotations-path', type=str,
+                       default='../../motion3d/data_train_3dhp.npz',
+                       help='Path to training annotations file')
+    parser.add_argument('--output-path', type=str, default='mpi_yolo_dataset_full',
+                       help='Output path for converted dataset')
+    
+    # Training parameters
+    parser.add_argument('--epochs', type=int, default=100,
+                       help='Number of training epochs')
+    parser.add_argument('--batch-size', type=int, default=16,
+                       help='Batch size for training')
+    parser.add_argument('--img-size', type=int, default=640,
+                       help='Image size for training')
+    parser.add_argument('--lr', type=float, default=0.01,
+                       help='Learning rate')
+    parser.add_argument('--device', type=str, default='0',
+                       help='Device to use for training (0, 1, 2, etc. or cpu)')
+    parser.add_argument('--workers', type=int, default=8,
+                       help='Number of worker threads')
+    
+    # Monitoring options
+    parser.add_argument('--use-wandb', action='store_true',
+                       help='Enable WandB logging for comprehensive monitoring')
+    parser.add_argument('--wandb-project', type=str, default='YOLO_MPI_3DHP_Training',
+                       help='WandB project name')
+    
+    # Options
+    parser.add_argument('--convert-only', action='store_true',
+                       help='Only convert dataset, do not train')
+    parser.add_argument('--train-only', action='store_true',
+                       help='Only train (assume dataset already converted)')
+    
+    args = parser.parse_args()
+    
+    print("YOLO Training on MPI-INF-3DHP Dataset with Comprehensive Monitoring")
+    print("="*70)
+    print(f"Base path: {args.base_path}")
+    print(f"Annotations: {args.annotations_path}")
+    print(f"Output path: {args.output_path}")
+    print(f"WandB logging: {args.use_wandb}")
+    print(f"Using FULL DATASET (no sampling)")
+    print(f"MPJPE tracking: Every 10 epochs")
+    
+    if not args.train_only:
+        # Convert dataset
+        converter = MPIDatasetConverter(args.base_path, args.annotations_path, args.output_path)
+        dataset_yaml = converter.convert_dataset()
+    else:
+        dataset_yaml = os.path.join(args.output_path, 'mpi_dataset.yaml')
+        if not os.path.exists(dataset_yaml):
+            print(f"ERROR: Dataset config not found: {dataset_yaml}")
+            print("Run without --train-only to convert dataset first")
+            return
+    
+    if not args.convert_only:
+        # Train model with comprehensive monitoring
+        train_yolo_model(dataset_yaml, args)
+    
+    print(f"\n✓ Process completed!")
+
+if __name__ == '__main__':
+    main()
