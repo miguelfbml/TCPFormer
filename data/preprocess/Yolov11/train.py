@@ -338,11 +338,60 @@ class MPIDatasetConverter:
         self.train_labels_path = os.path.join(output_path, 'labels', 'train')
         self.val_labels_path = os.path.join(output_path, 'labels', 'val')
         
-        # Create directories
+        # Create directories with proper permissions
+        print(f"Creating dataset structure in: {output_path}")
         os.makedirs(self.train_images_path, exist_ok=True)
         os.makedirs(self.val_images_path, exist_ok=True)
         os.makedirs(self.train_labels_path, exist_ok=True)
         os.makedirs(self.val_labels_path, exist_ok=True)
+        
+        # Verify directories were created successfully
+        for path in [self.train_images_path, self.val_images_path, self.train_labels_path, self.val_labels_path]:
+            if not os.path.exists(path):
+                raise OSError(f"Failed to create directory: {path}")
+        
+        print(f"✓ Dataset directories created successfully")
+    
+    def is_dataset_processed(self):
+        """Check if dataset is already processed"""
+        # Check if yaml config exists
+        yaml_path = os.path.join(self.output_path, 'mpi_dataset.yaml')
+        if not os.path.exists(yaml_path):
+            return False, "YAML config not found"
+        
+        # Check if directories exist and have files
+        train_images = glob.glob(os.path.join(self.train_images_path, "*.jpg"))
+        train_labels = glob.glob(os.path.join(self.train_labels_path, "*.txt"))
+        val_images = glob.glob(os.path.join(self.val_images_path, "*.jpg"))
+        val_labels = glob.glob(os.path.join(self.val_labels_path, "*.txt"))
+        
+        if len(train_images) == 0:
+            return False, "No training images found"
+        if len(train_labels) == 0:
+            return False, "No training labels found"
+        if len(train_images) != len(train_labels):
+            return False, f"Mismatch: {len(train_images)} images vs {len(train_labels)} labels"
+        
+        # Check for reasonable dataset size (should have at least 1000 training samples)
+        if len(train_images) < 1000:
+            return False, f"Dataset too small: only {len(train_images)} training samples"
+        
+        return True, f"Dataset found: {len(train_images)} train, {len(val_images)} val images"
+    
+    def get_processing_summary(self):
+        """Get summary of processed dataset"""
+        train_images = len(glob.glob(os.path.join(self.train_images_path, "*.jpg")))
+        train_labels = len(glob.glob(os.path.join(self.train_labels_path, "*.txt")))
+        val_images = len(glob.glob(os.path.join(self.val_images_path, "*.jpg")))
+        val_labels = len(glob.glob(os.path.join(self.val_labels_path, "*.txt")))
+        
+        return {
+            'train_images': train_images,
+            'train_labels': train_labels,
+            'val_images': val_images,
+            'val_labels': val_labels,
+            'total_images': train_images + val_images
+        }
         
     def load_annotations(self):
         """Load MPI-INF-3DHP annotations"""
@@ -435,13 +484,24 @@ class MPIDatasetConverter:
         return annotation
     
     def process_training_data(self, annotations):
-        """Process MPI-INF-3DHP training data - FULL DATASET (no sampling)"""
-        print("\nProcessing training data (FULL DATASET)...")
+        """Process MPI-INF-3DHP training data with optimized sampling"""
+        print("\nProcessing training data (optimized sampling)...")
         
         processed_count = 0
         skipped_count = 0
+        total_sequences = len(annotations)
         
-        for seq_name, seq_data in tqdm(annotations.items(), desc="Processing training sequences"):
+        # Sampling parameters to avoid excessive processing time
+        MAX_FRAMES_PER_SEQUENCE = 500  # Limit frames per sequence
+        FRAME_STEP = 2  # Sample every 2nd frame
+        
+        print(f"Dataset processing configuration:")
+        print(f"  Max frames per sequence: {MAX_FRAMES_PER_SEQUENCE}")
+        print(f"  Frame sampling step: {FRAME_STEP}")
+        print(f"  Total sequences to process: {total_sequences}")
+        print(f"  Output directory: {self.train_images_path}")
+        
+        for seq_idx, (seq_name, seq_data) in enumerate(tqdm(annotations.items(), desc="Processing training sequences")):
             if not isinstance(seq_data, list) or len(seq_data) < 1:
                 continue
                 
@@ -471,17 +531,21 @@ class MPIDatasetConverter:
                 print(f"Warning: No images found in {image_folder}")
                 continue
             
-            # Process ALL frames (no sampling)
-            max_frames = min(len(image_files), len(poses_2d))
+            # Calculate frame range with sampling
+            max_frames = min(len(image_files), len(poses_2d), MAX_FRAMES_PER_SEQUENCE)
+            frame_indices = range(0, max_frames, FRAME_STEP)
             
-            for frame_idx in range(max_frames):
+            seq_processed = 0
+            seq_skipped = 0
+            
+            for frame_idx in frame_indices:
                 try:
                     # Load image
                     img_path = image_files[frame_idx]
                     image = cv2.imread(img_path)
                     
                     if image is None:
-                        skipped_count += 1
+                        seq_skipped += 1
                         continue
                     
                     img_height, img_width = image.shape[:2]
@@ -496,7 +560,7 @@ class MPIDatasetConverter:
                     annotation = self.create_yolo_annotation(pose_2d, img_width, img_height)
                     
                     if annotation is None:
-                        skipped_count += 1
+                        seq_skipped += 1
                         continue
                     
                     # Save image and annotation
@@ -512,18 +576,23 @@ class MPIDatasetConverter:
                     with open(dst_label_path, 'w') as f:
                         f.write(annotation + '\n')
                     
+                    seq_processed += 1
                     processed_count += 1
                     
                 except Exception as e:
                     print(f"Error processing {seq_name} frame {frame_idx}: {e}")
+                    seq_skipped += 1
                     skipped_count += 1
                     continue
         
-        print(f"Training data: Processed {processed_count} frames, skipped {skipped_count}")
+        print(f"\nTraining data summary:")
+        print(f"  Total processed: {processed_count} frames")
+        print(f"  Total skipped: {skipped_count} frames")
+        print(f"  Processing efficiency: {processed_count/(processed_count+skipped_count)*100:.1f}%")
         
     def process_test_data(self, test_annotations):
-        """Process MPI-INF-3DHP test data for validation - FULL DATASET"""
-        print("\nProcessing test data for validation (FULL DATASET)...")
+        """Process MPI-INF-3DHP test data for validation with optimized sampling"""
+        print("\nProcessing test data for validation (optimized sampling)...")
         
         if not test_annotations:
             print("No test annotations available, skipping validation data creation")
@@ -532,6 +601,15 @@ class MPIDatasetConverter:
         processed_count = 0
         skipped_count = 0
         
+        # Sampling for test data
+        MAX_IMAGES_PER_SEQUENCE = 100  # Limit images per test sequence
+        IMAGE_STEP = 5  # Sample every 5th image
+        
+        print(f"Validation processing configuration:")
+        print(f"  Max images per sequence: {MAX_IMAGES_PER_SEQUENCE}")
+        print(f"  Image sampling step: {IMAGE_STEP}")
+        print(f"  Output directory: {self.val_images_path}")
+        
         # Test image paths
         test_base_paths = [
             '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
@@ -539,7 +617,9 @@ class MPIDatasetConverter:
             '../../motion3d/mpi_inf_3dhp_test_set'
         ]
         
-        for seq_name, seq_data in tqdm(test_annotations.items(), desc="Processing test sequences"):
+        total_test_seqs = len(test_annotations)
+        
+        for seq_idx, (seq_name, seq_data) in enumerate(tqdm(test_annotations.items(), desc="Processing test sequences")):
             # Find test images
             image_folder = None
             for base_path in test_base_paths:
@@ -560,9 +640,15 @@ class MPIDatasetConverter:
             if not image_files:
                 continue
             
-            # Process ALL test images (no sampling)
-            for i, img_path in enumerate(image_files):
+            # Sample images
+            max_images = min(len(image_files), MAX_IMAGES_PER_SEQUENCE)
+            image_indices = range(0, max_images, IMAGE_STEP)
+            
+            seq_processed = 0
+            
+            for img_idx in image_indices:
                 try:
+                    img_path = image_files[img_idx]
                     image = cv2.imread(img_path)
                     if image is None:
                         continue
@@ -590,8 +676,8 @@ class MPIDatasetConverter:
                     annotation = f"0 {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}{keypoint_str}"
                     
                     # Save image and annotation
-                    img_name = f"{seq_name}_frame{i:06d}.jpg"
-                    label_name = f"{seq_name}_frame{i:06d}.txt"
+                    img_name = f"{seq_name}_frame{img_idx:06d}.jpg"
+                    label_name = f"{seq_name}_frame{img_idx:06d}.txt"
                     
                     dst_img_path = os.path.join(self.val_images_path, img_name)
                     cv2.imwrite(dst_img_path, image)
@@ -600,13 +686,16 @@ class MPIDatasetConverter:
                     with open(dst_label_path, 'w') as f:
                         f.write(annotation + '\n')
                     
+                    seq_processed += 1
                     processed_count += 1
                         
                 except Exception as e:
                     skipped_count += 1
                     continue
         
-        print(f"Validation data: Processed {processed_count} frames, skipped {skipped_count}")
+        print(f"\nValidation data summary:")
+        print(f"  Total processed: {processed_count} images")
+        print(f"  Total skipped: {skipped_count} images")
     
     def create_dataset_yaml(self):
         """Create YOLO dataset configuration file"""
@@ -621,17 +710,54 @@ class MPIDatasetConverter:
         }
         
         yaml_path = os.path.join(self.output_path, 'mpi_dataset.yaml')
+        
+        print(f"Creating YOLO dataset configuration...")
+        print(f"  Config path: {yaml_path}")
+        print(f"  Dataset path: {os.path.abspath(self.output_path)}")
+        
         with open(yaml_path, 'w') as f:
             yaml.dump(dataset_config, f, default_flow_style=False)
         
         print(f"✓ Created dataset configuration: {yaml_path}")
         return yaml_path
     
-    def convert_dataset(self):
-        """Convert entire MPI-INF-3DHP dataset to YOLO format"""
+    def convert_dataset(self, force_reprocess=False):
+        """Convert MPI-INF-3DHP dataset to YOLO format with caching"""
         print("="*60)
-        print("Converting MPI-INF-3DHP to YOLO format (FULL DATASET)")
+        print("Converting MPI-INF-3DHP to YOLO format")
         print("="*60)
+        print(f"Target directory: {self.output_path}")
+        
+        # Check available space
+        import shutil
+        total, used, free = shutil.disk_usage(self.output_path)
+        print(f"Available space: {free // (1024**3)} GB")
+        
+        # Check if already processed
+        if not force_reprocess:
+            is_processed, status_msg = self.is_dataset_processed()
+            if is_processed:
+                print(f"✓ Dataset already processed: {status_msg}")
+                
+                # Print existing dataset summary
+                summary = self.get_processing_summary()
+                print(f"\nExisting dataset summary:")
+                print(f"  Training images: {summary['train_images']}")
+                print(f"  Training labels: {summary['train_labels']}")
+                print(f"  Validation images: {summary['val_images']}")
+                print(f"  Validation labels: {summary['val_labels']}")
+                print(f"  Total images: {summary['total_images']}")
+                
+                yaml_path = os.path.join(self.output_path, 'mpi_dataset.yaml')
+                print(f"  Dataset config: {yaml_path}")
+                print(f"✓ Skipping conversion, using existing dataset!")
+                return yaml_path
+            else:
+                print(f"⚠ Dataset needs processing: {status_msg}")
+        else:
+            print("🔄 Force reprocessing requested, will overwrite existing data")
+        
+        start_time = time.time()
         
         # Load annotations
         train_annotations = self.load_annotations()
@@ -647,16 +773,20 @@ class MPIDatasetConverter:
         yaml_path = self.create_dataset_yaml()
         
         # Print summary
-        train_images = len(glob.glob(os.path.join(self.train_images_path, "*.jpg")))
-        val_images = len(glob.glob(os.path.join(self.val_images_path, "*.jpg")))
+        summary = self.get_processing_summary()
+        conversion_time = time.time() - start_time
         
         print(f"\n" + "="*60)
-        print("DATASET CONVERSION SUMMARY")
+        print("DATASET CONVERSION COMPLETED")
         print("="*60)
-        print(f"Training images: {train_images}")
-        print(f"Validation images: {val_images}")
-        print(f"Total images: {train_images + val_images}")
+        print(f"Training images: {summary['train_images']}")
+        print(f"Training labels: {summary['train_labels']}")
+        print(f"Validation images: {summary['val_images']}")
+        print(f"Validation labels: {summary['val_labels']}")
+        print(f"Total images: {summary['total_images']}")
+        print(f"Conversion time: {conversion_time/60:.1f} minutes")
         print(f"Dataset config: {yaml_path}")
+        print(f"Dataset location: {self.output_path}")
         print(f"Ready for YOLO training!")
         
         return yaml_path
@@ -860,7 +990,7 @@ def train_yolo_model(dataset_yaml, args):
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
             "classes": 1,
-            "full_dataset": True,
+            "optimized_sampling": True,
             "mpjpe_tracking": True
         })
         
@@ -882,7 +1012,7 @@ def train_yolo_model(dataset_yaml, args):
             device=args.device,
             workers=args.workers,
             project='runs/pose',
-            name='mpi_yolo_pose_full',
+            name='mpi_yolo_pose_optimized',
             save_period=10,
             patience=20,
             verbose=True,
@@ -907,9 +1037,9 @@ def train_yolo_model(dataset_yaml, args):
                 wandb.log({"final_results": final_metrics})
         
         print(f"\n✓ Training completed successfully!")
-        print(f"Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
-        print(f"Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
-        print(f"Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
+        print(f"Model saved to: runs/pose/mpi_yolo_pose_optimized/weights/")
+        print(f"Best model: runs/pose/mpi_yolo_pose_optimized/weights/best.pt")
+        print(f"Last model: runs/pose/mpi_yolo_pose_optimized/weights/last.pt")
         
         return results
         
@@ -930,8 +1060,9 @@ def main():
     parser.add_argument('--annotations-path', type=str,
                        default='../../motion3d/data_train_3dhp.npz',
                        help='Path to training annotations file')
-    parser.add_argument('--output-path', type=str, default='mpi_yolo_dataset_full',
-                       help='Output path for converted dataset')
+    parser.add_argument('--output-path', type=str, 
+                       default='/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo',
+                       help='Output path for converted dataset (with more space)')
     
     # Training parameters
     parser.add_argument('--epochs', type=int, default=100,
@@ -953,11 +1084,13 @@ def main():
     parser.add_argument('--wandb-project', type=str, default='YOLO_MPI_3DHP_Training',
                        help='WandB project name')
     
-    # Options
+    # Processing options
     parser.add_argument('--convert-only', action='store_true',
                        help='Only convert dataset, do not train')
     parser.add_argument('--train-only', action='store_true',
                        help='Only train (assume dataset already converted)')
+    parser.add_argument('--force-reprocess', action='store_true',
+                       help='Force reprocessing even if dataset exists')
     
     args = parser.parse_args()
     
@@ -967,19 +1100,32 @@ def main():
     print(f"Annotations: {args.annotations_path}")
     print(f"Output path: {args.output_path}")
     print(f"WandB logging: {args.use_wandb}")
-    print(f"Using FULL DATASET (no sampling)")
+    print(f"Force reprocess: {args.force_reprocess}")
     print(f"MPJPE tracking: Every 10 epochs")
+    print(f"Using optimized sampling for faster processing")
+    
+    # Check if output directory exists and create if needed
+    if not os.path.exists(args.output_path):
+        print(f"Creating output directory: {args.output_path}")
+        os.makedirs(args.output_path, exist_ok=True)
+    
+    # Check available space
+    import shutil
+    total, used, free = shutil.disk_usage(args.output_path)
+    print(f"Available space in {args.output_path}: {free // (1024**3)} GB")
     
     if not args.train_only:
-        # Convert dataset
+        # Convert dataset (with caching)
         converter = MPIDatasetConverter(args.base_path, args.annotations_path, args.output_path)
-        dataset_yaml = converter.convert_dataset()
+        dataset_yaml = converter.convert_dataset(force_reprocess=args.force_reprocess)
     else:
         dataset_yaml = os.path.join(args.output_path, 'mpi_dataset.yaml')
         if not os.path.exists(dataset_yaml):
             print(f"ERROR: Dataset config not found: {dataset_yaml}")
             print("Run without --train-only to convert dataset first")
             return
+        else:
+            print(f"✓ Using existing dataset: {dataset_yaml}")
     
     if not args.convert_only:
         # Train model with comprehensive monitoring
