@@ -944,11 +944,27 @@ def train_yolo_model(dataset_yaml, args):
     # Start monitoring
     metrics_tracker.start_training()
     
-    # Load pre-trained YOLO pose model
-    model = YOLO('yolov8n-pose.pt')  # Use YOLOv8 nano pose model
+    # Load YOLOv11x-pose model from local folder
+    model_path = 'model/yolo11x-pose.pt'
+    
+    # Check if the model file exists
+    if not os.path.exists(model_path):
+        print(f"❌ Error: Model file not found at {model_path}")
+        print(f"📁 Current directory: {os.getcwd()}")
+        print(f"🔍 Looking for model in: {os.path.abspath(model_path)}")
+        
+        # Fallback to YOLOv8n-pose if YOLOv11x not found
+        print(f"⚠️ Falling back to YOLOv8n-pose...")
+        model = YOLO('yolov8n-pose.pt')
+        model_name = "YOLOv8n-pose (fallback)"
+    else:
+        print(f"✅ Loading YOLOv11x-pose from: {os.path.abspath(model_path)}")
+        model = YOLO(model_path)
+        model_name = "YOLOv11x-pose"
     
     print(f"Training configuration:")
-    print(f"  Model: YOLOv8n-pose")
+    print(f"  Model: {model_name}")
+    print(f"  Model path: {model_path}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Image size: {args.img_size}")
@@ -960,7 +976,8 @@ def train_yolo_model(dataset_yaml, args):
     # Log configuration to WandB
     if args.use_wandb:
         wandb.config.update({
-            "model": "YOLOv8n-pose",
+            "model": model_name,
+            "model_path": model_path,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "img_size": args.img_size,
@@ -1016,14 +1033,14 @@ def train_yolo_model(dataset_yaml, args):
                         wandb.log({"mpjpe": mpjpe, "epoch": epoch})
             
             # Get model path for FLOPs calculation
-            model_path = None
+            model_path_for_flops = None
             if hasattr(trainer, 'best') and trainer.best and trainer.best.exists():
-                model_path = str(trainer.best)
+                model_path_for_flops = str(trainer.best)
             elif hasattr(trainer, 'last') and trainer.last and trainer.last.exists():
-                model_path = str(trainer.last)
+                model_path_for_flops = str(trainer.last)
             
             # Log comprehensive metrics
-            metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path, mpjpe)
+            metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path_for_flops, mpjpe)
             
         except Exception as e:
             print(f"⚠ Error in epoch callback: {e}")
@@ -1048,7 +1065,7 @@ def train_yolo_model(dataset_yaml, args):
     model.add_callback("on_val_end", on_val_end)
     
     try:
-        print("\n🚀 Starting YOLO training...")
+        print(f"\n🚀 Starting YOLO training with {model_name}...")
         
         # Train the model with enhanced monitoring
         results = model.train(
@@ -1060,7 +1077,7 @@ def train_yolo_model(dataset_yaml, args):
             device=args.device,
             workers=args.workers,
             project='runs/pose',
-            name='mpi_yolo_pose_full',
+            name='mpi_yolo11x_pose_full',  # Updated name for YOLOv11x
             save_period=10,
             patience=20,
             verbose=True,
@@ -1084,9 +1101,9 @@ def train_yolo_model(dataset_yaml, args):
                 wandb.log({"final_results": final_metrics})
         
         print(f"\n✅ Training completed successfully!")
-        print(f"📁 Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
-        print(f"🏆 Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
-        print(f"📋 Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
+        print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_full/weights/")
+        print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_full/weights/best.pt")
+        print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_full/weights/last.pt")
         
         return results
         
