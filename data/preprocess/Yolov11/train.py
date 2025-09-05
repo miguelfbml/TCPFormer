@@ -4,6 +4,15 @@ Converts MPI-INF-3DHP 2D annotations to YOLO format and trains a custom model
 
 Usage:
 python train.py --epochs 100 --batch-size 16 --img-size 640
+
+# First run - will convert if needed
+python train.py --epochs 100 --batch-size 16
+
+# Subsequent runs - will use existing annotations
+python train.py --train-only --epochs 100 --batch-size 16
+
+# Force regeneration if annotations are corrupted
+python train.py --force-reprocess --epochs 100 --batch-size 16
 """
 
 import argparse
