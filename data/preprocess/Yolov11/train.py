@@ -484,20 +484,14 @@ class MPIDatasetConverter:
         return annotation
     
     def process_training_data(self, annotations):
-        """Process MPI-INF-3DHP training data with optimized sampling"""
-        print("\nProcessing training data (optimized sampling)...")
+        """Process MPI-INF-3DHP training data (FULL DATASET)"""
+        print("\nProcessing training data (FULL DATASET)...")
         
         processed_count = 0
         skipped_count = 0
         total_sequences = len(annotations)
         
-        # Sampling parameters to avoid excessive processing time
-        MAX_FRAMES_PER_SEQUENCE = 500  # Limit frames per sequence
-        FRAME_STEP = 2  # Sample every 2nd frame
-        
-        print(f"Dataset processing configuration:")
-        print(f"  Max frames per sequence: {MAX_FRAMES_PER_SEQUENCE}")
-        print(f"  Frame sampling step: {FRAME_STEP}")
+        print(f"Training data: Processing all sequences and all frames")
         print(f"  Total sequences to process: {total_sequences}")
         print(f"  Output directory: {self.train_images_path}")
         
@@ -531,14 +525,13 @@ class MPIDatasetConverter:
                 print(f"Warning: No images found in {image_folder}")
                 continue
             
-            # Calculate frame range with sampling
-            max_frames = min(len(image_files), len(poses_2d), MAX_FRAMES_PER_SEQUENCE)
-            frame_indices = range(0, max_frames, FRAME_STEP)
+            # Process ALL frames (no sampling)
+            max_frames = min(len(image_files), len(poses_2d))
             
             seq_processed = 0
             seq_skipped = 0
             
-            for frame_idx in frame_indices:
+            for frame_idx in range(max_frames):
                 try:
                     # Load image
                     img_path = image_files[frame_idx]
@@ -585,14 +578,11 @@ class MPIDatasetConverter:
                     skipped_count += 1
                     continue
         
-        print(f"\nTraining data summary:")
-        print(f"  Total processed: {processed_count} frames")
-        print(f"  Total skipped: {skipped_count} frames")
-        print(f"  Processing efficiency: {processed_count/(processed_count+skipped_count)*100:.1f}%")
+        print(f"\nTraining data: Processed {processed_count} frames, skipped {skipped_count}")
         
     def process_test_data(self, test_annotations):
-        """Process MPI-INF-3DHP test data for validation with optimized sampling"""
-        print("\nProcessing test data for validation (optimized sampling)...")
+        """Process MPI-INF-3DHP test data for validation (FULL DATASET)"""
+        print("\nProcessing test data for validation (FULL DATASET)...")
         
         if not test_annotations:
             print("No test annotations available, skipping validation data creation")
@@ -601,13 +591,7 @@ class MPIDatasetConverter:
         processed_count = 0
         skipped_count = 0
         
-        # Sampling for test data
-        MAX_IMAGES_PER_SEQUENCE = 100  # Limit images per test sequence
-        IMAGE_STEP = 5  # Sample every 5th image
-        
-        print(f"Validation processing configuration:")
-        print(f"  Max images per sequence: {MAX_IMAGES_PER_SEQUENCE}")
-        print(f"  Image sampling step: {IMAGE_STEP}")
+        print(f"Validation data: Processing all test sequences and all frames")
         print(f"  Output directory: {self.val_images_path}")
         
         # Test image paths
@@ -632,7 +616,7 @@ class MPIDatasetConverter:
                 print(f"Warning: Test images not found for {seq_name}")
                 continue
             
-            # Get images
+            # Get ALL images (no sampling)
             image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
             image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
             image_files.sort()
@@ -640,13 +624,9 @@ class MPIDatasetConverter:
             if not image_files:
                 continue
             
-            # Sample images
-            max_images = min(len(image_files), MAX_IMAGES_PER_SEQUENCE)
-            image_indices = range(0, max_images, IMAGE_STEP)
-            
             seq_processed = 0
             
-            for img_idx in image_indices:
+            for img_idx in range(len(image_files)):
                 try:
                     img_path = image_files[img_idx]
                     image = cv2.imread(img_path)
@@ -693,9 +673,7 @@ class MPIDatasetConverter:
                     skipped_count += 1
                     continue
         
-        print(f"\nValidation data summary:")
-        print(f"  Total processed: {processed_count} images")
-        print(f"  Total skipped: {skipped_count} images")
+        print(f"\nValidation data: Processed {processed_count} frames, skipped {skipped_count}")
     
     def create_dataset_yaml(self):
         """Create YOLO dataset configuration file"""
@@ -990,7 +968,7 @@ def train_yolo_model(dataset_yaml, args):
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
             "classes": 1,
-            "optimized_sampling": True,
+            "optimized_sampling": False,  # Full dataset processing
             "mpjpe_tracking": True
         })
         
@@ -1012,7 +990,7 @@ def train_yolo_model(dataset_yaml, args):
             device=args.device,
             workers=args.workers,
             project='runs/pose',
-            name='mpi_yolo_pose_optimized',
+            name='mpi_yolo_pose_full',
             save_period=10,
             patience=20,
             verbose=True,
@@ -1037,9 +1015,9 @@ def train_yolo_model(dataset_yaml, args):
                 wandb.log({"final_results": final_metrics})
         
         print(f"\n✓ Training completed successfully!")
-        print(f"Model saved to: runs/pose/mpi_yolo_pose_optimized/weights/")
-        print(f"Best model: runs/pose/mpi_yolo_pose_optimized/weights/best.pt")
-        print(f"Last model: runs/pose/mpi_yolo_pose_optimized/weights/last.pt")
+        print(f"Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
+        print(f"Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
+        print(f"Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
         
         return results
         
@@ -1102,7 +1080,7 @@ def main():
     print(f"WandB logging: {args.use_wandb}")
     print(f"Force reprocess: {args.force_reprocess}")
     print(f"MPJPE tracking: Every 10 epochs")
-    print(f"Using optimized sampling for faster processing")
+    print(f"Processing: FULL DATASET (no sampling)")
     
     # Check if output directory exists and create if needed
     if not os.path.exists(args.output_path):
