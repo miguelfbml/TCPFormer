@@ -147,33 +147,64 @@ class YOLOMetricsTracker:
         print(f"{'='*70}")
     
     def log_epoch_metrics(self, epoch, results_dict, model_path=None, mpjpe=None):
-        """Log comprehensive metrics for each epoch"""
+        """Log comprehensive metrics for each epoch with enhanced metric extraction"""
         epoch_time = time.time()
         
         # Get GPU stats
         gpu_util, gpu_mem = self.gpu_monitor.get_stats()
         
-        # Extract YOLO metrics
-        train_loss = results_dict.get('train/loss', 0)
-        val_loss = results_dict.get('val/loss', 0)
+        # Enhanced metric extraction from YOLO results
+        train_loss = 0
+        val_loss = 0
         
-        # Pose-specific metrics
-        train_pose_loss = results_dict.get('train/pose_loss', 0)
+        # Try multiple ways to extract training loss
+        if 'train/loss' in results_dict:
+            train_loss = results_dict['train/loss']
+        elif hasattr(results_dict, 'box_loss'):
+            train_loss = results_dict.box_loss + getattr(results_dict, 'cls_loss', 0) + getattr(results_dict, 'dfl_loss', 0)
+        elif 'loss' in results_dict:
+            train_loss = results_dict['loss']
+        
+        # Try multiple ways to extract validation loss
+        if 'val/loss' in results_dict:
+            val_loss = results_dict['val/loss']
+        elif 'metrics/loss' in results_dict:
+            val_loss = results_dict['metrics/loss']
+        elif hasattr(results_dict, 'val_loss'):
+            val_loss = results_dict.val_loss
+        
+        # Pose-specific metrics with better extraction
+        train_pose_loss = results_dict.get('train/pose_loss', results_dict.get('train/kobj_loss', 0))
         train_kobj_loss = results_dict.get('train/kobj_loss', 0)
-        val_pose_loss = results_dict.get('val/pose_loss', 0)
+        val_pose_loss = results_dict.get('val/pose_loss', results_dict.get('val/kobj_loss', 0))
         val_kobj_loss = results_dict.get('val/kobj_loss', 0)
         
-        # Detection metrics
-        precision = results_dict.get('metrics/precision(B)', 0)
-        recall = results_dict.get('metrics/recall(B)', 0)
-        map50 = results_dict.get('metrics/mAP50(B)', 0)
-        map50_95 = results_dict.get('metrics/mAP50-95(B)', 0)
+        # Detection metrics with multiple fallbacks
+        precision = (results_dict.get('metrics/precision(B)', 0) or 
+                    results_dict.get('precision', 0) or 
+                    results_dict.get('metrics/precision', 0))
+        
+        recall = (results_dict.get('metrics/recall(B)', 0) or 
+                 results_dict.get('recall', 0) or 
+                 results_dict.get('metrics/recall', 0))
+        
+        map50 = (results_dict.get('metrics/mAP50(B)', 0) or 
+                results_dict.get('map50', 0) or 
+                results_dict.get('metrics/mAP50', 0))
+        
+        map50_95 = (results_dict.get('metrics/mAP50-95(B)', 0) or 
+                   results_dict.get('map50_95', 0) or 
+                   results_dict.get('metrics/mAP50-95', 0))
         
         # Pose metrics (if available)
-        pose_precision = results_dict.get('metrics/precision(P)', 0)
-        pose_recall = results_dict.get('metrics/recall(P)', 0)
-        pose_map50 = results_dict.get('metrics/mAP50(P)', 0)
-        pose_map50_95 = results_dict.get('metrics/mAP50-95(P)', 0)
+        pose_precision = (results_dict.get('metrics/precision(P)', 0) or 
+                         results_dict.get('pose_precision', 0))
+        pose_recall = (results_dict.get('metrics/recall(P)', 0) or 
+                      results_dict.get('pose_recall', 0))
+        pose_map50 = (results_dict.get('metrics/mAP50(P)', 0) or 
+                     results_dict.get('pose_map50', 0))
+        pose_map50_95 = (results_dict.get('metrics/mAP50-95(P)', 0) or 
+                        results_dict.get('pose_map50_95', 0))
         
         # MPJPE tracking
         current_mpjpe = mpjpe if mpjpe is not None else 0
@@ -194,20 +225,20 @@ class YOLOMetricsTracker:
             'epoch_time': epoch_time - (self.epoch_times[-1] if self.epoch_times else self.training_start_time),
             'gpu_utilization': gpu_util,
             'gpu_memory_usage': gpu_mem,
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_pose_loss': train_pose_loss,
-            'train_kobj_loss': train_kobj_loss,
-            'val_pose_loss': val_pose_loss,
-            'val_kobj_loss': val_kobj_loss,
-            'precision': precision,
-            'recall': recall,
-            'map50': map50,
-            'map50_95': map50_95,
-            'pose_precision': pose_precision,
-            'pose_recall': pose_recall,
-            'pose_map50': pose_map50,
-            'pose_map50_95': pose_map50_95,
+            'train/loss': train_loss,
+            'val/loss': val_loss,
+            'train/pose_loss': train_pose_loss,
+            'train/kobj_loss': train_kobj_loss,
+            'val/pose_loss': val_pose_loss,
+            'val/kobj_loss': val_kobj_loss,
+            'metrics/precision': precision,
+            'metrics/recall': recall,
+            'metrics/mAP50': map50,
+            'metrics/mAP50-95': map50_95,
+            'metrics/pose_precision': pose_precision,
+            'metrics/pose_recall': pose_recall,
+            'metrics/pose_mAP50': pose_map50,
+            'metrics/pose_mAP50-95': pose_map50_95,
             'mpjpe': current_mpjpe,
             'best_mpjpe': self.best_mpjpe,
             'flops_per_image': flops_per_image
@@ -219,9 +250,13 @@ class YOLOMetricsTracker:
         # Print comprehensive metrics
         self.print_epoch_summary(epoch, epoch_metrics)
         
-        # Log to WandB
+        # Log to WandB immediately
         if self.use_wandb:
-            wandb.log(epoch_metrics, step=epoch)
+            try:
+                wandb.log(epoch_metrics, step=epoch)
+                print(f"✓ Logged metrics to WandB for epoch {epoch}")
+            except Exception as e:
+                print(f"⚠ Failed to log to WandB: {e}")
     
     def print_epoch_summary(self, epoch, metrics):
         """Print comprehensive epoch summary like TCPFormer"""
@@ -237,26 +272,26 @@ class YOLOMetricsTracker:
             print(f"  FLOPs per Image: {metrics['flops_per_image']/1e9:.2f} GFLOPs")
         
         print(f"\nTraining Losses:")
-        print(f"  Total Loss: {metrics['train_loss']:.4f}")
-        print(f"  Pose Loss: {metrics['train_pose_loss']:.4f}")
-        print(f"  Keypoint Obj Loss: {metrics['train_kobj_loss']:.4f}")
+        print(f"  Total Loss: {metrics['train/loss']:.4f}")
+        print(f"  Pose Loss: {metrics['train/pose_loss']:.4f}")
+        print(f"  Keypoint Obj Loss: {metrics['train/kobj_loss']:.4f}")
         
         print(f"\nValidation Losses:")
-        print(f"  Total Loss: {metrics['val_loss']:.4f}")
-        print(f"  Pose Loss: {metrics['val_pose_loss']:.4f}")
-        print(f"  Keypoint Obj Loss: {metrics['val_kobj_loss']:.4f}")
+        print(f"  Total Loss: {metrics['val/loss']:.4f}")
+        print(f"  Pose Loss: {metrics['val/pose_loss']:.4f}")
+        print(f"  Keypoint Obj Loss: {metrics['val/kobj_loss']:.4f}")
         
         print(f"\nDetection Metrics:")
-        print(f"  Precision: {metrics['precision']:.4f}")
-        print(f"  Recall: {metrics['recall']:.4f}")
-        print(f"  mAP@0.5: {metrics['map50']:.4f}")
-        print(f"  mAP@0.5:0.95: {metrics['map50_95']:.4f}")
+        print(f"  Precision: {metrics['metrics/precision']:.4f}")
+        print(f"  Recall: {metrics['metrics/recall']:.4f}")
+        print(f"  mAP@0.5: {metrics['metrics/mAP50']:.4f}")
+        print(f"  mAP@0.5:0.95: {metrics['metrics/mAP50-95']:.4f}")
         
         print(f"\nPose Estimation Metrics:")
-        print(f"  Pose Precision: {metrics['pose_precision']:.4f}")
-        print(f"  Pose Recall: {metrics['pose_recall']:.4f}")
-        print(f"  Pose mAP@0.5: {metrics['pose_map50']:.4f}")
-        print(f"  Pose mAP@0.5:0.95: {metrics['pose_map50_95']:.4f}")
+        print(f"  Pose Precision: {metrics['metrics/pose_precision']:.4f}")
+        print(f"  Pose Recall: {metrics['metrics/pose_recall']:.4f}")
+        print(f"  Pose mAP@0.5: {metrics['metrics/pose_mAP50']:.4f}")
+        print(f"  Pose mAP@0.5:0.95: {metrics['metrics/pose_mAP50-95']:.4f}")
         
         print(f"\nKeypoint Accuracy:")
         if metrics['mpjpe'] > 0:
@@ -307,25 +342,27 @@ class YOLOMetricsTracker:
             
             if self.epoch_metrics:
                 best_epoch = min(self.epoch_metrics.keys(), 
-                               key=lambda k: self.epoch_metrics[k]['val_loss'])
+                               key=lambda k: self.epoch_metrics[k]['val/loss'] if self.epoch_metrics[k]['val/loss'] > 0 else float('inf'))
                 best_metrics = self.epoch_metrics[best_epoch]
                 
                 print(f"\nBest Epoch: {best_epoch}")
-                print(f"  Best Val Loss: {best_metrics['val_loss']:.4f}")
-                print(f"  Best Pose mAP@0.5: {best_metrics['pose_map50']:.4f}")
-                print(f"  Best Pose mAP@0.5:0.95: {best_metrics['pose_map50_95']:.4f}")
+                print(f"  Best Val Loss: {best_metrics['val/loss']:.4f}")
+                print(f"  Best Pose mAP@0.5: {best_metrics['metrics/pose_mAP50']:.4f}")
+                print(f"  Best Pose mAP@0.5:0.95: {best_metrics['metrics/pose_mAP50-95']:.4f}")
                 print(f"  Best MPJPE: {self.best_mpjpe:.2f} pixels")
             
             print(f"{'='*70}")
         
         if self.use_wandb:
             # Log final summary
-            wandb.log({
+            final_summary = {
                 "final/total_training_time_hours": total_time/3600,
                 "final/total_epochs": len(self.epoch_metrics),
                 "final/avg_epoch_time": np.mean([m['epoch_time'] for m in self.epoch_metrics.values()]) if self.epoch_metrics else 0,
                 "final/best_mpjpe": self.best_mpjpe
-            })
+            }
+            wandb.log(final_summary)
+            print("✓ Final summary logged to WandB")
             wandb.finish()
 
 class MPIDatasetConverter:
@@ -771,9 +808,11 @@ class MPIDatasetConverter:
 
 def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
     """
-    Calculate MPJPE on validation set using the trained model
+    Enhanced MPJPE calculation on validation set using the trained model
     """
     try:
+        print("📊 Starting MPJPE calculation...")
+        
         # Load validation images and ground truth
         import yaml
         with open(dataset_yaml, 'r') as f:
@@ -785,15 +824,19 @@ def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
         val_images = glob.glob(os.path.join(val_images_path, "*.jpg"))
         
         if not val_images:
+            print("⚠ No validation images found for MPJPE calculation")
             return None
         
-        # Sample a subset for MPJPE calculation (to avoid long computation)
-        sample_size = min(100, len(val_images))
-        val_images = val_images[:sample_size]
+        # Sample a subset for MPJPE calculation
+        sample_size = min(50, len(val_images))  # Reduced for faster calculation
+        val_images = np.random.choice(val_images, sample_size, replace=False) if len(val_images) > sample_size else val_images
         
         mpjpe_errors = []
+        valid_predictions = 0
         
-        for img_path in val_images:
+        print(f"📊 Calculating MPJPE on {len(val_images)} validation images...")
+        
+        for i, img_path in enumerate(val_images):
             try:
                 # Get corresponding label file
                 img_name = os.path.basename(img_path)
@@ -820,8 +863,8 @@ def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
                 gt_keypoints = []
                 visibility_mask = []
                 
-                for i in range(17):
-                    idx = 5 + i * 3  # Skip class_id and bbox (5 values)
+                for j in range(17):
+                    idx = 5 + j * 3  # Skip class_id and bbox (5 values)
                     x_norm = float(gt_annotation[idx])
                     y_norm = float(gt_annotation[idx + 1])
                     visibility = int(gt_annotation[idx + 2])
@@ -836,13 +879,20 @@ def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
                 gt_keypoints = np.array(gt_keypoints)
                 visibility_mask = np.array(visibility_mask)
                 
-                # Run inference
-                results = model.predict(img_path, verbose=False)
+                # Skip if no visible keypoints
+                if not np.any(visibility_mask):
+                    continue
                 
-                if not results or not results[0].keypoints:
+                # Run inference
+                results = model.predict(img_path, verbose=False, imgsz=640)
+                
+                if not results or not hasattr(results[0], 'keypoints') or results[0].keypoints is None:
                     continue
                 
                 # Extract predicted keypoints
+                if len(results[0].keypoints.xy) == 0:
+                    continue
+                    
                 pred_keypoints = results[0].keypoints.xy[0].cpu().numpy()  # Get first detection
                 
                 if pred_keypoints.shape[0] != 17:
@@ -855,81 +905,32 @@ def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
                     visibility_mask.reshape(1, 17)
                 )
                 
-                if mpjpe != float('inf'):
+                if mpjpe != float('inf') and mpjpe < 1000:  # Sanity check
                     mpjpe_errors.append(mpjpe)
+                    valid_predictions += 1
+                
+                # Progress indicator
+                if i % 10 == 0:
+                    print(f"  Processed {i+1}/{len(val_images)} images...")
                     
             except Exception as e:
+                print(f"  Error processing image {img_name}: {e}")
                 continue
         
         if mpjpe_errors:
-            return np.mean(mpjpe_errors)
+            final_mpjpe = np.mean(mpjpe_errors)
+            print(f"✓ MPJPE calculated: {final_mpjpe:.2f} pixels (from {valid_predictions} valid predictions)")
+            return final_mpjpe
         else:
+            print("⚠ No valid MPJPE calculations possible")
             return None
             
     except Exception as e:
-        print(f"Error calculating MPJPE: {e}")
+        print(f"❌ Error calculating MPJPE: {e}")
         return None
 
-def create_custom_callbacks(metrics_tracker, dataset_yaml):
-    """Create custom callbacks for YOLO training with enhanced monitoring and MPJPE"""
-    
-    def on_train_epoch_end(trainer):
-        """Called at the end of each training epoch"""
-        try:
-            epoch = trainer.epoch
-            results_dict = {}
-            
-            # Extract metrics from trainer
-            if hasattr(trainer, 'metrics') and trainer.metrics:
-                results_dict.update(trainer.metrics)
-            
-            if hasattr(trainer, 'loss') and trainer.loss:
-                # Training losses
-                if hasattr(trainer.loss, 'loss_items'):
-                    loss_items = trainer.loss.loss_items()
-                    if len(loss_items) >= 3:  # [box_loss, cls_loss, kobj_loss]
-                        results_dict['train/box_loss'] = loss_items[0]
-                        results_dict['train/cls_loss'] = loss_items[1] 
-                        results_dict['train/kobj_loss'] = loss_items[2]
-                        results_dict['train/loss'] = sum(loss_items)
-            
-            # Calculate MPJPE every 10 epochs
-            mpjpe = None
-            if epoch % 10 == 0:
-                print(f"\nCalculating MPJPE for epoch {epoch}...")
-                mpjpe = calculate_validation_mpjpe(trainer.model, dataset_yaml, trainer.device)
-                if mpjpe:
-                    print(f"MPJPE: {mpjpe:.2f} pixels")
-            
-            # Get model path for FLOPs calculation
-            model_path = None
-            if hasattr(trainer, 'best') and trainer.best.exists():
-                model_path = str(trainer.best)
-            elif hasattr(trainer, 'last') and trainer.last.exists():
-                model_path = str(trainer.last)
-            
-            metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path, mpjpe)
-            
-        except Exception as e:
-            print(f"Error in custom callback: {e}")
-    
-    def on_val_end(trainer):
-        """Called at the end of validation"""
-        try:
-            if hasattr(trainer, 'metrics') and trainer.metrics:
-                # Validation metrics are typically updated here
-                pass
-        except Exception as e:
-            print(f"Error in validation callback: {e}")
-    
-    callbacks = default_callbacks.copy()
-    callbacks['on_train_epoch_end'] = on_train_epoch_end
-    callbacks['on_val_end'] = on_val_end
-    
-    return callbacks
-
 def train_yolo_model(dataset_yaml, args):
-    """Train YOLO model on converted dataset with comprehensive monitoring"""
+    """Train YOLO model on converted dataset with comprehensive monitoring and proper callbacks"""
     print("\n" + "="*60)
     print("STARTING YOLO TRAINING WITH COMPREHENSIVE MONITORING")
     print("="*60)
@@ -954,7 +955,7 @@ def train_yolo_model(dataset_yaml, args):
     print(f"  Learning rate: {args.lr}")
     print(f"  Device: {args.device}")
     print(f"  WandB logging: {args.use_wandb}")
-    print(f"  MPJPE calculation: Every 10 epochs")
+    print(f"  MPJPE calculation: Every 5 epochs")
     
     # Log configuration to WandB
     if args.use_wandb:
@@ -973,12 +974,81 @@ def train_yolo_model(dataset_yaml, args):
         })
         
         # Log environment info
-        installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
-        wandb.config.update({'installed_packages': installed_packages})
+        try:
+            installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
+            wandb.config.update({'installed_packages': installed_packages})
+        except:
+            pass
+    
+    # Enhanced callback functions
+    def on_train_epoch_end(trainer):
+        """Enhanced callback for end of training epoch"""
+        try:
+            epoch = trainer.epoch + 1  # YOLO uses 0-based indexing
+            
+            # Extract metrics from trainer with better error handling
+            results_dict = {}
+            
+            # Get training losses
+            if hasattr(trainer, 'loss_items') and trainer.loss_items is not None:
+                loss_items = trainer.loss_items
+                if len(loss_items) >= 3:
+                    results_dict['train/box_loss'] = float(loss_items[0])
+                    results_dict['train/cls_loss'] = float(loss_items[1])
+                    results_dict['train/kobj_loss'] = float(loss_items[2])
+                    results_dict['train/loss'] = float(sum(loss_items))
+            
+            # Get validation metrics if available
+            if hasattr(trainer, 'metrics') and trainer.metrics:
+                for key, value in trainer.metrics.items():
+                    if isinstance(value, (int, float)):
+                        results_dict[f'val/{key}'] = float(value)
+            
+            # Calculate MPJPE every 5 epochs
+            mpjpe = None
+            if epoch % 5 == 0:
+                print(f"\n🔍 Calculating MPJPE for epoch {epoch}...")
+                mpjpe = calculate_validation_mpjpe(model, dataset_yaml, trainer.device)
+                if mpjpe:
+                    print(f"✓ MPJPE: {mpjpe:.2f} pixels")
+                    # Log immediately to WandB
+                    if args.use_wandb:
+                        wandb.log({"mpjpe": mpjpe, "epoch": epoch})
+            
+            # Get model path for FLOPs calculation
+            model_path = None
+            if hasattr(trainer, 'best') and trainer.best and trainer.best.exists():
+                model_path = str(trainer.best)
+            elif hasattr(trainer, 'last') and trainer.last and trainer.last.exists():
+                model_path = str(trainer.last)
+            
+            # Log comprehensive metrics
+            metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path, mpjpe)
+            
+        except Exception as e:
+            print(f"⚠ Error in epoch callback: {e}")
+    
+    def on_val_end(trainer):
+        """Enhanced callback for end of validation"""
+        try:
+            if hasattr(trainer, 'metrics') and trainer.metrics:
+                # Log validation metrics immediately
+                val_metrics = {}
+                for key, value in trainer.metrics.items():
+                    if isinstance(value, (int, float)):
+                        val_metrics[f'val/{key}'] = float(value)
+                
+                if args.use_wandb and val_metrics:
+                    wandb.log(val_metrics)
+        except Exception as e:
+            print(f"⚠ Error in validation callback: {e}")
+    
+    # Add callbacks to model
+    model.add_callback("on_train_epoch_end", on_train_epoch_end)
+    model.add_callback("on_val_end", on_val_end)
     
     try:
-        # Create custom callbacks with MPJPE calculation
-        custom_callbacks = create_custom_callbacks(metrics_tracker, dataset_yaml)
+        print("\n🚀 Starting YOLO training...")
         
         # Train the model with enhanced monitoring
         results = model.train(
@@ -995,15 +1065,14 @@ def train_yolo_model(dataset_yaml, args):
             patience=20,
             verbose=True,
             plots=True,
-            save=True,
-            # callbacks=custom_callbacks  # Custom callbacks might conflict with internal ones
+            save=True
         )
         
         # Final MPJPE calculation
-        print("\nCalculating final MPJPE...")
+        print("\n🔍 Calculating final MPJPE...")
         final_mpjpe = calculate_validation_mpjpe(model, dataset_yaml, args.device)
         if final_mpjpe:
-            print(f"Final MPJPE: {final_mpjpe:.2f} pixels")
+            print(f"✓ Final MPJPE: {final_mpjpe:.2f} pixels")
             
             if args.use_wandb:
                 wandb.log({"final_mpjpe": final_mpjpe})
@@ -1014,15 +1083,15 @@ def train_yolo_model(dataset_yaml, args):
             if args.use_wandb:
                 wandb.log({"final_results": final_metrics})
         
-        print(f"\n✓ Training completed successfully!")
-        print(f"Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
-        print(f"Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
-        print(f"Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
+        print(f"\n✅ Training completed successfully!")
+        print(f"📁 Model saved to: runs/pose/mpi_yolo_pose_full/weights/")
+        print(f"🏆 Best model: runs/pose/mpi_yolo_pose_full/weights/best.pt")
+        print(f"📋 Last model: runs/pose/mpi_yolo_pose_full/weights/last.pt")
         
         return results
         
     except Exception as e:
-        print(f"Error during training: {e}")
+        print(f"❌ Error during training: {e}")
         raise
     finally:
         # Clean up monitoring
@@ -1072,25 +1141,25 @@ def main():
     
     args = parser.parse_args()
     
-    print("YOLO Training on MPI-INF-3DHP Dataset with Comprehensive Monitoring")
+    print("🎯 YOLO Training on MPI-INF-3DHP Dataset with Comprehensive Monitoring")
     print("="*70)
-    print(f"Base path: {args.base_path}")
-    print(f"Annotations: {args.annotations_path}")
-    print(f"Output path: {args.output_path}")
-    print(f"WandB logging: {args.use_wandb}")
-    print(f"Force reprocess: {args.force_reprocess}")
-    print(f"MPJPE tracking: Every 10 epochs")
-    print(f"Processing: FULL DATASET (no sampling)")
+    print(f"📂 Base path: {args.base_path}")
+    print(f"📋 Annotations: {args.annotations_path}")
+    print(f"💾 Output path: {args.output_path}")
+    print(f"📊 WandB logging: {args.use_wandb}")
+    print(f"🔄 Force reprocess: {args.force_reprocess}")
+    print(f"📈 MPJPE tracking: Every 5 epochs")
+    print(f"🗂️ Processing: FULL DATASET (no sampling)")
     
     # Check if output directory exists and create if needed
     if not os.path.exists(args.output_path):
-        print(f"Creating output directory: {args.output_path}")
+        print(f"📁 Creating output directory: {args.output_path}")
         os.makedirs(args.output_path, exist_ok=True)
     
     # Check available space
     import shutil
     total, used, free = shutil.disk_usage(args.output_path)
-    print(f"Available space in {args.output_path}: {free // (1024**3)} GB")
+    print(f"💾 Available space in {args.output_path}: {free // (1024**3)} GB")
     
     if not args.train_only:
         # Convert dataset (with caching)
@@ -1099,17 +1168,17 @@ def main():
     else:
         dataset_yaml = os.path.join(args.output_path, 'mpi_dataset.yaml')
         if not os.path.exists(dataset_yaml):
-            print(f"ERROR: Dataset config not found: {dataset_yaml}")
+            print(f"❌ ERROR: Dataset config not found: {dataset_yaml}")
             print("Run without --train-only to convert dataset first")
             return
         else:
-            print(f"✓ Using existing dataset: {dataset_yaml}")
+            print(f"✅ Using existing dataset: {dataset_yaml}")
     
     if not args.convert_only:
         # Train model with comprehensive monitoring
         train_yolo_model(dataset_yaml, args)
     
-    print(f"\n✓ Process completed!")
+    print(f"\n🎉 Process completed!")
 
 if __name__ == '__main__':
     main()
