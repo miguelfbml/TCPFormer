@@ -39,9 +39,24 @@ import torch.nn as nn
 
 # MPI-INF-3DHP joint names (17 keypoints)
 MPI_JOINT_NAMES = [
-    'Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
-    'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-    'RShoulder', 'RElbow', 'RWrist'
+
+'Head',
+'SpineShoulder', 
+'LShoulder',
+'LElbow',
+'LHand',
+'RShoulder',
+'RElbow',
+'RHand',
+'LHip',
+'LKnee',
+'LAnkle',
+'RHip',
+'RKnee',
+'RAnkle',
+'Sacrum',
+'Spine',
+'Neck'
 ]
 
 # MPI-INF-3DHP skeleton connections

@@ -54,7 +54,7 @@ CONNECTIONS_2D = [
     (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13),  # legs
     (0, 16), (16, 1), (1, 15), (15, 14),  # spine to head
     (4, 3), (3, 2), (2, 1),  # left arm
-    (7, 6), (6, 5), (5, 1)   # right arm
+    (7, 6), (6, 5), (5, 4)   # right arm
 ]
 
 def load_test_3d_data_from_dataset(sequence_name):
