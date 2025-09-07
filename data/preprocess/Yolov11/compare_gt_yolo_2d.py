@@ -27,6 +27,43 @@ from tqdm import tqdm
 import glob
 import gc
 
+# GPU detection and setup
+def check_gpu_availability():
+    """Check GPU availability and print system information"""
+    gpu_available = torch.cuda.is_available()
+    
+    print(f"\n{'='*60}")
+    print(f"SYSTEM INFORMATION")
+    print(f"{'='*60}")
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {gpu_available}")
+    
+    if gpu_available:
+        gpu_count = torch.cuda.device_count()
+        current_device = torch.cuda.current_device()
+        gpu_name = torch.cuda.get_device_name(current_device)
+        gpu_memory = torch.cuda.get_device_properties(current_device).total_memory / 1024**3
+        
+        print(f"GPU count: {gpu_count}")
+        print(f"Current GPU: {current_device}")
+        print(f"GPU name: {gpu_name}")
+        print(f"GPU memory: {gpu_memory:.1f} GB")
+        print(f"CUDA compute capability: {torch.cuda.get_device_capability(current_device)}")
+        
+        # Set memory fraction to avoid OOM
+        torch.cuda.set_per_process_memory_fraction(0.8)
+        print(f"GPU memory fraction set to: 80%")
+        
+        device = f'cuda:{current_device}'
+    else:
+        print(f"No GPU available, using CPU")
+        device = 'cpu'
+    
+    print(f"Selected device: {device}")
+    print(f"{'='*60}")
+    
+    return device, gpu_available
+
 # Add parent directory to path to import utilities
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
@@ -154,21 +191,23 @@ def load_test_frames(sequence_name, num_frames=None):
     frames, total_frames = load_test_frames_batch(sequence_name, 0, num_frames)
     return frames
 
-def estimate_yolo_poses_batch(model, frames, img_size=640):
-    """Estimate poses using YOLO model with memory management"""
+def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
+    """Estimate poses using YOLO model with memory management and GPU support"""
     yolo_poses = []
     confidences = []
     
     # Process frames in smaller batches to avoid memory issues
-    batch_size = 50 if len(frames) > 100 else len(frames)
+    batch_size = 32 if device.startswith('cuda') else 16  # Larger batches for GPU
     
-    for i in range(0, len(frames), batch_size):
+    print(f"  Processing {len(frames)} frames in batches of {batch_size} on {device}")
+    
+    for i in tqdm(range(0, len(frames), batch_size), desc="YOLO Inference"):
         batch_frames = frames[i:i+batch_size]
         
         for frame in batch_frames:
             try:
-                # Run YOLO inference
-                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.3)
+                # Run YOLO inference with device specification
+                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.3, device=device)
                 
                 if (results and len(results) > 0 and 
                     hasattr(results[0], 'keypoints') and 
@@ -200,11 +239,12 @@ def estimate_yolo_poses_batch(model, frames, img_size=640):
                     confidences.append(np.zeros(17))
                     
             except Exception as e:
+                print(f"Error in YOLO inference: {e}")
                 yolo_poses.append(np.zeros((17, 2)))
                 confidences.append(np.zeros(17))
         
         # Clear memory after each batch
-        if torch.cuda.is_available():
+        if device.startswith('cuda'):
             torch.cuda.empty_cache()
         gc.collect()
     
@@ -213,9 +253,9 @@ def estimate_yolo_poses_batch(model, frames, img_size=640):
     
     return yolo_poses, confidences
 
-def estimate_yolo_poses(model, frames, img_size=640):
+def estimate_yolo_poses(model, frames, img_size=640, device='cpu'):
     """Legacy function for compatibility"""
-    return estimate_yolo_poses_batch(model, frames, img_size)
+    return estimate_yolo_poses_batch(model, frames, img_size, device)
 
 def convert_coordinates_to_pixels(poses_2d, frames):
     """Convert normalized coordinates to pixel coordinates"""
@@ -310,7 +350,7 @@ def compute_mpjpe_2d(gt_poses_2d, yolo_poses_2d):
         'torso_diameters': torso_diameters
     }
 
-def process_single_sequence_batched(model, sequence_name, args):
+def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
     """Process a single sequence in batches to avoid memory issues"""
     print(f"\n{'='*60}")
     print(f"Processing sequence: {sequence_name}")
@@ -329,7 +369,7 @@ def process_single_sequence_batched(model, sequence_name, args):
     if args.all and args.num_frames is None:
         # Process all frames in batches for memory efficiency
         print(f"✓ Processing ALL {total_gt_frames} frames for sequence {sequence_name} (in batches)")
-        batch_size = 500  # Process 500 frames at a time
+        batch_size = 300 if device.startswith('cuda') else 200  # Adjust batch size based on device
         
         all_frame_mpjpe = []
         all_valid_gt = []
@@ -357,7 +397,7 @@ def process_single_sequence_batched(model, sequence_name, args):
             gt_batch = gt_batch[:min_frames]
             
             # Run YOLO inference on batch
-            yolo_batch, _ = estimate_yolo_poses_batch(model, frames_batch, args.img_size)
+            yolo_batch, _ = estimate_yolo_poses_batch(model, frames_batch, args.img_size, device)
             
             # Convert coordinates
             gt_batch_pixel = convert_coordinates_to_pixels(gt_batch, frames_batch)
@@ -388,7 +428,7 @@ def process_single_sequence_batched(model, sequence_name, args):
             
             # Clear memory
             del frames_batch, gt_batch, yolo_batch, gt_batch_pixel, gt_batch_root_rel, yolo_batch_root_rel
-            if torch.cuda.is_available():
+            if device.startswith('cuda'):
                 torch.cuda.empty_cache()
             gc.collect()
         
@@ -441,7 +481,7 @@ def process_single_sequence_batched(model, sequence_name, args):
         
         # Run YOLO pose estimation
         print(f"🔍 Running YOLO pose estimation...")
-        yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
+        yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size, device)
         
         # Convert coordinates to pixels
         gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -466,15 +506,15 @@ def process_single_sequence_batched(model, sequence_name, args):
     
     return metrics
 
-def process_single_sequence(model, sequence_name, args):
+def process_single_sequence(model, sequence_name, args, device='cpu'):
     """Wrapper function to choose between batched and regular processing"""
     if args.all and args.num_frames is None:
-        return process_single_sequence_batched(model, sequence_name, args)
+        return process_single_sequence_batched(model, sequence_name, args, device)
     else:
         # Use original processing for limited frames
-        return process_single_sequence_original(model, sequence_name, args)
+        return process_single_sequence_original(model, sequence_name, args, device)
 
-def process_single_sequence_original(model, sequence_name, args):
+def process_single_sequence_original(model, sequence_name, args, device='cpu'):
     """Original processing function for limited frames"""
     print(f"\n{'='*60}")
     print(f"Processing sequence: {sequence_name}")
@@ -508,7 +548,7 @@ def process_single_sequence_original(model, sequence_name, args):
     
     # Run YOLO pose estimation
     print(f"🔍 Running YOLO pose estimation...")
-    yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
+    yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size, device)
     
     # Convert coordinates to pixels
     gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -739,11 +779,22 @@ def main():
                        help='Directory to save outputs')
     parser.add_argument('--img-size', type=int, default=640,
                        help='Input image size for YOLO inference')
+    parser.add_argument('--device', type=str, default='auto',
+                       help='Device to use (auto, cpu, cuda, cuda:0, etc.)')
     args = parser.parse_args()
     
     print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics")
     print("="*80)
+    
+    # Check GPU availability and setup device
+    if args.device == 'auto':
+        device, gpu_available = check_gpu_availability()
+    else:
+        device = args.device
+        gpu_available = device.startswith('cuda') and torch.cuda.is_available()
+    
     print(f"Model: {args.model_path}")
+    print(f"Device: {device}")
     
     # Update frame information display
     if args.all and args.num_frames is None:
@@ -764,11 +815,22 @@ def main():
         print(f"❌ Model not found: {args.model_path}")
         return
     
-    # Load YOLO model
+    # Load YOLO model with device specification
     print(f"🤖 Loading YOLO model from {args.model_path}...")
     try:
         model = YOLO(args.model_path)
+        
+        # Move model to GPU if available
+        if gpu_available:
+            print(f"📦 Moving model to {device}...")
+            # YOLO handles device placement automatically, but we can ensure it
+            model.to(device)
+            
         print("✓ YOLO model loaded successfully")
+        
+        # Print model info
+        print(f"Model device: {next(model.model.parameters()).device if hasattr(model, 'model') else 'Unknown'}")
+        
     except Exception as e:
         print(f"❌ Error loading YOLO model: {e}")
         return
@@ -789,11 +851,16 @@ def main():
         
         for sequence in available_sequences:
             try:
-                metrics = process_single_sequence(model, sequence, args)
+                metrics = process_single_sequence(model, sequence, args, device)
                 all_metrics.append(metrics)
                 
                 if metrics:
                     print_sequence_results(metrics)
+                
+                # Clear cache between sequences
+                if gpu_available:
+                    torch.cuda.empty_cache()
+                gc.collect()
                 
             except Exception as e:
                 print(f"❌ Error processing sequence {sequence}: {e}")
@@ -811,7 +878,7 @@ def main():
             args.num_frames = 50
             print(f"Using default {args.num_frames} frames for single sequence")
         
-        metrics = process_single_sequence(model, args.sequence, args)
+        metrics = process_single_sequence(model, args.sequence, args, device)
         
         if not metrics:
             print("❌ Failed to process sequence")
@@ -822,6 +889,7 @@ def main():
         print(f"DETAILED RESULTS FOR {args.sequence}")
         print(f"="*60)
         print(f"Model: {model_name}")
+        print(f"Device: {device}")
         print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
         print(f"\nMPJPE (Mean Per Joint Position Error):")
         print(f"  Average MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
@@ -854,7 +922,7 @@ def main():
                 frames = frames[:min_frames]
                 gt_poses_2d = gt_poses_2d[:min_frames]
                 
-                yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size)
+                yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size, device)
                 
                 gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
                 gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
