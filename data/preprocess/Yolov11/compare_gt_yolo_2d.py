@@ -6,6 +6,9 @@ Usage:
 python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo_pose_full/weights/best.pt --num-frames 50 --save-video
 
 python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50 --save-video
+
+# Run on all sequences
+python compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50
 """
 
 import argparse
@@ -71,6 +74,25 @@ CONNECTIONS_2D = [
     (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
 ]
 
+# Available test sequences
+TEST_SEQUENCES = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
+
+def get_available_sequences():
+    """Get list of available test sequences from data file"""
+    test_data_paths = [
+        '../../motion3d/data_test_3dhp.npz',
+        '../../../motion3d/data_test_3dhp.npz',
+        '../../../../motion3d/data_test_3dhp.npz'
+    ]
+    
+    for data_path in test_data_paths:
+        if os.path.exists(data_path):
+            data = np.load(data_path, allow_pickle=True)['data'].item()
+            return list(data.keys())
+    
+    # Fallback to default sequences
+    return TEST_SEQUENCES
+
 def load_test_3d_data_from_dataset(sequence_name):
     """Load test data for a specific sequence"""
     test_data_paths = [
@@ -81,7 +103,6 @@ def load_test_3d_data_from_dataset(sequence_name):
     
     for data_path in test_data_paths:
         if os.path.exists(data_path):
-            print(f"Loading test data from: {data_path}")
             data = np.load(data_path, allow_pickle=True)['data'].item()
             
             if sequence_name in data:
@@ -89,16 +110,8 @@ def load_test_3d_data_from_dataset(sequence_name):
                 poses_2d = seq_data['data_2d']  # Shape: (frames, 17, 2)
                 poses_3d = seq_data['data_3d']  # Shape: (frames, 17, 3)
                 
-                print(f"✓ Loaded sequence {sequence_name}")
-                print(f"  2D poses shape: {poses_2d.shape}")
-                print(f"  3D poses shape: {poses_3d.shape}")
-                
                 return poses_2d, poses_3d, sequence_name
-            else:
-                print(f"Sequence {sequence_name} not found in {data_path}")
-                print(f"Available sequences: {list(data.keys())}")
     
-    print(f"❌ Could not load test data for sequence {sequence_name}")
     return None, None, None
 
 def load_test_frames(sequence_name, num_frames=50):
@@ -113,8 +126,6 @@ def load_test_frames(sequence_name, num_frames=50):
     for base_path in test_image_paths:
         image_folder = os.path.join(base_path, sequence_name, 'imageSequence')
         if os.path.exists(image_folder):
-            print(f"Loading frames from: {image_folder}")
-            
             image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
             image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
             image_files.sort()
@@ -124,26 +135,21 @@ def load_test_frames(sequence_name, num_frames=50):
                 image_files = image_files[:num_frames]
                 frames = []
                 
-                print(f"Loading {len(image_files)} frames...")
-                for img_path in tqdm(image_files[:num_frames], desc="Loading frames"):
+                for img_path in image_files[:num_frames]:
                     frame = cv2.imread(img_path)
                     if frame is not None:
                         frames.append(frame)
                 
-                print(f"✓ Loaded {len(frames)} frames")
                 return frames
     
-    print(f"⚠ Could not load frames for {sequence_name}, creating dummy frames")
     return None
 
 def estimate_yolo_poses(model, frames, img_size=640):
     """Estimate poses using YOLO model"""
-    print("🔍 Running YOLO pose estimation...")
-    
     yolo_poses = []
     confidences = []
     
-    for i, frame in enumerate(tqdm(frames, desc="YOLO inference")):
+    for i, frame in enumerate(frames):
         try:
             # Run YOLO inference
             results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.3)
@@ -178,16 +184,11 @@ def estimate_yolo_poses(model, frames, img_size=640):
                 confidences.append(np.zeros(17))
                 
         except Exception as e:
-            print(f"Error processing frame {i}: {e}")
             yolo_poses.append(np.zeros((17, 2)))
             confidences.append(np.zeros(17))
     
     yolo_poses = np.array(yolo_poses)  # Shape: (frames, 17, 2)
     confidences = np.array(confidences)  # Shape: (frames, 17)
-    
-    print(f"✓ YOLO pose estimation completed")
-    print(f"  Output shape: {yolo_poses.shape}")
-    print(f"  Valid detections: {np.sum(np.mean(confidences, axis=1) > 0.1)}/{len(frames)}")
     
     return yolo_poses, confidences
 
@@ -219,25 +220,6 @@ def make_root_relative_2d_pixel(poses_2d_pixel, root_joint_idx=14):
         root_relative_poses[frame_idx, :, :2] -= root_pos
     
     return root_relative_poses
-
-def analyze_coordinate_ranges(gt_poses, yolo_poses, sequence_name):
-    """Analyze coordinate ranges for debugging"""
-    print(f"\n📊 Coordinate Analysis for {sequence_name}:")
-    
-    gt_coords = gt_poses.reshape(-1, 2)
-    yolo_coords = yolo_poses.reshape(-1, 2)
-    
-    # Remove zero coordinates for analysis
-    gt_valid = gt_coords[~np.all(gt_coords == 0, axis=1)]
-    yolo_valid = yolo_coords[~np.all(yolo_coords == 0, axis=1)]
-    
-    if len(gt_valid) > 0:
-        print(f"  GT range: X[{np.min(gt_valid[:, 0]):.1f}, {np.max(gt_valid[:, 0]):.1f}], "
-              f"Y[{np.min(gt_valid[:, 1]):.1f}, {np.max(gt_valid[:, 1]):.1f}]")
-    
-    if len(yolo_valid) > 0:
-        print(f"  YOLO range: X[{np.min(yolo_valid[:, 0]):.1f}, {np.max(yolo_valid[:, 0]):.1f}], "
-              f"Y[{np.min(yolo_valid[:, 1]):.1f}, {np.max(yolo_valid[:, 1]):.1f}]")
 
 def compute_mpjpe_2d(gt_poses_2d, yolo_poses_2d):
     """Compute comprehensive metrics including MPJPE, PCK, and AUC for 2D poses"""
@@ -302,6 +284,61 @@ def compute_mpjpe_2d(gt_poses_2d, yolo_poses_2d):
         'total_frames': min_frames,
         'torso_diameters': torso_diameters
     }
+
+def process_single_sequence(model, sequence_name, args):
+    """Process a single sequence and return metrics"""
+    print(f"\n{'='*60}")
+    print(f"Processing sequence: {sequence_name}")
+    print(f"{'='*60}")
+    
+    # Load ground truth data
+    gt_poses_2d, gt_poses_3d, seq_name = load_test_3d_data_from_dataset(sequence_name)
+    
+    if gt_poses_2d is None:
+        print(f"❌ Failed to load ground truth data for {sequence_name}")
+        return None
+    
+    # Limit frames
+    gt_poses_2d = gt_poses_2d[:args.num_frames]
+    
+    # Load test frames
+    frames = load_test_frames(sequence_name, args.num_frames)
+    
+    if frames is None:
+        print(f"❌ Failed to load test frames for {sequence_name}")
+        return None
+    
+    # Ensure matching number of frames
+    min_frames = min(len(frames), len(gt_poses_2d))
+    frames = frames[:min_frames]
+    gt_poses_2d = gt_poses_2d[:min_frames]
+    
+    print(f"✓ Using {min_frames} frames for comparison")
+    
+    # Run YOLO pose estimation
+    print(f"🔍 Running YOLO pose estimation...")
+    yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
+    
+    # Convert coordinates to pixels
+    gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
+    
+    # Make both datasets root-relative
+    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+    
+    # Compute comprehensive metrics
+    print(f"📊 Computing comprehensive metrics...")
+    metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
+    
+    if metrics:
+        metrics['sequence'] = sequence_name
+        print(f"✓ Metrics computed for {sequence_name}")
+        print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
+        print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+    else:
+        print(f"❌ Failed to compute metrics for {sequence_name}")
+    
+    return metrics
 
 def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metrics, args):
     """Create side-by-side comparison visualization with comprehensive metrics"""
@@ -430,6 +467,71 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
     
     return update, fig, min_frames
 
+def print_sequence_results(metrics):
+    """Print results for a single sequence"""
+    if not metrics:
+        return
+    
+    print(f"\nResults for {metrics['sequence']}:")
+    print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
+    print(f"  AUC: {metrics['auc']:.4f}")
+    print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+    
+    print(f"  PCK metrics:")
+    for key, value in metrics['pck_results'].items():
+        print(f"    {key}: {value*100:.2f}%")
+
+def print_summary_results(all_metrics, model_name):
+    """Print summary results for all sequences"""
+    if not all_metrics:
+        print("No results to summarize.")
+        return
+    
+    print(f"\n{'='*80}")
+    print(f"COMPREHENSIVE SUMMARY - YOLO vs Ground Truth (2D)")
+    print(f"Model: {model_name}")
+    print(f"{'='*80}")
+    
+    # Calculate overall statistics
+    valid_metrics = [m for m in all_metrics if m is not None]
+    
+    if not valid_metrics:
+        print("No valid metrics found.")
+        return
+    
+    avg_mpjpe = np.mean([m['avg_mpjpe'] for m in valid_metrics])
+    avg_auc = np.mean([m['auc'] for m in valid_metrics])
+    total_valid_frames = sum([m['valid_frames'] for m in valid_metrics])
+    total_frames = sum([m['total_frames'] for m in valid_metrics])
+    
+    print(f"\nOVERALL METRICS:")
+    print(f"  Sequences processed: {len(valid_metrics)}")
+    print(f"  Total valid frames: {total_valid_frames}/{total_frames}")
+    print(f"  Average MPJPE: {avg_mpjpe:.2f} pixels")
+    print(f"  Average AUC: {avg_auc:.4f}")
+    
+    # PCK metrics
+    pck_keys = valid_metrics[0]['pck_results'].keys()
+    print(f"\nPCK METRICS (averaged across sequences):")
+    for key in pck_keys:
+        avg_pck = np.mean([m['pck_results'][key] for m in valid_metrics])
+        print(f"  {key}: {avg_pck*100:.2f}%")
+    
+    print(f"\nPER-SEQUENCE BREAKDOWN:")
+    print(f"{'Sequence':<10} {'MPJPE':<12} {'AUC':<10} {'Valid/Total':<12}")
+    print(f"{'-'*50}")
+    
+    for metrics in valid_metrics:
+        mpjpe = metrics['avg_mpjpe']
+        auc = metrics['auc']
+        valid_frames = metrics['valid_frames']
+        total_frames = metrics['total_frames']
+        sequence = metrics['sequence']
+        
+        print(f"{sequence:<10} {mpjpe:<12.2f} {auc:<10.4f} {valid_frames}/{total_frames:<12}")
+    
+    print(f"{'='*80}")
+
 def main():
     parser = argparse.ArgumentParser(description='Compare Ground Truth and YOLO 2D poses with comprehensive metrics')
     parser.add_argument('--sequence', type=str, default='TS1', 
@@ -437,9 +539,11 @@ def main():
     parser.add_argument('--model-path', type=str, required=True,
                        help='Path to trained YOLO model (.pt file)')
     parser.add_argument('--num-frames', type=int, default=50,
-                       help='Number of frames to visualize')
+                       help='Number of frames to process per sequence')
+    parser.add_argument('--all', action='store_true',
+                       help='Run evaluation on all available sequences')
     parser.add_argument('--save-video', action='store_true',
-                       help='Save comparison as GIF')
+                       help='Save comparison as GIF (only for single sequence)')
     parser.add_argument('--output-dir', type=str, default='comparison_output',
                        help='Directory to save outputs')
     parser.add_argument('--img-size', type=int, default=640,
@@ -448,9 +552,8 @@ def main():
     
     print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics")
     print("="*80)
-    print(f"Sequence: {args.sequence}")
     print(f"Model: {args.model_path}")
-    print(f"Frames: {args.num_frames}")
+    print(f"Frames per sequence: {args.num_frames}")
     print(f"Input size: {args.img_size}")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
     print("Coordinate system: Root-relative poses in pixel domain")
@@ -470,56 +573,46 @@ def main():
         print(f"❌ Error loading YOLO model: {e}")
         return
     
-    # Load ground truth data
-    print(f"\n📂 Loading ground truth data for sequence {args.sequence}...")
-    gt_poses_2d, gt_poses_3d, seq_name = load_test_3d_data_from_dataset(args.sequence)
+    model_name = os.path.basename(args.model_path)
     
-    if gt_poses_2d is None:
-        print("❌ Failed to load ground truth data")
-        return
-    
-    # Limit frames
-    gt_poses_2d = gt_poses_2d[:args.num_frames]
-    
-    # Load test frames
-    print(f"\n🖼️ Loading test frames for sequence {args.sequence}...")
-    frames = load_test_frames(args.sequence, args.num_frames)
-    
-    if frames is None:
-        print("❌ Failed to load test frames")
-        return
-    
-    # Ensure matching number of frames
-    min_frames = min(len(frames), len(gt_poses_2d))
-    frames = frames[:min_frames]
-    gt_poses_2d = gt_poses_2d[:min_frames]
-    
-    print(f"✓ Using {min_frames} frames for comparison")
-    
-    # Run YOLO pose estimation
-    yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
-    
-    # Convert coordinates to pixels
-    print(f"\n🔄 Converting coordinates to pixel domain...")
-    gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
-    
-    # Make both datasets root-relative
-    print(f"Making both datasets root-relative in pixel domain...")
-    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
-    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
-    
-    analyze_coordinate_ranges(gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence)
-    
-    # Compute comprehensive metrics
-    print(f"\n📊 Computing comprehensive metrics (MPJPE, PCK, AUC) in pixel domain...")
-    metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
-    
-    if metrics:
+    if args.all:
+        # Process all sequences
+        print(f"\n🔄 Processing all available sequences...")
+        available_sequences = get_available_sequences()
+        print(f"Available sequences: {available_sequences}")
+        
+        all_metrics = []
+        
+        for sequence in available_sequences:
+            try:
+                metrics = process_single_sequence(model, sequence, args)
+                all_metrics.append(metrics)
+                
+                if metrics:
+                    print_sequence_results(metrics)
+                
+            except Exception as e:
+                print(f"❌ Error processing sequence {sequence}: {e}")
+                all_metrics.append(None)
+        
+        # Print summary
+        print_summary_results(all_metrics, model_name)
+        
+    else:
+        # Process single sequence
+        print(f"\n📂 Processing single sequence: {args.sequence}")
+        
+        metrics = process_single_sequence(model, args.sequence, args)
+        
+        if not metrics:
+            print("❌ Failed to process sequence")
+            return
+        
+        # Print detailed results
         print(f"\n" + "="*60)
-        print(f"COMPREHENSIVE 2D POSE EVALUATION RESULTS")
+        print(f"DETAILED RESULTS FOR {args.sequence}")
         print(f"="*60)
-        print(f"Sequence: {args.sequence}")
-        print(f"Model: {os.path.basename(args.model_path)}")
+        print(f"Model: {model_name}")
         print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
         print(f"\nMPJPE (Mean Per Joint Position Error):")
         print(f"  Average MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
@@ -539,46 +632,59 @@ def main():
             print(f"  {name} (joint {joint_idx}): {error:.2f} pixels")
         
         print(f"="*60)
-    
-    # Create visualization
-    print(f"\n🎬 Creating visualization...")
-    try:
-        result = create_comparison_visualization(
-            gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, metrics, args)
         
-        if result[0] is None:
-            return
+        # Create visualization only for single sequence
+        if args.save_video or not args.all:
+            # Load data again for visualization
+            gt_poses_2d, _, _ = load_test_3d_data_from_dataset(args.sequence)
+            frames = load_test_frames(args.sequence, args.num_frames)
             
-        update_func, fig, min_frames = result
-        
-        if args.save_video:
-            print("Creating animation...")
-            ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                              interval=300, repeat=True, blit=False)
-            
-            os.makedirs(args.output_dir, exist_ok=True)
-            model_name = os.path.splitext(os.path.basename(args.model_path))[0]
-            output_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_yolo_{model_name}_comprehensive.gif')
-            ani.save(output_path, writer='pillow', fps=3, dpi=100)
-            print(f"✓ Animation saved to: {output_path}")
-            
-            update_func(0)
-            static_path = os.path.join(args.output_dir, 
-                                     f'{args.sequence}_gt_vs_yolo_{model_name}_comprehensive.png')
-            plt.savefig(static_path, dpi=150, bbox_inches='tight')
-            print(f"✓ Static image saved to: {static_path}")
-            
-            plt.close(fig)
-        else:
-            print("Showing interactive visualization...")
-            update_func(0)
-            plt.show()
-            
-    except Exception as e:
-        print(f"❌ Error creating visualization: {e}")
-        import traceback
-        traceback.print_exc()
+            if gt_poses_2d is not None and frames is not None:
+                # Process data for visualization
+                min_frames = min(len(frames), len(gt_poses_2d), args.num_frames)
+                frames = frames[:min_frames]
+                gt_poses_2d = gt_poses_2d[:min_frames]
+                
+                yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size)
+                
+                gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
+                gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+                yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+                
+                print(f"\n🎬 Creating visualization...")
+                try:
+                    result = create_comparison_visualization(
+                        gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, metrics, args)
+                    
+                    if result[0] is not None:
+                        update_func, fig, min_frames = result
+                        
+                        if args.save_video:
+                            print("Creating animation...")
+                            ani = FuncAnimation(fig, update_func, frames=min_frames, 
+                                              interval=300, repeat=True, blit=False)
+                            
+                            os.makedirs(args.output_dir, exist_ok=True)
+                            model_name_clean = os.path.splitext(os.path.basename(args.model_path))[0]
+                            output_path = os.path.join(args.output_dir, 
+                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_comprehensive.gif')
+                            ani.save(output_path, writer='pillow', fps=3, dpi=100)
+                            print(f"✓ Animation saved to: {output_path}")
+                            
+                            update_func(0)
+                            static_path = os.path.join(args.output_dir, 
+                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_comprehensive.png')
+                            plt.savefig(static_path, dpi=150, bbox_inches='tight')
+                            print(f"✓ Static image saved to: {static_path}")
+                            
+                            plt.close(fig)
+                        else:
+                            print("Showing interactive visualization...")
+                            update_func(0)
+                            plt.show()
+                            
+                except Exception as e:
+                    print(f"❌ Error creating visualization: {e}")
 
 if __name__ == '__main__':
     main()
