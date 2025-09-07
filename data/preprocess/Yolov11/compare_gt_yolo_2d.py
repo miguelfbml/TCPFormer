@@ -25,6 +25,7 @@ import torch
 from ultralytics import YOLO
 from tqdm import tqdm
 import glob
+import gc
 
 # Add parent directory to path to import utilities
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -117,8 +118,8 @@ def load_test_3d_data_from_dataset(sequence_name):
     
     return None, None, None
 
-def load_test_frames(sequence_name, num_frames=None):
-    """Load test frames for the sequence"""
+def load_test_frames_batch(sequence_name, start_frame=0, num_frames=None):
+    """Load test frames for the sequence in batches"""
     test_image_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
         '../motion3d/mpi_inf_3dhp_test_set',
@@ -134,68 +135,87 @@ def load_test_frames(sequence_name, num_frames=None):
             image_files.sort()
             
             if image_files:
-                # Limit to requested number of frames if specified
-                if num_frames is not None:
-                    image_files = image_files[:num_frames]
+                # Get the requested batch of frames
+                end_frame = start_frame + num_frames if num_frames is not None else len(image_files)
+                batch_files = image_files[start_frame:end_frame]
                 
                 frames = []
-                
-                for img_path in image_files:
+                for img_path in batch_files:
                     frame = cv2.imread(img_path)
                     if frame is not None:
                         frames.append(frame)
                 
-                return frames
+                return frames, len(image_files)  # Return frames and total count
     
-    return None
+    return None, 0
 
-def estimate_yolo_poses(model, frames, img_size=640):
-    """Estimate poses using YOLO model"""
+def load_test_frames(sequence_name, num_frames=None):
+    """Load test frames for the sequence (legacy function for compatibility)"""
+    frames, total_frames = load_test_frames_batch(sequence_name, 0, num_frames)
+    return frames
+
+def estimate_yolo_poses_batch(model, frames, img_size=640):
+    """Estimate poses using YOLO model with memory management"""
     yolo_poses = []
     confidences = []
     
-    for i, frame in enumerate(frames):
-        try:
-            # Run YOLO inference
-            results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.3)
-            
-            if (results and len(results) > 0 and 
-                hasattr(results[0], 'keypoints') and 
-                results[0].keypoints is not None and 
-                len(results[0].keypoints.xy) > 0):
+    # Process frames in smaller batches to avoid memory issues
+    batch_size = 50 if len(frames) > 100 else len(frames)
+    
+    for i in range(0, len(frames), batch_size):
+        batch_frames = frames[i:i+batch_size]
+        
+        for frame in batch_frames:
+            try:
+                # Run YOLO inference
+                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.3)
                 
-                # Get first detection's keypoints
-                keypoints = results[0].keypoints.xy[0].cpu().numpy()  # Shape: (17, 2)
-                conf = results[0].keypoints.conf[0].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(17)
-                
-                # Ensure we have 17 keypoints
-                if keypoints.shape[0] == 17:
-                    yolo_poses.append(keypoints)
-                    confidences.append(conf)
+                if (results and len(results) > 0 and 
+                    hasattr(results[0], 'keypoints') and 
+                    results[0].keypoints is not None and 
+                    len(results[0].keypoints.xy) > 0):
+                    
+                    # Get first detection's keypoints
+                    keypoints = results[0].keypoints.xy[0].cpu().numpy()  # Shape: (17, 2)
+                    conf = results[0].keypoints.conf[0].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(17)
+                    
+                    # Ensure we have 17 keypoints
+                    if keypoints.shape[0] == 17:
+                        yolo_poses.append(keypoints)
+                        confidences.append(conf)
+                    else:
+                        # Pad or truncate to 17 keypoints
+                        padded_kpts = np.zeros((17, 2))
+                        padded_conf = np.zeros(17)
+                        
+                        n_kpts = min(17, keypoints.shape[0])
+                        padded_kpts[:n_kpts] = keypoints[:n_kpts]
+                        padded_conf[:n_kpts] = conf[:n_kpts] if len(conf) > 0 else 0.5
+                        
+                        yolo_poses.append(padded_kpts)
+                        confidences.append(padded_conf)
                 else:
-                    # Pad or truncate to 17 keypoints
-                    padded_kpts = np.zeros((17, 2))
-                    padded_conf = np.zeros(17)
+                    # No detection, create zero pose
+                    yolo_poses.append(np.zeros((17, 2)))
+                    confidences.append(np.zeros(17))
                     
-                    n_kpts = min(17, keypoints.shape[0])
-                    padded_kpts[:n_kpts] = keypoints[:n_kpts]
-                    padded_conf[:n_kpts] = conf[:n_kpts] if len(conf) > 0 else 0.5
-                    
-                    yolo_poses.append(padded_kpts)
-                    confidences.append(padded_conf)
-            else:
-                # No detection, create zero pose
+            except Exception as e:
                 yolo_poses.append(np.zeros((17, 2)))
                 confidences.append(np.zeros(17))
-                
-        except Exception as e:
-            yolo_poses.append(np.zeros((17, 2)))
-            confidences.append(np.zeros(17))
+        
+        # Clear memory after each batch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
     
     yolo_poses = np.array(yolo_poses)  # Shape: (frames, 17, 2)
     confidences = np.array(confidences)  # Shape: (frames, 17)
     
     return yolo_poses, confidences
+
+def estimate_yolo_poses(model, frames, img_size=640):
+    """Legacy function for compatibility"""
+    return estimate_yolo_poses_batch(model, frames, img_size)
 
 def convert_coordinates_to_pixels(poses_2d, frames):
     """Convert normalized coordinates to pixel coordinates"""
@@ -290,8 +310,8 @@ def compute_mpjpe_2d(gt_poses_2d, yolo_poses_2d):
         'torso_diameters': torso_diameters
     }
 
-def process_single_sequence(model, sequence_name, args):
-    """Process a single sequence and return metrics"""
+def process_single_sequence_batched(model, sequence_name, args):
+    """Process a single sequence in batches to avoid memory issues"""
     print(f"\n{'='*60}")
     print(f"Processing sequence: {sequence_name}")
     print(f"{'='*60}")
@@ -303,17 +323,174 @@ def process_single_sequence(model, sequence_name, args):
         print(f"❌ Failed to load ground truth data for {sequence_name}")
         return None
     
-    # Determine number of frames to process
+    total_gt_frames = len(gt_poses_2d)
+    
+    # Determine processing strategy
     if args.all and args.num_frames is None:
-        # Use all frames when --all is specified without --num-frames
-        num_frames_to_use = None
-        gt_poses_2d_limited = gt_poses_2d  # Use all frames
-        print(f"✓ Using ALL {len(gt_poses_2d)} frames for sequence {sequence_name}")
+        # Process all frames in batches for memory efficiency
+        print(f"✓ Processing ALL {total_gt_frames} frames for sequence {sequence_name} (in batches)")
+        batch_size = 500  # Process 500 frames at a time
+        
+        all_frame_mpjpe = []
+        all_valid_gt = []
+        all_valid_yolo = []
+        total_valid_frames = 0
+        total_processed_frames = 0
+        
+        for start_idx in range(0, total_gt_frames, batch_size):
+            end_idx = min(start_idx + batch_size, total_gt_frames)
+            batch_frames_count = end_idx - start_idx
+            
+            print(f"  Processing batch {start_idx//batch_size + 1}/{(total_gt_frames + batch_size - 1)//batch_size}: frames {start_idx+1}-{end_idx}")
+            
+            # Load batch of ground truth and image frames
+            gt_batch = gt_poses_2d[start_idx:end_idx]
+            frames_batch, _ = load_test_frames_batch(sequence_name, start_idx, batch_frames_count)
+            
+            if frames_batch is None:
+                print(f"❌ Failed to load frames for batch {start_idx}-{end_idx}")
+                continue
+            
+            # Ensure matching frames
+            min_frames = min(len(frames_batch), len(gt_batch))
+            frames_batch = frames_batch[:min_frames]
+            gt_batch = gt_batch[:min_frames]
+            
+            # Run YOLO inference on batch
+            yolo_batch, _ = estimate_yolo_poses_batch(model, frames_batch, args.img_size)
+            
+            # Convert coordinates
+            gt_batch_pixel = convert_coordinates_to_pixels(gt_batch, frames_batch)
+            gt_batch_root_rel = make_root_relative_2d_pixel(gt_batch_pixel, root_joint_idx=14)
+            yolo_batch_root_rel = make_root_relative_2d_pixel(yolo_batch, root_joint_idx=14)
+            
+            # Process batch metrics
+            for frame_idx in range(min_frames):
+                gt_frame = gt_batch_root_rel[frame_idx]
+                yolo_frame = yolo_batch_root_rel[frame_idx]
+                
+                gt_valid = not np.all(gt_frame == 0)
+                yolo_valid = not np.all(yolo_frame == 0)
+                
+                if gt_valid and yolo_valid:
+                    all_valid_gt.append(gt_frame)
+                    all_valid_yolo.append(yolo_frame)
+                    total_valid_frames += 1
+                    
+                    # Calculate frame MPJPE
+                    joint_diffs = np.linalg.norm(gt_frame - yolo_frame, axis=1)
+                    frame_error = np.mean(joint_diffs)
+                    all_frame_mpjpe.append(frame_error)
+                else:
+                    all_frame_mpjpe.append(np.nan)
+                
+                total_processed_frames += 1
+            
+            # Clear memory
+            del frames_batch, gt_batch, yolo_batch, gt_batch_pixel, gt_batch_root_rel, yolo_batch_root_rel
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+        
+        if len(all_valid_gt) == 0:
+            print(f"❌ No valid frames found for {sequence_name}")
+            return None
+        
+        # Calculate final metrics
+        valid_gt = np.array(all_valid_gt)
+        valid_yolo = np.array(all_valid_yolo)
+        
+        avg_mpjpe = np.mean([e for e in all_frame_mpjpe if not np.isnan(e)])
+        joint_errors = np.mean(np.linalg.norm(valid_gt - valid_yolo, axis=2), axis=0)
+        
+        torso_diameters = calculate_torso_diameter_2d(valid_gt)
+        pck_results = compute_pck_2d(valid_yolo, valid_gt, torso_diameters, fixed_threshold=150.0)
+        auc = compute_auc_2d(valid_yolo, valid_gt, max_threshold=150.0)
+        
+        metrics = {
+            'avg_mpjpe': float(avg_mpjpe),
+            'frame_mpjpe': all_frame_mpjpe,
+            'joint_errors': [float(x) for x in joint_errors],
+            'pck_results': pck_results,
+            'auc': float(auc),
+            'valid_frames': total_valid_frames,
+            'total_frames': total_processed_frames,
+            'torso_diameters': torso_diameters,
+            'sequence': sequence_name
+        }
+        
     else:
-        # Use specified number of frames or default
+        # Process limited frames (original method)
         num_frames_to_use = args.num_frames if args.num_frames is not None else 50
         gt_poses_2d_limited = gt_poses_2d[:num_frames_to_use]
         print(f"✓ Using {len(gt_poses_2d_limited)} frames for sequence {sequence_name}")
+        
+        # Load test frames
+        frames = load_test_frames(sequence_name, num_frames_to_use)
+        
+        if frames is None:
+            print(f"❌ Failed to load test frames for {sequence_name}")
+            return None
+        
+        # Ensure matching number of frames
+        min_frames = min(len(frames), len(gt_poses_2d_limited))
+        frames = frames[:min_frames]
+        gt_poses_2d_final = gt_poses_2d_limited[:min_frames]
+        
+        print(f"✓ Processing {min_frames} frames for comparison")
+        
+        # Run YOLO pose estimation
+        print(f"🔍 Running YOLO pose estimation...")
+        yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
+        
+        # Convert coordinates to pixels
+        gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
+        
+        # Make both datasets root-relative
+        gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+        yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+        
+        # Compute comprehensive metrics
+        print(f"📊 Computing comprehensive metrics...")
+        metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
+        
+        if metrics:
+            metrics['sequence'] = sequence_name
+    
+    if metrics:
+        print(f"✓ Metrics computed for {sequence_name}")
+        print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
+        print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+    else:
+        print(f"❌ Failed to compute metrics for {sequence_name}")
+    
+    return metrics
+
+def process_single_sequence(model, sequence_name, args):
+    """Wrapper function to choose between batched and regular processing"""
+    if args.all and args.num_frames is None:
+        return process_single_sequence_batched(model, sequence_name, args)
+    else:
+        # Use original processing for limited frames
+        return process_single_sequence_original(model, sequence_name, args)
+
+def process_single_sequence_original(model, sequence_name, args):
+    """Original processing function for limited frames"""
+    print(f"\n{'='*60}")
+    print(f"Processing sequence: {sequence_name}")
+    print(f"{'='*60}")
+    
+    # Load ground truth data
+    gt_poses_2d, gt_poses_3d, seq_name = load_test_3d_data_from_dataset(sequence_name)
+    
+    if gt_poses_2d is None:
+        print(f"❌ Failed to load ground truth data for {sequence_name}")
+        return None
+    
+    # Use specified number of frames or default
+    num_frames_to_use = args.num_frames if args.num_frames is not None else 50
+    gt_poses_2d_limited = gt_poses_2d[:num_frames_to_use]
+    print(f"✓ Using {len(gt_poses_2d_limited)} frames for sequence {sequence_name}")
     
     # Load test frames
     frames = load_test_frames(sequence_name, num_frames_to_use)
@@ -329,11 +506,8 @@ def process_single_sequence(model, sequence_name, args):
     
     print(f"✓ Processing {min_frames} frames for comparison")
     
-    # Run YOLO pose estimation with progress bar for large sequences
+    # Run YOLO pose estimation
     print(f"🔍 Running YOLO pose estimation...")
-    if min_frames > 100:
-        print(f"   Processing {min_frames} frames (this may take a while)...")
-    
     yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
     
     # Convert coordinates to pixels
@@ -556,7 +730,7 @@ def main():
     parser.add_argument('--model-path', type=str, required=True,
                        help='Path to trained YOLO model (.pt file)')
     parser.add_argument('--num-frames', type=int, default=None,
-                       help='Number of frames to process per sequence (if not specified with --all, uses all frames)')
+                       help='Number of frames to process per sequence (if not specified with --all, uses all frames in batches)')
     parser.add_argument('--all', action='store_true',
                        help='Run evaluation on all available sequences with all frames (unless --num-frames specified)')
     parser.add_argument('--save-video', action='store_true',
@@ -573,7 +747,7 @@ def main():
     
     # Update frame information display
     if args.all and args.num_frames is None:
-        print(f"Mode: Process ALL FRAMES from ALL SEQUENCES")
+        print(f"Mode: Process ALL FRAMES from ALL SEQUENCES (in memory-efficient batches)")
     elif args.all and args.num_frames is not None:
         print(f"Mode: Process {args.num_frames} frames from ALL SEQUENCES")
     else:
@@ -608,8 +782,8 @@ def main():
         print(f"Available sequences: {available_sequences}")
         
         if args.num_frames is None:
-            print("⚠️  WARNING: Processing ALL frames from ALL sequences. This may take a very long time!")
-            print("   Consider using --num-frames to limit processing for faster results.")
+            print("ℹ️  Processing ALL frames from ALL sequences using memory-efficient batching.")
+            print("   This will process sequences in batches to avoid memory issues.")
         
         all_metrics = []
         
