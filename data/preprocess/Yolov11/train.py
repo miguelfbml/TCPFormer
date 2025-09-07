@@ -37,28 +37,28 @@ from ptflops import get_model_complexity_info
 import torch
 import torch.nn as nn
 
-# MPI-INF-3DHP joint names (17 keypoints)
+# MPI-INF-3DHP joint names (17 keypoints) - CORRECTED ORDER
 MPI_JOINT_NAMES = [
-'Head',
-'SpineShoulder', 
-'LShoulder',
-'LElbow',
-'LHand',
-'RShoulder',
-'RElbow',
-'RHand',
-'LHip',
-'LKnee',
-'LAnkle',
-'RHip',
-'RKnee',
-'RAnkle',
-'Sacrum',
-'Spine',
-'Neck'
+    'Head',           # 0
+    'SpineShoulder',  # 1 
+    'RShoulder',      # 2
+    'RElbow',         # 3
+    'RHand',          # 4
+    'LShoulder',      # 5
+    'LElbow',         # 6
+    'LHand',          # 7
+    'RHip',           # 8
+    'RKnee',          # 9
+    'RAnkle',         # 10
+    'LHip',           # 11
+    'LKnee',          # 12
+    'LAnkle',         # 13
+    'Sacrum',         # 14
+    'Spine',          # 15
+    'Neck'            # 16
 ]
 
-# MPI-INF-3DHP skeleton connections
+# MPI-INF-3DHP skeleton connections - Updated for corrected order
 MPI_SKELETON = [
     (0, 16), (16, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
     (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
@@ -744,7 +744,8 @@ class MPIDatasetConverter:
             'nc': 1,  # number of classes (person)
             'names': ['person'],
             'kpt_shape': [17, 3],  # 17 keypoints, 3 values each (x, y, visibility)
-            'flip_idx': [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]  # MPI joint flip indices
+            # Updated flip indices for corrected keypoint order
+            'flip_idx': [0, 1, 5, 6, 7, 2, 3, 4, 11, 12, 13, 8, 9, 10, 14, 15, 16]  # MPI joint flip indices
         }
         
         yaml_path = os.path.join(self.output_path, 'mpi_dataset.yaml')
@@ -995,6 +996,7 @@ def train_yolo_model(dataset_yaml, args):
     print(f"  Device: {args.device}")
     print(f"  WandB logging: {args.use_wandb}")
     print(f"  MPJPE calculation: Every 5 epochs")
+    print(f"  Keypoint order: {MPI_JOINT_NAMES}")
     
     # Log configuration to WandB
     if args.use_wandb:
@@ -1008,6 +1010,7 @@ def train_yolo_model(dataset_yaml, args):
             "device": args.device,
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
+            "keypoint_order": MPI_JOINT_NAMES,
             "classes": 1,
             "optimized_sampling": False,  # Full dataset processing
             "mpjpe_tracking": True
@@ -1100,7 +1103,7 @@ def train_yolo_model(dataset_yaml, args):
             device=args.device,
             workers=args.workers,
             project='runs/pose',
-            name='mpi_yolo11x_pose_full',  # Updated name for YOLOv11x
+            name='mpi_yolo11x_pose_corrected',  # Updated name for corrected keypoint order
             save_period=10,
             patience=20,
             verbose=True,
@@ -1124,9 +1127,10 @@ def train_yolo_model(dataset_yaml, args):
                 wandb.log({"final_results": final_metrics})
         
         print(f"\n✅ Training completed successfully!")
-        print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_full/weights/")
-        print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_full/weights/best.pt")
-        print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_full/weights/last.pt")
+        print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_corrected/weights/")
+        print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt")
+        print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_corrected/weights/last.pt")
+        print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
         
         return results
         
@@ -1190,6 +1194,7 @@ def main():
     print(f"🔄 Force reprocess: {args.force_reprocess}")
     print(f"📈 MPJPE tracking: Every 5 epochs")
     print(f"🗂️ Processing: FULL DATASET (no sampling)")
+    print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
     
     # Check if output directory exists and create if needed
     if not os.path.exists(args.output_path):
