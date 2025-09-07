@@ -216,9 +216,9 @@ def load_and_visualize_training_sample():
     return vis_image
 
 def load_and_visualize_test_sample():
-    """Load and visualize a sample from test data"""
+    """Load and visualize a sample from test data with REAL keypoints"""
     print("\n" + "="*60)
-    print("LOADING TEST SAMPLE")
+    print("LOADING TEST SAMPLE (TS1)")
     print("="*60)
     
     # Test annotations path
@@ -249,13 +249,54 @@ def load_and_visualize_test_sample():
     try:
         test_data = np.load(test_annotations_path, allow_pickle=True)['data'].item()
         print(f"✓ Loaded test data for {len(test_data)} sequences")
+        print(f"📂 Available test sequences: {list(test_data.keys())}")
     except Exception as e:
         print(f"❌ Error loading test annotations: {e}")
         return None
     
-    # Get first test sequence
-    test_seq_name = list(test_data.keys())[0]
-    print(f"📂 Using test sequence: {test_seq_name}")
+    # Look specifically for TS1
+    target_seq = 'TS1'
+    if target_seq not in test_data:
+        print(f"❌ TS1 not found in test data. Available sequences:")
+        for seq_name in test_data.keys():
+            print(f"   - {seq_name}")
+        # Use first available sequence as fallback
+        target_seq = list(test_data.keys())[0]
+        print(f"📂 Using fallback sequence: {target_seq}")
+    else:
+        print(f"📂 Using target sequence: {target_seq}")
+    
+    # Get test sequence data
+    seq_data = test_data[target_seq]
+    print(f"📊 Test sequence data structure: {type(seq_data)}")
+    
+    # Debug: Print the structure of test data
+    if isinstance(seq_data, dict):
+        print(f"📊 Test data keys: {list(seq_data.keys())}")
+        # Try to find 2D pose data
+        if 'data_2d' in seq_data:
+            poses_2d = seq_data['data_2d']
+            print(f"📸 Found poses_2d shape: {poses_2d.shape}")
+        elif 'annot2' in seq_data:
+            poses_2d = seq_data['annot2']
+            print(f"📸 Found annot2 shape: {poses_2d.shape}")
+        else:
+            print(f"📊 Available keys in test sequence: {list(seq_data.keys())}")
+            # Try the first available key that looks like pose data
+            for key in seq_data.keys():
+                if isinstance(seq_data[key], np.ndarray) and len(seq_data[key].shape) >= 2:
+                    poses_2d = seq_data[key]
+                    print(f"📸 Using key '{key}' with shape: {poses_2d.shape}")
+                    break
+            else:
+                print(f"❌ No suitable pose data found in test sequence")
+                return None
+    elif isinstance(seq_data, np.ndarray):
+        poses_2d = seq_data
+        print(f"📸 Test data is array with shape: {poses_2d.shape}")
+    else:
+        print(f"❌ Unexpected test data format: {type(seq_data)}")
+        return None
     
     # Test image paths
     test_base_paths = [
@@ -265,50 +306,21 @@ def load_and_visualize_test_sample():
         'mpi_inf_3dhp_test_set'
     ]
     
-    # Find test images
+    # Find test images for TS1
     image_folder = None
     for base_path in test_base_paths:
-        potential_path = os.path.join(base_path, test_seq_name, 'imageSequence')
+        potential_path = os.path.join(base_path, target_seq, 'imageSequence')
         if os.path.exists(potential_path):
             image_folder = potential_path
+            print(f"📁 Found test images at: {potential_path}")
             break
     
     if image_folder is None:
-        print(f"❌ Test images not found. Tried:")
+        print(f"❌ Test images not found for {target_seq}. Tried:")
         for base_path in test_base_paths:
-            potential_path = os.path.join(base_path, test_seq_name, 'imageSequence')
+            potential_path = os.path.join(base_path, target_seq, 'imageSequence')
             print(f"  - {potential_path}")
-        print("\n⚠️ Creating dummy test visualization with sample keypoints")
-        
-        # Create a dummy image with sample keypoints
-        dummy_image = np.ones((480, 640, 3), dtype=np.uint8) * 128  # Gray background
-        
-        # Create dummy keypoints in a human-like pose
-        dummy_keypoints = np.array([
-            [320, 400],  # Root
-            [340, 380],  # RHip
-            [350, 320],  # RKnee
-            [360, 260],  # RAnkle
-            [300, 380],  # LHip
-            [290, 320],  # LKnee
-            [280, 260],  # LAnkle
-            [320, 350],  # Spine
-            [320, 280],  # Thorax
-            [320, 200],  # Nose
-            [320, 180],  # Head
-            [280, 260],  # LShoulder
-            [250, 300],  # LElbow
-            [220, 340],  # LWrist
-            [360, 260],  # RShoulder
-            [390, 300],  # RElbow
-            [420, 340],  # RWrist
-        ])
-        
-        save_path = "test_sample_keypoints_dummy.jpg"
-        title = f"Test Sample (Dummy) - {test_seq_name}"
-        
-        vis_image = visualize_keypoints_on_image(dummy_image, dummy_keypoints, MPI_JOINT_NAMES, title, save_path)
-        return vis_image
+        return None
     
     # Get test images
     image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
@@ -318,6 +330,8 @@ def load_and_visualize_test_sample():
     if not image_files:
         print(f"❌ No images found in {image_folder}")
         return None
+    
+    print(f"📸 Found {len(image_files)} test images")
     
     # Load first image
     img_path = image_files[0]
@@ -330,35 +344,39 @@ def load_and_visualize_test_sample():
     print(f"🖼️ Loaded test image: {os.path.basename(img_path)}")
     print(f"   Image size: {image.shape[1]}x{image.shape[0]}")
     
-    # For test data, we'll create dummy keypoints since test annotations 
-    # might not have the same structure
-    img_height, img_width = image.shape[:2]
+    # Get keypoints for the first frame
+    frame_idx = 0
     
-    # Create reasonable dummy keypoints for visualization
-    dummy_keypoints = np.array([
-        [img_width*0.5, img_height*0.8],   # Root
-        [img_width*0.55, img_height*0.75], # RHip
-        [img_width*0.58, img_height*0.6],  # RKnee
-        [img_width*0.6, img_height*0.45],  # RAnkle
-        [img_width*0.45, img_height*0.75], # LHip
-        [img_width*0.42, img_height*0.6],  # LKnee
-        [img_width*0.4, img_height*0.45],  # LAnkle
-        [img_width*0.5, img_height*0.65],  # Spine
-        [img_width*0.5, img_height*0.5],   # Thorax
-        [img_width*0.5, img_height*0.3],   # Nose
-        [img_width*0.5, img_height*0.25],  # Head
-        [img_width*0.4, img_height*0.45],  # LShoulder
-        [img_width*0.35, img_height*0.55], # LElbow
-        [img_width*0.3, img_height*0.65],  # LWrist
-        [img_width*0.6, img_height*0.45],  # RShoulder
-        [img_width*0.65, img_height*0.55], # RElbow
-        [img_width*0.7, img_height*0.65],  # RWrist
-    ])
+    # Handle different pose data shapes
+    if len(poses_2d.shape) == 3:  # (frames, joints, coords)
+        if frame_idx < poses_2d.shape[0]:
+            keypoints_2d = poses_2d[frame_idx]  # Shape: (17, 2) or (17, 3)
+        else:
+            print(f"❌ Frame {frame_idx} not available. Max frames: {poses_2d.shape[0]}")
+            return None
+    elif len(poses_2d.shape) == 2:  # (joints, coords) - single frame
+        keypoints_2d = poses_2d
+    else:
+        print(f"❌ Unexpected pose data shape: {poses_2d.shape}")
+        return None
     
-    save_path = "test_sample_keypoints.jpg"
-    title = f"Test Sample - {test_seq_name}"
+    # Ensure we have the right shape
+    if keypoints_2d.shape[0] != 17:
+        print(f"❌ Expected 17 keypoints, got {keypoints_2d.shape[0]}")
+        return None
     
-    vis_image = visualize_keypoints_on_image(image, dummy_keypoints, MPI_JOINT_NAMES, title, save_path)
+    # If keypoints have 3D coordinates, take only x,y
+    if keypoints_2d.shape[1] > 2:
+        keypoints_2d = keypoints_2d[:, :2]
+    
+    print(f"📊 Keypoints shape: {keypoints_2d.shape}")
+    print(f"📊 Keypoints range - X: [{np.min(keypoints_2d[:, 0]):.1f}, {np.max(keypoints_2d[:, 0]):.1f}], Y: [{np.min(keypoints_2d[:, 1]):.1f}, {np.max(keypoints_2d[:, 1]):.1f}]")
+    
+    # Visualize with REAL keypoints
+    save_path = f"test_sample_keypoints_{target_seq}_real.jpg"
+    title = f"Test Sample - {target_seq} Frame {frame_idx} (REAL keypoints)"
+    
+    vis_image = visualize_keypoints_on_image(image, keypoints_2d, MPI_JOINT_NAMES, title, save_path)
     
     return vis_image
 
@@ -372,7 +390,7 @@ def main():
     # Visualize training sample
     train_vis = load_and_visualize_training_sample()
     
-    # Visualize test sample  
+    # Visualize test sample with REAL keypoints
     test_vis = load_and_visualize_test_sample()
     
     print("\n" + "="*60)
@@ -380,7 +398,7 @@ def main():
     print("="*60)
     print("📸 Check the saved images:")
     print("  - training_sample_keypoints.jpg")
-    print("  - test_sample_keypoints.jpg (or test_sample_keypoints_dummy.jpg)")
+    print("  - test_sample_keypoints_TS1_real.jpg")
     print("\n📋 Keypoint order is printed above in the console output")
     print("🎨 Color coding:")
     print("  - Yellow: Head joints (Head, Nose)")
