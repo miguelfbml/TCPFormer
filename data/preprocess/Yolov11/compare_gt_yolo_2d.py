@@ -7,7 +7,10 @@ python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo_pose
 
 python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50 --save-video
 
-# Run on all sequences
+# Run on all sequences with all frames
+python compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt
+
+# Run on all sequences with limited frames
 python compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50
 """
 
@@ -114,7 +117,7 @@ def load_test_3d_data_from_dataset(sequence_name):
     
     return None, None, None
 
-def load_test_frames(sequence_name, num_frames=50):
+def load_test_frames(sequence_name, num_frames=None):
     """Load test frames for the sequence"""
     test_image_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
@@ -131,11 +134,13 @@ def load_test_frames(sequence_name, num_frames=50):
             image_files.sort()
             
             if image_files:
-                # Limit to requested number of frames
-                image_files = image_files[:num_frames]
+                # Limit to requested number of frames if specified
+                if num_frames is not None:
+                    image_files = image_files[:num_frames]
+                
                 frames = []
                 
-                for img_path in image_files[:num_frames]:
+                for img_path in image_files:
                     frame = cv2.imread(img_path)
                     if frame is not None:
                         frames.append(frame)
@@ -298,29 +303,41 @@ def process_single_sequence(model, sequence_name, args):
         print(f"❌ Failed to load ground truth data for {sequence_name}")
         return None
     
-    # Limit frames
-    gt_poses_2d = gt_poses_2d[:args.num_frames]
+    # Determine number of frames to process
+    if args.all and args.num_frames is None:
+        # Use all frames when --all is specified without --num-frames
+        num_frames_to_use = None
+        gt_poses_2d_limited = gt_poses_2d  # Use all frames
+        print(f"✓ Using ALL {len(gt_poses_2d)} frames for sequence {sequence_name}")
+    else:
+        # Use specified number of frames or default
+        num_frames_to_use = args.num_frames if args.num_frames is not None else 50
+        gt_poses_2d_limited = gt_poses_2d[:num_frames_to_use]
+        print(f"✓ Using {len(gt_poses_2d_limited)} frames for sequence {sequence_name}")
     
     # Load test frames
-    frames = load_test_frames(sequence_name, args.num_frames)
+    frames = load_test_frames(sequence_name, num_frames_to_use)
     
     if frames is None:
         print(f"❌ Failed to load test frames for {sequence_name}")
         return None
     
     # Ensure matching number of frames
-    min_frames = min(len(frames), len(gt_poses_2d))
+    min_frames = min(len(frames), len(gt_poses_2d_limited))
     frames = frames[:min_frames]
-    gt_poses_2d = gt_poses_2d[:min_frames]
+    gt_poses_2d_final = gt_poses_2d_limited[:min_frames]
     
-    print(f"✓ Using {min_frames} frames for comparison")
+    print(f"✓ Processing {min_frames} frames for comparison")
     
-    # Run YOLO pose estimation
+    # Run YOLO pose estimation with progress bar for large sequences
     print(f"🔍 Running YOLO pose estimation...")
+    if min_frames > 100:
+        print(f"   Processing {min_frames} frames (this may take a while)...")
+    
     yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size)
     
     # Convert coordinates to pixels
-    gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
+    gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
     
     # Make both datasets root-relative
     gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
@@ -342,7 +359,7 @@ def process_single_sequence(model, sequence_name, args):
 
 def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metrics, args):
     """Create side-by-side comparison visualization with comprehensive metrics"""
-    min_frames = min(len(gt_poses_2d), len(yolo_poses_2d), args.num_frames)
+    min_frames = min(len(gt_poses_2d), len(yolo_poses_2d), args.num_frames if args.num_frames else len(gt_poses_2d))
     
     if min_frames == 0:
         print("No frames to visualize!")
@@ -538,10 +555,10 @@ def main():
                        help='Sequence to compare (TS1, TS2, TS3, TS4, TS5, TS6)')
     parser.add_argument('--model-path', type=str, required=True,
                        help='Path to trained YOLO model (.pt file)')
-    parser.add_argument('--num-frames', type=int, default=50,
-                       help='Number of frames to process per sequence')
+    parser.add_argument('--num-frames', type=int, default=None,
+                       help='Number of frames to process per sequence (if not specified with --all, uses all frames)')
     parser.add_argument('--all', action='store_true',
-                       help='Run evaluation on all available sequences')
+                       help='Run evaluation on all available sequences with all frames (unless --num-frames specified)')
     parser.add_argument('--save-video', action='store_true',
                        help='Save comparison as GIF (only for single sequence)')
     parser.add_argument('--output-dir', type=str, default='comparison_output',
@@ -553,7 +570,16 @@ def main():
     print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics")
     print("="*80)
     print(f"Model: {args.model_path}")
-    print(f"Frames per sequence: {args.num_frames}")
+    
+    # Update frame information display
+    if args.all and args.num_frames is None:
+        print(f"Mode: Process ALL FRAMES from ALL SEQUENCES")
+    elif args.all and args.num_frames is not None:
+        print(f"Mode: Process {args.num_frames} frames from ALL SEQUENCES")
+    else:
+        frame_count = args.num_frames if args.num_frames is not None else 50
+        print(f"Mode: Process {frame_count} frames from sequence {args.sequence}")
+    
     print(f"Input size: {args.img_size}")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
     print("Coordinate system: Root-relative poses in pixel domain")
@@ -581,6 +607,10 @@ def main():
         available_sequences = get_available_sequences()
         print(f"Available sequences: {available_sequences}")
         
+        if args.num_frames is None:
+            print("⚠️  WARNING: Processing ALL frames from ALL sequences. This may take a very long time!")
+            print("   Consider using --num-frames to limit processing for faster results.")
+        
         all_metrics = []
         
         for sequence in available_sequences:
@@ -601,6 +631,11 @@ def main():
     else:
         # Process single sequence
         print(f"\n📂 Processing single sequence: {args.sequence}")
+        
+        # Set default frames for single sequence if not specified
+        if args.num_frames is None:
+            args.num_frames = 50
+            print(f"Using default {args.num_frames} frames for single sequence")
         
         metrics = process_single_sequence(model, args.sequence, args)
         
@@ -641,7 +676,7 @@ def main():
             
             if gt_poses_2d is not None and frames is not None:
                 # Process data for visualization
-                min_frames = min(len(frames), len(gt_poses_2d), args.num_frames)
+                min_frames = min(len(frames), len(gt_poses_2d), args.num_frames if args.num_frames else len(gt_poses_2d))
                 frames = frames[:min_frames]
                 gt_poses_2d = gt_poses_2d[:min_frames]
                 
