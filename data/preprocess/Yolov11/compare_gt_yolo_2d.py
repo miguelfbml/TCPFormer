@@ -4,6 +4,8 @@ Creates side-by-side visualization showing GT vs YOLO predictions with frame-by-
 
 Usage:
 python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo_pose_full/weights/best.pt --num-frames 50 --save-video
+
+python compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50 --save-video
 """
 
 import argparse
