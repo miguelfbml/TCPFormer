@@ -43,54 +43,18 @@ except ImportError:
         """Basic AUC calculation for 2D poses"""
         return 0.75
 
-# MPI-INF-3DHP joint names (17 keypoints) - CORRECTED ORDER
+# MPI-INF-3DHP joint names and connections
 JOINT_NAMES = [
-    'Root',         # 0  - Hip center/root joint
-    'RHip',         # 1  - Right hip
-    'RKnee',        # 2  - Right knee
-    'RAnkle',       # 3  - Right ankle
-    'LHip',         # 4  - Left hip
-    'LKnee',        # 5  - Left knee
-    'LAnkle',       # 6  - Left ankle
-    'Spine',        # 7  - Lower spine
-    'Thorax',       # 8  - Upper spine/thorax
-    'Nose',         # 9  - Nose/head top
-    'Head',         # 10 - Head center
-    'LShoulder',    # 11 - Left shoulder
-    'LElbow',       # 12 - Left elbow
-    'LWrist',       # 13 - Left wrist
-    'RShoulder',    # 14 - Right shoulder
-    'RElbow',       # 15 - Right elbow
-    'RWrist'        # 16 - Right wrist
+    'Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
+    'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
+    'RShoulder', 'RElbow', 'RWrist'
 ]
 
-# CORRECTED MPI-INF-3DHP skeleton connections
 CONNECTIONS_2D = [
-    # Spine chain
-    (0, 7),   # Root to Spine
-    (7, 8),   # Spine to Thorax
-    (8, 9),   # Thorax to Nose
-    (9, 10),  # Nose to Head
-    
-    # Right leg
-    (0, 1),   # Root to RHip
-    (1, 2),   # RHip to RKnee
-    (2, 3),   # RKnee to RAnkle
-    
-    # Left leg
-    (0, 4),   # Root to LHip
-    (4, 5),   # LHip to LKnee
-    (5, 6),   # LKnee to LAnkle
-    
-    # Right arm
-    (8, 14),  # Thorax to RShoulder
-    (14, 15), # RShoulder to RElbow
-    (15, 16), # RElbow to RWrist
-    
-    # Left arm
-    (8, 11),  # Thorax to LShoulder
-    (11, 12), # LShoulder to LElbow
-    (12, 13)  # LElbow to LWrist
+    (0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6),  # legs
+    (0, 7), (7, 8), (8, 9), (9, 10),  # spine to head
+    (8, 11), (11, 12), (12, 13),  # left arm
+    (8, 14), (14, 15), (15, 16)   # right arm
 ]
 
 def load_test_3d_data_from_dataset(sequence_name):
@@ -232,8 +196,8 @@ def convert_coordinates_to_pixels(poses_2d, frames):
     
     return poses_pixel
 
-def make_root_relative_2d_pixel(poses_2d_pixel, root_joint_idx=0):
-    """Make poses root-relative in pixel domain (using proper root joint index 0)"""
+def make_root_relative_2d_pixel(poses_2d_pixel, root_joint_idx=14):
+    """Make poses root-relative in pixel domain"""
     root_relative_poses = poses_2d_pixel.copy()
     
     for frame_idx in range(poses_2d_pixel.shape[0]):
@@ -390,7 +354,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
         
         gt_valid = not np.all(gt_frame == 0)
         if gt_valid:
-            # Draw skeleton connections with CORRECTED connections
+            # Draw skeleton connections
             for connection in CONNECTIONS_2D:
                 joint1, joint2 = connection
                 if joint1 < len(gt_frame) and joint2 < len(gt_frame):
@@ -400,7 +364,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
             
             # Draw joints
             for joint_idx, (x, y) in enumerate(gt_frame):
-                if joint_idx != 0:  # Skip root joint (now correctly at index 0)
+                if joint_idx != 14:  # Skip root joint
                     ax1.scatter(x, y, c='blue', s=60, alpha=0.9, edgecolors='darkblue', linewidth=1)
                     ax1.text(x+15, y+15, str(joint_idx), fontsize=9, ha='left', va='bottom', 
                             color='black', weight='bold',
@@ -417,7 +381,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
         
         yolo_valid = not np.all(yolo_frame == 0)
         if yolo_valid:
-            # Draw skeleton connections with CORRECTED connections
+            # Draw skeleton connections
             for connection in CONNECTIONS_2D:
                 joint1, joint2 = connection
                 if joint1 < len(yolo_frame) and joint2 < len(yolo_frame):
@@ -427,7 +391,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
             
             # Draw joints
             for joint_idx, (x, y) in enumerate(yolo_frame):
-                if joint_idx != 0:  # Skip root joint (now correctly at index 0)
+                if joint_idx != 14:  # Skip root joint
                     ax2.scatter(x, y, c='red', s=60, alpha=0.9, edgecolors='darkred', linewidth=1)
                     ax2.text(x+15, y+15, str(joint_idx), fontsize=9, ha='left', va='bottom', 
                             color='black', weight='bold',
@@ -436,7 +400,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
             ax2.text((x_min+x_max)/2, (y_min+y_max)/2, 'No YOLO Detection', ha='center', va='center', 
                     fontsize=16, color='red')
         
-        # Highlight root joint (at origin) - now correctly at index 0
+        # Highlight root joint (at origin)
         for ax in [ax1, ax2]:
             ax.scatter(0, 0, c='green', s=120, marker='*', alpha=1.0, 
                       edgecolors='darkgreen', linewidth=2, label='Root (Hip Center)')
@@ -525,10 +489,10 @@ def main():
     print(f"\n🔄 Converting coordinates to pixel domain...")
     gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
     
-    # Make both datasets root-relative (using correct root joint index 0)
+    # Make both datasets root-relative
     print(f"Making both datasets root-relative in pixel domain...")
-    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=0)
-    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=0)
+    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
     
     analyze_coordinate_ranges(gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence)
     
