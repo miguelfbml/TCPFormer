@@ -39,7 +39,6 @@ import torch.nn as nn
 
 # MPI-INF-3DHP joint names (17 keypoints)
 MPI_JOINT_NAMES = [
-
 'Head',
 'SpineShoulder', 
 'LShoulder',

@@ -45,9 +45,23 @@ except ImportError:
 
 # MPI-INF-3DHP joint names and connections
 JOINT_NAMES = [
-    'Root', 'RHip', 'RKnee', 'RAnkle', 'LHip', 'LKnee', 'LAnkle',
-    'Spine', 'Thorax', 'Nose', 'Head', 'LShoulder', 'LElbow', 'LWrist',
-    'RShoulder', 'RElbow', 'RWrist'
+'Head',
+'SpineShoulder', 
+'LShoulder',
+'LElbow',
+'LHand',
+'RShoulder',
+'RElbow',
+'RHand',
+'LHip',
+'LKnee',
+'LAnkle',
+'RHip',
+'RKnee',
+'RAnkle',
+'Sacrum',
+'Spine',
+'Neck'
 ]
 
 CONNECTIONS_2D = [
