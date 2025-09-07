@@ -64,30 +64,138 @@ def check_gpu_availability():
     
     return device, gpu_available
 
-# Add parent directory to path to import utilities
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-
-# Import utility functions (following the pattern from your workspace)
-try:
-    from utils.tools import calculate_torso_diameter_2d, compute_pck_2d, compute_auc_2d
-except ImportError:
-    # Define basic implementations if utils are not available
-    def calculate_torso_diameter_2d(poses_2d):
-        """Basic torso diameter calculation for 2D poses"""
-        return np.ones(poses_2d.shape[0]) * 100  # Default torso diameter
+# Metric calculation functions
+def calculate_torso_diameter_2d(poses_2d):
+    """
+    Calculate torso diameter from 2D poses using shoulder width and torso height
     
-    def compute_pck_2d(pred_poses, gt_poses, torso_diameters, fixed_threshold=150.0):
-        """Basic PCK calculation for 2D poses"""
+    Args:
+        poses_2d: numpy array of shape (frames, 17, 2) containing 2D pose data
+        
+    Returns:
+        numpy array of shape (frames,) containing torso diameter for each frame
+    """
+    if len(poses_2d.shape) != 3 or poses_2d.shape[1] != 17:
+        print(f"Warning: Unexpected pose shape {poses_2d.shape}, using default torso diameter")
+        return np.ones(poses_2d.shape[0]) * 100.0
+    
+    # Joint indices according to MPI-INF-3DHP format
+    # 2: LShoulder, 5: RShoulder, 1: SpineShoulder, 14: Sacrum, 8: LHip, 11: RHip
+    left_shoulder = poses_2d[:, 2, :]    # LShoulder
+    right_shoulder = poses_2d[:, 5, :]   # RShoulder  
+    spine_shoulder = poses_2d[:, 1, :]   # SpineShoulder
+    sacrum = poses_2d[:, 14, :]          # Sacrum
+    left_hip = poses_2d[:, 8, :]         # LHip
+    right_hip = poses_2d[:, 11, :]       # RHip
+    
+    # Calculate shoulder width
+    shoulder_width = np.linalg.norm(left_shoulder - right_shoulder, axis=1)
+    
+    # Calculate hip width  
+    hip_width = np.linalg.norm(left_hip - right_hip, axis=1)
+    
+    # Calculate torso height (spine shoulder to sacrum)
+    torso_height = np.linalg.norm(spine_shoulder - sacrum, axis=1)
+    
+    # Use maximum of shoulder width, hip width, and 50% of torso height as torso diameter
+    torso_diameter = np.maximum.reduce([
+        shoulder_width,
+        hip_width, 
+        torso_height * 0.5
+    ])
+    
+    # Ensure minimum diameter of 50 pixels and maximum of 300 pixels for reasonable values
+    torso_diameter = np.clip(torso_diameter, 50.0, 300.0)
+    
+    # Handle invalid cases (all zeros)
+    invalid_mask = torso_diameter < 1e-6
+    torso_diameter[invalid_mask] = 100.0  # Default value for invalid frames
+    
+    return torso_diameter
+
+def compute_pck_2d(pred_poses, gt_poses, torso_diameters, fixed_threshold=150.0):
+    """
+    Compute PCK (Percentage of Correct Keypoints) for 2D poses
+    
+    Args:
+        pred_poses: numpy array of shape (frames, 17, 2) - predicted poses
+        gt_poses: numpy array of shape (frames, 17, 2) - ground truth poses
+        torso_diameters: numpy array of shape (frames,) - torso diameter for each frame
+        fixed_threshold: float - fixed threshold in pixels for PCK calculation
+        
+    Returns:
+        dict containing PCK values for different thresholds
+    """
+    if pred_poses.shape != gt_poses.shape:
+        print(f"Warning: Shape mismatch between predictions {pred_poses.shape} and GT {gt_poses.shape}")
         return {
-            'PCK@20%_torso': 0.5,
-            'PCK@50%_torso': 0.7,
-            'PCK@80%_torso': 0.8,
-            'PCK@100%_150px': 0.85
+            'PCK@20%_torso': 0.0,
+            'PCK@50%_torso': 0.0, 
+            'PCK@80%_torso': 0.0,
+            'PCK@100%_torso': 0.0,
+            f'PCK@100%_{int(fixed_threshold)}px': 0.0
         }
     
-    def compute_auc_2d(pred_poses, gt_poses, max_threshold=150.0):
-        """Basic AUC calculation for 2D poses"""
-        return 0.75
+    n_frames, n_joints, _ = pred_poses.shape
+    
+    # Calculate Euclidean distance between predicted and ground truth keypoints
+    joint_distances = np.linalg.norm(pred_poses - gt_poses, axis=2)  # Shape: (frames, joints)
+    
+    results = {}
+    
+    # PCK with different torso diameter percentages
+    for pct in [20, 50, 80, 100]:
+        # Threshold for each frame based on torso diameter percentage
+        threshold = torso_diameters[:, np.newaxis] * (pct / 100.0)  # Shape: (frames, 1)
+        
+        # Check which joints are within threshold
+        correct = joint_distances < threshold  # Shape: (frames, joints)
+        
+        # Calculate PCK as percentage of correct predictions
+        pck = np.mean(correct)
+        results[f'PCK@{pct}%_torso'] = pck
+    
+    # PCK with fixed pixel threshold
+    correct_fixed = joint_distances < fixed_threshold
+    pck_fixed = np.mean(correct_fixed)
+    results[f'PCK@100%_{int(fixed_threshold)}px'] = pck_fixed
+    
+    return results
+
+def compute_auc_2d(pred_poses, gt_poses, max_threshold=150.0, num_thresholds=50):
+    """
+    Compute AUC (Area Under Curve) for 2D poses using PCK curve
+    
+    Args:
+        pred_poses: numpy array of shape (frames, 17, 2) - predicted poses
+        gt_poses: numpy array of shape (frames, 17, 2) - ground truth poses  
+        max_threshold: float - maximum threshold for AUC calculation
+        num_thresholds: int - number of threshold points to evaluate
+        
+    Returns:
+        float - AUC value normalized by max_threshold
+    """
+    if pred_poses.shape != gt_poses.shape:
+        print(f"Warning: Shape mismatch for AUC calculation")
+        return 0.0
+    
+    # Calculate joint distances
+    joint_distances = np.linalg.norm(pred_poses - gt_poses, axis=2)  # Shape: (frames, joints)
+    
+    # Create threshold range from 0 to max_threshold
+    thresholds = np.linspace(0, max_threshold, num_thresholds)
+    pck_values = []
+    
+    # Calculate PCK for each threshold
+    for threshold in thresholds:
+        correct = joint_distances < threshold
+        pck = np.mean(correct)
+        pck_values.append(pck)
+    
+    # Calculate AUC using trapezoidal rule and normalize by max_threshold
+    auc = np.trapz(pck_values, thresholds) / max_threshold
+    
+    return auc
 
 # MPI-INF-3DHP joint names and connections
 JOINT_NAMES = [
@@ -713,7 +821,7 @@ def print_sequence_results(metrics):
         print(f"    {key}: {value*100:.2f}%")
 
 def print_summary_results(all_metrics, model_name):
-    """Print summary results for all sequences"""
+    """Print summary results for all sequences with overall MPJPE"""
     if not all_metrics:
         print("No results to summarize.")
         return
@@ -730,6 +838,18 @@ def print_summary_results(all_metrics, model_name):
         print("No valid metrics found.")
         return
     
+    # Calculate weighted overall MPJPE (weighted by number of valid frames)
+    total_mpjpe_sum = 0
+    total_weighted_frames = 0
+    
+    for m in valid_metrics:
+        weight = m['valid_frames']
+        total_mpjpe_sum += m['avg_mpjpe'] * weight
+        total_weighted_frames += weight
+    
+    overall_mpjpe = total_mpjpe_sum / total_weighted_frames if total_weighted_frames > 0 else 0
+    
+    # Calculate simple average MPJPE across sequences
     avg_mpjpe = np.mean([m['avg_mpjpe'] for m in valid_metrics])
     avg_auc = np.mean([m['auc'] for m in valid_metrics])
     total_valid_frames = sum([m['valid_frames'] for m in valid_metrics])
@@ -738,7 +858,8 @@ def print_summary_results(all_metrics, model_name):
     print(f"\nOVERALL METRICS:")
     print(f"  Sequences processed: {len(valid_metrics)}")
     print(f"  Total valid frames: {total_valid_frames}/{total_frames}")
-    print(f"  Average MPJPE: {avg_mpjpe:.2f} pixels")
+    print(f"  Overall MPJPE (weighted): {overall_mpjpe:.2f} pixels")
+    print(f"  Average MPJPE (per sequence): {avg_mpjpe:.2f} pixels")
     print(f"  Average AUC: {avg_auc:.4f}")
     
     # PCK metrics
@@ -761,6 +882,8 @@ def print_summary_results(all_metrics, model_name):
         
         print(f"{sequence:<10} {mpjpe:<12.2f} {auc:<10.4f} {valid_frames}/{total_frames:<12}")
     
+    print(f"{'='*80}")
+    print(f"🎯 FINAL OVERALL MPJPE: {overall_mpjpe:.2f} pixels")
     print(f"{'='*80}")
 
 def main():
