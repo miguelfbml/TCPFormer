@@ -11,23 +11,23 @@ import matplotlib.pyplot as plt
 
 # MPI-INF-3DHP joint names (17 keypoints) - Current order in .npz files
 MPI_JOINT_NAMES = [
-    'Root',        # 0
-    'RHip',        # 1  
-    'RKnee',       # 2
-    'RAnkle',      # 3
-    'LHip',        # 4
-    'LKnee',       # 5
-    'LAnkle',      # 6
-    'Spine',       # 7
-    'Thorax',      # 8
-    'Nose',        # 9
-    'Head',        # 10
-    'LShoulder',   # 11
-    'LElbow',      # 12
-    'LWrist',      # 13
-    'RShoulder',   # 14
-    'RElbow',      # 15
-    'RWrist'       # 16
+'Head',
+'SpineShoulder', 
+'LShoulder',
+'LElbow',
+'LHand',
+'RShoulder',
+'RElbow',
+'RHand',
+'LHip',
+'LKnee',
+'LAnkle',
+'RHip',
+'RKnee',
+'RAnkle',
+'Sacrum',
+'Spine',
+'Neck'
 ]
 
 def print_keypoint_order():
