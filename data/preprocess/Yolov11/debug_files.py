@@ -28,6 +28,7 @@ MPI_JOINT_NAMES = [
 'Sacrum',
 'Spine',
 'Neck'
+
 ]
 
 def print_keypoint_order():
