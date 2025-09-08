@@ -467,7 +467,7 @@ class MPIDatasetConverter:
         y_min, y_max = np.min(y_coords), np.max(y_coords)
         
         # Add padding to bounding box
-        padding = 0.18
+        padding = 0.10
         width = x_max - x_min
         height = y_max - y_min
         
@@ -595,8 +595,8 @@ class MPIDatasetConverter:
         print(f"\nTraining data: Processed {processed_count} frames, skipped {skipped_count}")
         
     def process_test_data(self, test_annotations):
-        """Process MPI-INF-3DHP test data for validation (FULL DATASET)"""
-        print("\nProcessing test data for validation (FULL DATASET)...")
+        """Process MPI-INF-3DHP test data for validation using REAL ground truth"""
+        print("\nProcessing test data for validation using REAL GROUND TRUTH...")
         
         if not test_annotations:
             print("No test annotations available, skipping validation data creation")
@@ -605,7 +605,7 @@ class MPIDatasetConverter:
         processed_count = 0
         skipped_count = 0
         
-        print(f"Validation data: Processing all test sequences and all frames")
+        print(f"Validation data: Processing all test sequences with REAL annotations")
         print(f"  Output directory: {self.val_images_path}")
         
         # Test image paths
@@ -614,8 +614,6 @@ class MPIDatasetConverter:
             '../motion3d/mpi_inf_3dhp_test_set',
             '../../motion3d/mpi_inf_3dhp_test_set'
         ]
-        
-        total_test_seqs = len(test_annotations)
         
         for seq_idx, (seq_name, seq_data) in enumerate(tqdm(test_annotations.items(), desc="Processing test sequences")):
             # Find test images
@@ -630,7 +628,7 @@ class MPIDatasetConverter:
                 print(f"Warning: Test images not found for {seq_name}")
                 continue
             
-            # Get ALL images (no sampling)
+            # Get image files
             image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
             image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
             image_files.sort()
@@ -638,36 +636,34 @@ class MPIDatasetConverter:
             if not image_files:
                 continue
             
-            seq_processed = 0
+            # Extract ground truth 2D poses from test annotations
+            poses_2d = seq_data['data_2d']  # Shape: (frames, 17, 2)
             
-            for img_idx in range(len(image_files)):
+            # Process frames with real annotations
+            max_frames = min(len(image_files), len(poses_2d))
+            
+            for img_idx in range(max_frames):
                 try:
                     img_path = image_files[img_idx]
                     image = cv2.imread(img_path)
                     if image is None:
+                        skipped_count += 1
                         continue
                     
                     img_height, img_width = image.shape[:2]
+                    pose_2d = poses_2d[img_idx]  # Shape: (17, 2)
                     
-                    # Create dummy annotation for test images
-                    center_x, center_y = 0.5, 0.5
-                    bbox_width, bbox_height = 0.8, 0.9
+                    # Add dummy confidence if not present (assume all keypoints are visible)
+                    if pose_2d.shape[1] == 2:
+                        confidence = np.ones((pose_2d.shape[0], 1)) * 0.9
+                        pose_2d = np.hstack([pose_2d, confidence])
                     
-                    # Create dummy keypoints
-                    keypoint_str = ""
-                    for j in range(17):
-                        if j == 9:  # nose
-                            x, y, v = 0.5, 0.2, 2
-                        elif j in [11, 14]:  # shoulders
-                            x, y, v = 0.3 if j == 11 else 0.7, 0.3, 2
-                        elif j in [1, 4]:  # hips
-                            x, y, v = 0.35 if j == 4 else 0.65, 0.6, 2
-                        else:
-                            x, y, v = 0.5, 0.5, 0
-                        
-                        keypoint_str += f" {x:.6f} {y:.6f} {v}"
+                    # Create YOLO annotation using REAL ground truth
+                    annotation = self.create_yolo_annotation(pose_2d, img_width, img_height)
                     
-                    annotation = f"0 {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}{keypoint_str}"
+                    if annotation is None:
+                        skipped_count += 1
+                        continue
                     
                     # Save image and annotation
                     img_name = f"{seq_name}_frame{img_idx:06d}.jpg"
@@ -680,14 +676,14 @@ class MPIDatasetConverter:
                     with open(dst_label_path, 'w') as f:
                         f.write(annotation + '\n')
                     
-                    seq_processed += 1
                     processed_count += 1
-                        
+                    
                 except Exception as e:
+                    print(f"Error processing {seq_name} frame {img_idx}: {e}")
                     skipped_count += 1
                     continue
         
-        print(f"\nValidation data: Processed {processed_count} frames, skipped {skipped_count}")
+        print(f"\nValidation data: Processed {processed_count} frames with REAL annotations, skipped {skipped_count}")
     
     def create_dataset_yaml(self):
         """Create YOLO dataset configuration file"""
