@@ -84,8 +84,6 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     ]
     
     # Convert image filename to annotation filename
-    # Original YOLO filename: TS6_frame000450.jpg -> annotation: TS6_frame000450.txt
-    # But we get from test set: frame000450.jpg -> need to convert to: TS6_frame000450.txt
     base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: frame000450
     annotation_filename = f"{sequence_name}_{base_filename}.txt"  # TS6_frame000450.txt
     
@@ -98,15 +96,12 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
         
         for annotation_path in possible_paths:
             if os.path.exists(annotation_path):
-                print(f"Found annotation: {annotation_path}")  # Debug info
                 return parse_yolo_annotation(annotation_path)
     
-    # Debug: print what we're looking for
-    print(f"Looking for annotation: {annotation_filename} in sequence {sequence_name}")
     return []
 
 def parse_yolo_annotation(annotation_path):
-    """Parse YOLO format annotation file"""
+    """Parse YOLO format annotation file with pose keypoints"""
     annotations = []
     if os.path.exists(annotation_path):
         with open(annotation_path, 'r') as f:
@@ -118,24 +113,93 @@ def parse_yolo_annotation(annotation_path):
                     y_center = float(parts[2])
                     width = float(parts[3])
                     height = float(parts[4])
-                    annotations.append((class_id, x_center, y_center, width, height))
+                    
+                    # Parse keypoints if available (YOLO pose format has 51 additional values for 17 keypoints)
+                    keypoints = []
+                    if len(parts) >= 56:  # 5 bbox values + 51 keypoint values (17 keypoints * 3 values each)
+                        for i in range(5, len(parts), 3):
+                            if i + 2 < len(parts):
+                                kpt_x = float(parts[i])
+                                kpt_y = float(parts[i + 1])
+                                kpt_v = float(parts[i + 2])  # visibility
+                                keypoints.append((kpt_x, kpt_y, kpt_v))
+                    
+                    annotations.append((class_id, x_center, y_center, width, height, keypoints))
     return annotations
 
+# MPI-INF-3DHP joint connections for skeleton drawing
+CONNECTIONS_2D = [
+    (0, 16), (16, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
+    (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
+]
+
+# Joint names for reference
+JOINT_NAMES = [
+    'Head', 'SpineShoulder', 'LShoulder', 'LElbow', 'LHand', 'RShoulder', 
+    'RElbow', 'RHand', 'LHip', 'LKnee', 'LAnkle', 'RHip', 'RKnee', 'RAnkle', 
+    'Sacrum', 'Spine', 'Neck'
+]
+
 def draw_annotations(image, annotations, img_width, img_height):
-    """Draw bounding boxes on image"""
-    for class_id, x_center, y_center, width, height in annotations:
-        # Convert normalized coordinates to pixel coordinates
+    """Draw bounding boxes and keypoints on image"""
+    for annotation in annotations:
+        if len(annotation) == 6:
+            class_id, x_center, y_center, width, height, keypoints = annotation
+        else:
+            # Fallback for old format without keypoints
+            class_id, x_center, y_center, width, height = annotation[:5]
+            keypoints = []
+        
+        # Draw bounding box
         x1 = int((x_center - width/2) * img_width)
         y1 = int((y_center - height/2) * img_height)
         x2 = int((x_center + width/2) * img_width)
         y2 = int((y_center + height/2) * img_height)
         
-        # Draw bounding box
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         # Draw class label
-        label = f"Person"  # Class 0 is person in YOLO
+        label = f"Person"
         cv2.putText(image, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Draw keypoints if available
+        if keypoints and len(keypoints) >= 17:
+            # Convert normalized keypoint coordinates to pixel coordinates
+            pixel_keypoints = []
+            for kpt_x, kpt_y, kpt_v in keypoints[:17]:  # Only use first 17 keypoints
+                if kpt_v > 0:  # Only draw visible keypoints
+                    px = int(kpt_x * img_width)
+                    py = int(kpt_y * img_height)
+                    pixel_keypoints.append((px, py, kpt_v))
+                else:
+                    pixel_keypoints.append((0, 0, 0))
+            
+            # Draw keypoint connections (skeleton)
+            for connection in CONNECTIONS_2D:
+                joint1_idx, joint2_idx = connection
+                if (joint1_idx < len(pixel_keypoints) and joint2_idx < len(pixel_keypoints) and
+                    pixel_keypoints[joint1_idx][2] > 0 and pixel_keypoints[joint2_idx][2] > 0):
+                    
+                    pt1 = (pixel_keypoints[joint1_idx][0], pixel_keypoints[joint1_idx][1])
+                    pt2 = (pixel_keypoints[joint2_idx][0], pixel_keypoints[joint2_idx][1])
+                    cv2.line(image, pt1, pt2, (255, 0, 0), 2)  # Blue lines for skeleton
+            
+            # Draw keypoints as circles
+            for i, (px, py, kpt_v) in enumerate(pixel_keypoints):
+                if kpt_v > 0:
+                    # Different colors for different body parts
+                    if i == 0:  # Head
+                        color = (0, 0, 255)  # Red
+                    elif i in [2, 3, 4, 5, 6, 7]:  # Arms
+                        color = (255, 255, 0)  # Cyan
+                    elif i in [8, 9, 10, 11, 12, 13]:  # Legs
+                        color = (0, 255, 255)  # Yellow
+                    else:  # Torso
+                        color = (255, 0, 255)  # Magenta
+                    
+                    cv2.circle(image, (px, py), 4, color, -1)
+                    # Add joint number
+                    cv2.putText(image, str(i), (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
     
     return image
 
@@ -162,21 +226,35 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     
     processed_count = 0
     frames_with_annotations = 0
+    frames_with_keypoints = 0
     
     for frame, filename in frames_data:
         # Get YOLO annotations for this frame
         annotations = parse_yolo_annotation_file(sequence, filename)
         
+        # Count annotations with keypoints
+        has_keypoints = False
+        for annotation in annotations:
+            if len(annotation) == 6 and annotation[5]:  # Has keypoints
+                has_keypoints = True
+                break
+        
         # Draw annotations on image
         annotated_image = draw_annotations(frame, annotations, width, height)
         
         # Add frame info
-        frame_info = f"Frame: {filename} | Annotations: {len(annotations)}"
+        keypoint_info = " | Keypoints: Yes" if has_keypoints else " | Keypoints: No"
+        frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
         cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         # Add sequence info
         seq_info = f"Sequence: {sequence}"
         cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add legend
+        legend_y = 90
+        cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
+                   (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
         # Write frame to video
         video_writer.write(annotated_image)
@@ -184,15 +262,18 @@ def create_annotated_video(sequence, output_path, max_frames=None):
         
         if len(annotations) > 0:
             frames_with_annotations += 1
+        if has_keypoints:
+            frames_with_keypoints += 1
     
     video_writer.release()
     print(f"Created annotated video: {output_path}")
     print(f"Processed {processed_count} frames")
     print(f"Frames with annotations: {frames_with_annotations}/{processed_count}")
+    print(f"Frames with keypoints: {frames_with_keypoints}/{processed_count}")
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate annotated videos to check ground truth annotations')
+    parser = argparse.ArgumentParser(description='Generate annotated videos to check ground truth annotations with keypoints')
     parser.add_argument('--sequence', type=str, help='Sequence name to generate video for (e.g., TS1, TS2, etc.)')
     parser.add_argument('--all', action='store_true', help='Process all available sequences')
     parser.add_argument('--list', action='store_true', help='List available sequences and exit')
@@ -232,7 +313,7 @@ def main():
     failed = 0
     
     for sequence in sequences:
-        output_path = os.path.join(args.output_dir, f"{sequence}_annotated.mp4")
+        output_path = os.path.join(args.output_dir, f"{sequence}_annotated_with_keypoints.mp4")
         print(f"\n{'='*50}")
         print(f"Processing sequence: {sequence}")
         print(f"{'='*50}")
