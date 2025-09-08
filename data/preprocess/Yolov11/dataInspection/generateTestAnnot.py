@@ -251,7 +251,7 @@ def draw_annotations(image, annotations, img_width, img_height):
     return image
 
 def create_annotated_video(sequence, output_path, max_frames=None):
-    """Create video with annotations for a specific sequence - memory efficient version"""
+    """Create video with annotations for a specific sequence - batch processing version"""
     print(f"Loading image file list for sequence: {sequence}")
     
     # Get list of image files without loading them
@@ -285,79 +285,97 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     frames_with_keypoints = 0
     total_keypoints_found = 0
     
-    # Process frames one by one
-    for i, image_path in enumerate(image_files):
-        print(f"\n--- Processing frame {i+1}/{len(image_files)} ---")
+    # Process frames in batches of 100
+    batch_size = 100
+    total_batches = (len(image_files) + batch_size - 1) // batch_size
+    
+    print(f"Processing {len(image_files)} frames in {total_batches} batches of {batch_size}")
+    
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(image_files))
+        batch_files = image_files[start_idx:end_idx]
         
-        # Load single frame
-        frame, filename = load_single_frame(image_path)
+        print(f"\n{'='*60}")
+        print(f"Processing batch {batch_idx + 1}/{total_batches}")
+        print(f"Frames {start_idx + 1} to {end_idx} ({len(batch_files)} frames)")
+        print(f"{'='*60}")
         
-        if frame is None:
-            print(f"Could not load frame: {image_path}")
-            continue
+        # Process current batch
+        for i, image_path in enumerate(batch_files):
+            global_frame_idx = start_idx + i
+            print(f"\n--- Processing frame {global_frame_idx + 1}/{len(image_files)} (batch {batch_idx + 1}) ---")
+            
+            # Load single frame
+            frame, filename = load_single_frame(image_path)
+            
+            if frame is None:
+                print(f"Could not load frame: {image_path}")
+                continue
+            
+            # Get YOLO annotations for this frame
+            annotations = parse_yolo_annotation_file(sequence, filename)
+            
+            # Count annotations with keypoints
+            has_keypoints = False
+            frame_keypoints = 0
+            for annotation in annotations:
+                if len(annotation) == 6 and annotation[5]:  # Has keypoints
+                    keypoints = annotation[5]
+                    visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
+                    if visible_kpts > 0:
+                        has_keypoints = True
+                        frame_keypoints += visible_kpts
+            
+            total_keypoints_found += frame_keypoints
+            
+            print(f"Frame {filename}: {len(annotations)} annotations, {frame_keypoints} keypoints")
+            
+            # Draw annotations on image
+            annotated_image = draw_annotations(frame, annotations, width, height)
+            
+            # Add frame info
+            keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
+            frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
+            cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # Add sequence info
+            seq_info = f"Sequence: {sequence} | Progress: {global_frame_idx + 1}/{len(image_files)} | Batch: {batch_idx + 1}/{total_batches}"
+            cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # Add legend
+            legend_y = 90
+            cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
+                       (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            
+            # Write frame to video
+            video_writer.write(annotated_image)
+            processed_count += 1
+            
+            if len(annotations) > 0:
+                frames_with_annotations += 1
+            if has_keypoints:
+                frames_with_keypoints += 1
+            
+            # Clear frame from memory immediately
+            del frame, annotated_image
         
-        # Get YOLO annotations for this frame
-        annotations = parse_yolo_annotation_file(sequence, filename)
+        # End of batch - print batch summary
+        print(f"\nBatch {batch_idx + 1} completed: {len(batch_files)} frames processed")
+        print(f"Total progress: {processed_count}/{len(image_files)} frames")
         
-        # Count annotations with keypoints
-        has_keypoints = False
-        frame_keypoints = 0
-        for annotation in annotations:
-            if len(annotation) == 6 and annotation[5]:  # Has keypoints
-                keypoints = annotation[5]
-                visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
-                if visible_kpts > 0:
-                    has_keypoints = True
-                    frame_keypoints += visible_kpts
-        
-        total_keypoints_found += frame_keypoints
-        
-        print(f"Frame {filename}: {len(annotations)} annotations, {frame_keypoints} keypoints")
-        
-        # Draw annotations on image
-        annotated_image = draw_annotations(frame, annotations, width, height)
-        
-        # Add frame info
-        keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
-        frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
-        cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Add sequence info
-        seq_info = f"Sequence: {sequence} | Progress: {i+1}/{len(image_files)}"
-        cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Add legend
-        legend_y = 90
-        cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
-                   (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        
-        # Write frame to video
-        video_writer.write(annotated_image)
-        processed_count += 1
-        
-        if len(annotations) > 0:
-            frames_with_annotations += 1
-        if has_keypoints:
-            frames_with_keypoints += 1
-        
-        # Progress indicator
-        if (i + 1) % 100 == 0:
-            print(f"Processed {i + 1}/{len(image_files)} frames...")
-        
-        # Clear frame from memory
-        del frame, annotated_image
-        
-        # Process only first few frames for debugging
-        if max_frames and i >= 5:
-            print("DEBUG: Processing only first 5 frames for debugging")
-            break
+        # Force garbage collection between batches
+        import gc
+        gc.collect()
     
     video_writer.release()
+    print(f"\n{'='*60}")
     print(f"Created annotated video: {output_path}")
     print(f"Processed {processed_count} frames")
     print(f"Frames with annotations: {frames_with_annotations}/{processed_count}")
     print(f"Frames with keypoints: {frames_with_keypoints}/{processed_count}")
     print(f"Total visible keypoints found: {total_keypoints_found}")
+    print(f"{'='*60}")
     return True
 
 def main():
