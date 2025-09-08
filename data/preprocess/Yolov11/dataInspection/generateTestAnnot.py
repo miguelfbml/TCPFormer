@@ -42,8 +42,8 @@ def get_available_sequences():
     # Fallback to default sequences
     return ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
 
-def load_test_frames_batch(sequence_name, start_frame=0, num_frames=None):
-    """Load test frames for the sequence in batches (same as compare_gt_yolo_2d.py)"""
+def get_image_files_list(sequence_name):
+    """Get the list of image files for a sequence without loading them"""
     test_image_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
         '../motion3d/mpi_inf_3dhp_test_set',
@@ -59,19 +59,15 @@ def load_test_frames_batch(sequence_name, start_frame=0, num_frames=None):
             image_files.sort()
             
             if image_files:
-                # Get the requested batch of frames
-                end_frame = start_frame + num_frames if num_frames is not None else len(image_files)
-                batch_files = image_files[start_frame:end_frame]
-                
-                frames = []
-                for img_path in batch_files:
-                    frame = cv2.imread(img_path)
-                    if frame is not None:
-                        frames.append((frame, os.path.basename(img_path)))
-                
-                return frames, len(image_files)  # Return frames with filenames and total count
+                return image_files
     
-    return None, 0
+    return []
+
+def load_single_frame(image_path):
+    """Load a single frame from file path"""
+    frame = cv2.imread(image_path)
+    filename = os.path.basename(image_path)
+    return frame, filename
 
 def parse_yolo_annotation_file(sequence_name, frame_filename):
     """Parse YOLO annotation for a specific frame in the Yolo dataset"""
@@ -204,20 +200,28 @@ def draw_annotations(image, annotations, img_width, img_height):
     return image
 
 def create_annotated_video(sequence, output_path, max_frames=None):
-    """Create video with annotations for a specific sequence"""
-    print(f"Loading frames for sequence: {sequence}")
+    """Create video with annotations for a specific sequence - memory efficient version"""
+    print(f"Loading image file list for sequence: {sequence}")
     
-    # Load frames using the same method as compare_gt_yolo_2d.py
-    frames_data, total_frames = load_test_frames_batch(sequence, 0, max_frames)
+    # Get list of image files without loading them
+    image_files = get_image_files_list(sequence)
     
-    if frames_data is None or len(frames_data) == 0:
-        print(f"No frames found for sequence: {sequence}")
+    if not image_files:
+        print(f"No image files found for sequence: {sequence}")
         return False
     
-    print(f"Found {len(frames_data)} frames to process")
+    # Limit number of frames if specified
+    if max_frames is not None:
+        image_files = image_files[:max_frames]
     
-    # Get dimensions from first frame
-    first_frame, _ = frames_data[0]
+    print(f"Found {len(image_files)} frames to process")
+    
+    # Load first frame to get dimensions
+    first_frame, _ = load_single_frame(image_files[0])
+    if first_frame is None:
+        print(f"Could not load first frame: {image_files[0]}")
+        return False
+    
     height, width, _ = first_frame.shape
     
     # Create video writer
@@ -228,7 +232,15 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     frames_with_annotations = 0
     frames_with_keypoints = 0
     
-    for frame, filename in frames_data:
+    # Process frames one by one
+    for i, image_path in enumerate(image_files):
+        # Load single frame
+        frame, filename = load_single_frame(image_path)
+        
+        if frame is None:
+            print(f"Could not load frame: {image_path}")
+            continue
+        
         # Get YOLO annotations for this frame
         annotations = parse_yolo_annotation_file(sequence, filename)
         
@@ -248,7 +260,7 @@ def create_annotated_video(sequence, output_path, max_frames=None):
         cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         # Add sequence info
-        seq_info = f"Sequence: {sequence}"
+        seq_info = f"Sequence: {sequence} | Progress: {i+1}/{len(image_files)}"
         cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         # Add legend
@@ -264,6 +276,13 @@ def create_annotated_video(sequence, output_path, max_frames=None):
             frames_with_annotations += 1
         if has_keypoints:
             frames_with_keypoints += 1
+        
+        # Progress indicator
+        if (i + 1) % 100 == 0:
+            print(f"Processed {i + 1}/{len(image_files)} frames...")
+        
+        # Clear frame from memory
+        del frame, annotated_image
     
     video_writer.release()
     print(f"Created annotated video: {output_path}")
