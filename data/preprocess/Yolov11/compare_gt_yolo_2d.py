@@ -12,6 +12,9 @@ python compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corre
 
 # Run on all sequences with limited frames
 python compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --num-frames 50
+
+# Run single sequence with all frames (NEW BEHAVIOR)
+python compare_gt_yolo_2d.py --sequence TS6 --model-path runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt --save-video
 """
 
 import argparse
@@ -314,7 +317,7 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
         
         for frame in batch_frames:
             try:
-                # Run YOLO inference with device specification
+                # Run YOLO inference with LOWERED confidence threshold (0.2 instead of 0.3)
                 results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.2, device=device)
                 
                 if (results and len(results) > 0 and 
@@ -473,8 +476,8 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
     
     total_gt_frames = len(gt_poses_2d)
     
-    # Determine processing strategy
-    if args.all and args.num_frames is None:
+    # CHANGED: Always use all frames for batched processing when num_frames is None
+    if args.num_frames is None:
         # Process all frames in batches for memory efficiency
         print(f"✓ Processing ALL {total_gt_frames} frames for sequence {sequence_name} (in batches)")
         batch_size = 300 if device.startswith('cuda') else 200  # Adjust batch size based on device
@@ -569,7 +572,7 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         
     else:
         # Process limited frames (original method)
-        num_frames_to_use = args.num_frames if args.num_frames is not None else 50
+        num_frames_to_use = args.num_frames
         gt_poses_2d_limited = gt_poses_2d[:num_frames_to_use]
         print(f"✓ Using {len(gt_poses_2d_limited)} frames for sequence {sequence_name}")
         
@@ -616,7 +619,8 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
 
 def process_single_sequence(model, sequence_name, args, device='cpu'):
     """Wrapper function to choose between batched and regular processing"""
-    if args.all and args.num_frames is None:
+    # CHANGED: Use batched processing for all frames when num_frames is None (regardless of --all flag)
+    if args.num_frames is None:
         return process_single_sequence_batched(model, sequence_name, args, device)
     else:
         # Use original processing for limited frames
@@ -635,8 +639,8 @@ def process_single_sequence_original(model, sequence_name, args, device='cpu'):
         print(f"❌ Failed to load ground truth data for {sequence_name}")
         return None
     
-    # Use specified number of frames or default
-    num_frames_to_use = args.num_frames if args.num_frames is not None else 50
+    # Use specified number of frames
+    num_frames_to_use = args.num_frames
     gt_poses_2d_limited = gt_poses_2d[:num_frames_to_use]
     print(f"✓ Using {len(gt_poses_2d_limited)} frames for sequence {sequence_name}")
     
@@ -765,7 +769,7 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
         
         # Enhanced frame title with frame-specific MPJPE
         frame_mpjpe_val = frame_mpjpe[frame_idx] if not np.isnan(frame_mpjpe[frame_idx]) else 0
-        ax2.set_title(f'YOLO Estimation\nFrame {frame_idx+1}/{min_frames} | '
+        ax2.set_title(f'YOLO Estimation (conf=0.2)\nFrame {frame_idx+1}/{min_frames} | '
                      f'Frame MPJPE: {frame_mpjpe_val:.1f}px', fontsize=14)
         yolo_frame = yolo_poses[frame_idx]
         
@@ -827,7 +831,7 @@ def print_summary_results(all_metrics, model_name):
         return
     
     print(f"\n{'='*80}")
-    print(f"COMPREHENSIVE SUMMARY - YOLO vs Ground Truth (2D)")
+    print(f"COMPREHENSIVE SUMMARY - YOLO vs Ground Truth (2D) [Confidence=0.2]")
     print(f"Model: {model_name}")
     print(f"{'='*80}")
     
@@ -883,7 +887,7 @@ def print_summary_results(all_metrics, model_name):
         print(f"{sequence:<10} {mpjpe:<12.2f} {auc:<10.4f} {valid_frames}/{total_frames:<12}")
     
     print(f"{'='*80}")
-    print(f"🎯 FINAL OVERALL MPJPE: {overall_mpjpe:.2f} pixels")
+    print(f"🎯 FINAL OVERALL MPJPE: {overall_mpjpe:.2f} pixels (Confidence=0.2)")
     print(f"{'='*80}")
 
 def main():
@@ -893,7 +897,7 @@ def main():
     parser.add_argument('--model-path', type=str, required=True,
                        help='Path to trained YOLO model (.pt file)')
     parser.add_argument('--num-frames', type=int, default=None,
-                       help='Number of frames to process per sequence (if not specified with --all, uses all frames in batches)')
+                       help='Number of frames to process. If not specified, processes ALL frames using memory-efficient batching')
     parser.add_argument('--all', action='store_true',
                        help='Run evaluation on all available sequences with all frames (unless --num-frames specified)')
     parser.add_argument('--save-video', action='store_true',
@@ -906,7 +910,7 @@ def main():
                        help='Device to use (auto, cpu, cuda, cuda:0, etc.)')
     args = parser.parse_args()
     
-    print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics")
+    print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics [Confidence=0.2]")
     print("="*80)
     
     # Check GPU availability and setup device
@@ -918,15 +922,17 @@ def main():
     
     print(f"Model: {args.model_path}")
     print(f"Device: {device}")
+    print(f"YOLO Confidence Threshold: 0.2 (lowered for more detections)")
     
-    # Update frame information display
+    # CHANGED: Updated frame information display
     if args.all and args.num_frames is None:
         print(f"Mode: Process ALL FRAMES from ALL SEQUENCES (in memory-efficient batches)")
     elif args.all and args.num_frames is not None:
         print(f"Mode: Process {args.num_frames} frames from ALL SEQUENCES")
+    elif args.num_frames is None:
+        print(f"Mode: Process ALL FRAMES from sequence {args.sequence} (in memory-efficient batches)")
     else:
-        frame_count = args.num_frames if args.num_frames is not None else 50
-        print(f"Mode: Process {frame_count} frames from sequence {args.sequence}")
+        print(f"Mode: Process {args.num_frames} frames from sequence {args.sequence}")
     
     print(f"Input size: {args.img_size}")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
@@ -996,10 +1002,11 @@ def main():
         # Process single sequence
         print(f"\n📂 Processing single sequence: {args.sequence}")
         
-        # Set default frames for single sequence if not specified
+        # CHANGED: Remove default frame assignment - let it process all frames if num_frames is None
         if args.num_frames is None:
-            args.num_frames = 50
-            print(f"Using default {args.num_frames} frames for single sequence")
+            print(f"Processing ALL frames from sequence {args.sequence} (in memory-efficient batches)")
+        else:
+            print(f"Processing {args.num_frames} frames from sequence {args.sequence}")
         
         metrics = process_single_sequence(model, args.sequence, args, device)
         
@@ -1009,7 +1016,7 @@ def main():
         
         # Print detailed results
         print(f"\n" + "="*60)
-        print(f"DETAILED RESULTS FOR {args.sequence}")
+        print(f"DETAILED RESULTS FOR {args.sequence} [Confidence=0.2]")
         print(f"="*60)
         print(f"Model: {model_name}")
         print(f"Device: {device}")
@@ -1035,26 +1042,39 @@ def main():
         
         # Create visualization only for single sequence
         if args.save_video or not args.all:
-            # Load data again for visualization
+            # CHANGED: For visualization, we need to handle the case where we processed all frames
+            # We'll need to reload data for visualization purposes with limited frames for memory
+            print(f"\n🎬 Creating visualization...")
+            
+            # Load data again for visualization (limit to reasonable number for animation)
             gt_poses_2d, _, _ = load_test_3d_data_from_dataset(args.sequence)
-            frames = load_test_frames(args.sequence, args.num_frames)
+            
+            # For visualization, limit frames to avoid memory issues with animations
+            viz_frames = min(100, len(gt_poses_2d)) if args.num_frames is None else args.num_frames
+            frames = load_test_frames(args.sequence, viz_frames)
             
             if gt_poses_2d is not None and frames is not None:
                 # Process data for visualization
-                min_frames = min(len(frames), len(gt_poses_2d), args.num_frames if args.num_frames else len(gt_poses_2d))
+                min_frames = min(len(frames), len(gt_poses_2d), viz_frames)
                 frames = frames[:min_frames]
                 gt_poses_2d = gt_poses_2d[:min_frames]
                 
+                print(f"Creating visualization with {min_frames} frames...")
                 yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size, device)
                 
                 gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
                 gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
                 yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
                 
-                print(f"\n🎬 Creating visualization...")
+                # Create metrics for visualization
+                viz_metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
+                if viz_metrics:
+                    viz_metrics['sequence'] = args.sequence
+                
                 try:
                     result = create_comparison_visualization(
-                        gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, metrics, args)
+                        gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, viz_metrics, 
+                        argparse.Namespace(num_frames=min_frames))
                     
                     if result[0] is not None:
                         update_func, fig, min_frames = result
@@ -1067,13 +1087,13 @@ def main():
                             os.makedirs(args.output_dir, exist_ok=True)
                             model_name_clean = os.path.splitext(os.path.basename(args.model_path))[0]
                             output_path = os.path.join(args.output_dir, 
-                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_comprehensive.gif')
+                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.gif')
                             ani.save(output_path, writer='pillow', fps=3, dpi=100)
                             print(f"✓ Animation saved to: {output_path}")
                             
                             update_func(0)
                             static_path = os.path.join(args.output_dir, 
-                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_comprehensive.png')
+                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.png')
                             plt.savefig(static_path, dpi=150, bbox_inches='tight')
                             print(f"✓ Static image saved to: {static_path}")
                             
