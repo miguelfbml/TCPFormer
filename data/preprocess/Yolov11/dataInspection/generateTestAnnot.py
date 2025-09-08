@@ -83,8 +83,9 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     ]
     
     # Convert image filename to annotation filename
-    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: frame000450
-    annotation_filename = f"{sequence_name}_{base_filename}.txt"  # TS6_frame000450.txt
+    # Image: frame000698.jpg -> Annotation: TS3_frame000698.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: frame000698
+    annotation_filename = f"{sequence_name}_{base_filename}.txt"  # TS3_frame000698.txt
     
     # Debug: print what we're looking for
     print(f"DEBUG: Looking for annotation file: {annotation_filename}")
@@ -93,8 +94,8 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     for base_path in yolo_label_paths:
         # Try different directory structures
         possible_paths = [
-            os.path.join(base_path, sequence_name, annotation_filename),  # /path/TS6/TS6_frame000450.txt
-            os.path.join(base_path, annotation_filename),  # /path/TS6_frame000450.txt
+            os.path.join(base_path, annotation_filename),  # /path/TS3_frame000698.txt
+            os.path.join(base_path, sequence_name, annotation_filename),  # /path/TS3/TS3_frame000698.txt
         ]
         
         for annotation_path in possible_paths:
