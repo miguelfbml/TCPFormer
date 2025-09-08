@@ -84,22 +84,25 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     ]
     
     # Convert image filename to annotation filename
-    # Original filename: frame000450.jpg -> annotation: TS6_frame000450.txt
-    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension
-    annotation_filename = f"{sequence_name}_{base_filename}.txt"
+    # Original YOLO filename: TS6_frame000450.jpg -> annotation: TS6_frame000450.txt
+    # But we get from test set: frame000450.jpg -> need to convert to: TS6_frame000450.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: frame000450
+    annotation_filename = f"{sequence_name}_{base_filename}.txt"  # TS6_frame000450.txt
     
     for base_path in yolo_label_paths:
-        annotation_path = os.path.join(base_path, sequence_name, annotation_filename)
-        if os.path.exists(annotation_path):
-            return parse_yolo_annotation(annotation_path)
+        # Try different directory structures
+        possible_paths = [
+            os.path.join(base_path, sequence_name, annotation_filename),  # /path/TS6/TS6_frame000450.txt
+            os.path.join(base_path, annotation_filename),  # /path/TS6_frame000450.txt
+        ]
+        
+        for annotation_path in possible_paths:
+            if os.path.exists(annotation_path):
+                print(f"Found annotation: {annotation_path}")  # Debug info
+                return parse_yolo_annotation(annotation_path)
     
-    # If not found with sequence prefix, try without prefix (fallback)
-    fallback_annotation_filename = f"{base_filename}.txt"
-    for base_path in yolo_label_paths:
-        annotation_path = os.path.join(base_path, sequence_name, fallback_annotation_filename)
-        if os.path.exists(annotation_path):
-            return parse_yolo_annotation(annotation_path)
-    
+    # Debug: print what we're looking for
+    print(f"Looking for annotation: {annotation_filename} in sequence {sequence_name}")
     return []
 
 def parse_yolo_annotation(annotation_path):
