@@ -64,35 +64,6 @@ MPI_SKELETON = [
     (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
 ]
 
-def calculate_mpjpe(pred_keypoints, gt_keypoints, visibility_mask=None):
-    """
-    Calculate Mean Per Joint Position Error (MPJPE) in pixels
-    
-    Args:
-        pred_keypoints: Predicted keypoints (N, 17, 2)
-        gt_keypoints: Ground truth keypoints (N, 17, 2)  
-        visibility_mask: Visibility mask (N, 17) - only calculate error for visible joints
-    
-    Returns:
-        mpjpe: Mean Per Joint Position Error in pixels
-    """
-    if pred_keypoints.shape != gt_keypoints.shape:
-        return float('inf')
-    
-    # Calculate Euclidean distance between predicted and ground truth keypoints
-    distances = np.sqrt(np.sum((pred_keypoints - gt_keypoints) ** 2, axis=-1))
-    
-    if visibility_mask is not None:
-        # Only consider visible joints
-        valid_distances = distances[visibility_mask > 0]
-        if len(valid_distances) == 0:
-            return float('inf')
-        mpjpe = np.mean(valid_distances)
-    else:
-        mpjpe = np.mean(distances)
-    
-    return mpjpe
-
 class GPUUtilizationMonitor:
     def __init__(self, device_idx=0):
         try:
@@ -153,7 +124,6 @@ class YOLOMetricsTracker:
         self.epoch_metrics = {}
         self.training_start_time = None
         self.epoch_times = []
-        self.best_mpjpe = float('inf')
         
         if self.use_wandb:
             wandb.init(
@@ -169,7 +139,7 @@ class YOLOMetricsTracker:
         print(f"TRAINING MONITORING STARTED")
         print(f"{'='*70}")
     
-    def log_epoch_metrics(self, epoch, results_dict, model_path=None, mpjpe=None):
+    def log_epoch_metrics(self, epoch, results_dict, model_path=None):
         """Log comprehensive metrics for each epoch with enhanced metric extraction"""
         epoch_time = time.time()
         
@@ -229,11 +199,6 @@ class YOLOMetricsTracker:
         pose_map50_95 = (results_dict.get('metrics/mAP50-95(P)', 0) or 
                         results_dict.get('pose_map50_95', 0))
         
-        # MPJPE tracking
-        current_mpjpe = mpjpe if mpjpe is not None else 0
-        if current_mpjpe > 0 and current_mpjpe < self.best_mpjpe:
-            self.best_mpjpe = current_mpjpe
-        
         # Calculate FLOPs if model path is provided
         flops_per_image = 0
         if model_path and os.path.exists(model_path):
@@ -262,8 +227,6 @@ class YOLOMetricsTracker:
             'metrics/pose_recall': pose_recall,
             'metrics/pose_mAP50': pose_map50,
             'metrics/pose_mAP50-95': pose_map50_95,
-            'mpjpe': current_mpjpe,
-            'best_mpjpe': self.best_mpjpe,
             'flops_per_image': flops_per_image
         }
         
@@ -316,13 +279,6 @@ class YOLOMetricsTracker:
         print(f"  Pose mAP@0.5: {metrics['metrics/pose_mAP50']:.4f}")
         print(f"  Pose mAP@0.5:0.95: {metrics['metrics/pose_mAP50-95']:.4f}")
         
-        print(f"\nKeypoint Accuracy:")
-        if metrics['mpjpe'] > 0:
-            print(f"  MPJPE (pixels): {metrics['mpjpe']:.2f}")
-            print(f"  Best MPJPE: {metrics['best_mpjpe']:.2f}")
-        else:
-            print(f"  MPJPE: Not calculated this epoch")
-        
         print(f"{'='*70}")
     
     def calculate_model_flops(self, model_path, input_size=(640, 640)):
@@ -372,7 +328,6 @@ class YOLOMetricsTracker:
                 print(f"  Best Val Loss: {best_metrics['val/loss']:.4f}")
                 print(f"  Best Pose mAP@0.5: {best_metrics['metrics/pose_mAP50']:.4f}")
                 print(f"  Best Pose mAP@0.5:0.95: {best_metrics['metrics/pose_mAP50-95']:.4f}")
-                print(f"  Best MPJPE: {self.best_mpjpe:.2f} pixels")
             
             print(f"{'='*70}")
         
@@ -382,7 +337,6 @@ class YOLOMetricsTracker:
                 "final/total_training_time_hours": total_time/3600,
                 "final/total_epochs": len(self.epoch_metrics),
                 "final/avg_epoch_time": np.mean([m['epoch_time'] for m in self.epoch_metrics.values()]) if self.epoch_metrics else 0,
-                "final/best_mpjpe": self.best_mpjpe
             }
             wandb.log(final_summary)
             print("✓ Final summary logged to WandB")
@@ -830,153 +784,8 @@ class MPIDatasetConverter:
         
         return yaml_path
 
-def calculate_validation_mpjpe(model, dataset_yaml, device='0'):
-    """
-    Enhanced MPJPE calculation on validation set using the trained model
-    """
-    try:
-        print("📊 Starting MPJPE calculation...")
-        
-        # Load validation images and ground truth
-        import yaml
-        with open(dataset_yaml, 'r') as f:
-            dataset_config = yaml.safe_load(f)
-        
-        val_images_path = os.path.join(dataset_config['path'], 'images', 'val')
-        val_labels_path = os.path.join(dataset_config['path'], 'labels', 'val')
-        
-        val_images = glob.glob(os.path.join(val_images_path, "*.jpg"))
-        
-        if not val_images:
-            print("⚠ No validation images found for MPJPE calculation")
-            return None
-        
-        # Sample a subset for MPJPE calculation
-        sample_size = min(20, len(val_images))  # Reduced further for stability
-        val_images = np.random.choice(val_images, sample_size, replace=False) if len(val_images) > sample_size else val_images
-        
-        mpjpe_errors = []
-        valid_predictions = 0
-        
-        print(f"📊 Calculating MPJPE on {len(val_images)} validation images...")
-        
-        for i, img_path in enumerate(val_images):
-            try:
-                # Get corresponding label file
-                img_name = os.path.basename(img_path)
-                label_name = img_name.replace('.jpg', '.txt')
-                label_path = os.path.join(val_labels_path, label_name)
-                
-                if not os.path.exists(label_path):
-                    continue
-                
-                # Load ground truth
-                with open(label_path, 'r') as f:
-                    gt_annotation = f.readline().strip().split()
-                
-                if len(gt_annotation) < 5 + 17*3:  # bbox + 17 keypoints * 3
-                    continue
-                
-                # Extract ground truth keypoints (pixel coordinates)
-                image = cv2.imread(img_path)
-                if image is None:
-                    continue
-                
-                img_height, img_width = image.shape[:2]
-                
-                gt_keypoints = []
-                visibility_mask = []
-                
-                for j in range(17):
-                    idx = 5 + j * 3  # Skip class_id and bbox (5 values)
-                    x_norm = float(gt_annotation[idx])
-                    y_norm = float(gt_annotation[idx + 1])
-                    visibility = int(gt_annotation[idx + 2])
-                    
-                    # Convert normalized coordinates to pixel coordinates
-                    x_pixel = x_norm * img_width
-                    y_pixel = y_norm * img_height
-                    
-                    gt_keypoints.append([x_pixel, y_pixel])
-                    visibility_mask.append(visibility > 0)
-                
-                gt_keypoints = np.array(gt_keypoints)
-                visibility_mask = np.array(visibility_mask)
-                
-                # Skip if no visible keypoints
-                if not np.any(visibility_mask):
-                    continue
-                
-                # Run inference with error handling
-                try:
-                    results = model.predict(img_path, verbose=False, imgsz=640, save=False, show=False)
-                except Exception as pred_error:
-                    print(f"  Prediction failed for {img_name}: {pred_error}")
-                    continue
-                
-                if not results or len(results) == 0:
-                    continue
-                    
-                result = results[0]
-                if not hasattr(result, 'keypoints') or result.keypoints is None:
-                    continue
-                
-                # Extract predicted keypoints with better error handling
-                try:
-                    if hasattr(result.keypoints, 'xy') and len(result.keypoints.xy) > 0:
-                        pred_keypoints = result.keypoints.xy[0].cpu().numpy()  # Get first detection
-                    elif hasattr(result.keypoints, 'data') and len(result.keypoints.data) > 0:
-                        # Alternative keypoint format
-                        kpt_data = result.keypoints.data[0].cpu().numpy()  # Shape: (17, 3)
-                        pred_keypoints = kpt_data[:, :2]  # Take only x, y coordinates
-                    else:
-                        continue
-                except Exception as kpt_error:
-                    print(f"  Keypoint extraction failed for {img_name}: {kpt_error}")
-                    continue
-                
-                if pred_keypoints.shape[0] != 17:
-                    continue
-                
-                # Calculate MPJPE for this image
-                try:
-                    mpjpe = calculate_mpjpe(
-                        pred_keypoints.reshape(1, 17, 2), 
-                        gt_keypoints.reshape(1, 17, 2),
-                        visibility_mask.reshape(1, 17)
-                    )
-                    
-                    if mpjpe != float('inf') and mpjpe < 1000:  # Sanity check
-                        mpjpe_errors.append(mpjpe)
-                        valid_predictions += 1
-                except Exception as mpjpe_error:
-                    print(f"  MPJPE calculation failed for {img_name}: {mpjpe_error}")
-                    continue
-                
-                # Progress indicator
-                if i % 5 == 0:
-                    print(f"  Processed {i+1}/{len(val_images)} images, valid: {valid_predictions}")
-                    
-            except Exception as e:
-                print(f"  Error processing image {img_name}: {e}")
-                continue
-        
-        if mpjpe_errors and len(mpjpe_errors) > 0:
-            final_mpjpe = np.mean(mpjpe_errors)
-            print(f"✓ MPJPE calculated: {final_mpjpe:.2f} pixels (from {valid_predictions} valid predictions)")
-            return final_mpjpe
-        else:
-            print("⚠ No valid MPJPE calculations possible")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Error calculating MPJPE: {e}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return None
-
 def train_yolo_model(dataset_yaml, args):
-    """Train YOLO model on converted dataset with comprehensive monitoring and proper callbacks"""
+    """Train YOLO model on converted dataset with comprehensive monitoring"""
     print("\n" + "="*60)
     print("STARTING YOLO TRAINING WITH COMPREHENSIVE MONITORING")
     print("="*60)
@@ -1017,7 +826,6 @@ def train_yolo_model(dataset_yaml, args):
     print(f"  Learning rate: {args.lr}")
     print(f"  Device: {args.device}")
     print(f"  WandB logging: {args.use_wandb}")
-    print(f"  MPJPE calculation: Every 5 epochs")
     print(f"  Keypoint order: {MPI_JOINT_NAMES}")
     
     # Log configuration to WandB
@@ -1035,7 +843,6 @@ def train_yolo_model(dataset_yaml, args):
             "keypoint_order": MPI_JOINT_NAMES,
             "classes": 1,
             "optimized_sampling": False,  # Full dataset processing
-            "mpjpe_tracking": True
         })
         
         # Log environment info
@@ -1079,44 +886,6 @@ def train_yolo_model(dataset_yaml, args):
             except Exception as e:
                 print(f"⚠ Could not extract validation metrics: {e}")
             
-            # Calculate MPJPE every 5 epochs - with safer model access
-            mpjpe = None
-            if epoch % 5 == 0:
-                try:
-                    print(f"\n🔍 Calculating MPJPE for epoch {epoch}...")
-                    
-                    # Create a fresh model instance from the latest checkpoint for MPJPE calculation
-                    try:
-                        # Try to use the trainer's model first
-                        temp_model = model
-                        
-                        # Alternative: load from last checkpoint if available
-                        if hasattr(trainer, 'last') and trainer.last and os.path.exists(str(trainer.last)):
-                            print(f"  Using checkpoint: {trainer.last}")
-                            temp_model = YOLO(str(trainer.last))
-                        elif hasattr(trainer, 'best') and trainer.best and os.path.exists(str(trainer.best)):
-                            print(f"  Using best checkpoint: {trainer.best}")
-                            temp_model = YOLO(str(trainer.best))
-                        
-                        mpjpe = calculate_validation_mpjpe(temp_model, dataset_yaml, str(trainer.device))
-                        
-                        if mpjpe is not None and mpjpe > 0:
-                            print(f"✓ MPJPE: {mpjpe:.2f} pixels")
-                            # Log immediately to WandB
-                            if args.use_wandb:
-                                wandb.log({"mpjpe": mpjpe, "epoch": epoch})
-                        else:
-                            print("⚠ MPJPE calculation returned None or invalid value")
-                            
-                    except Exception as model_error:
-                        print(f"⚠ Model access failed for MPJPE: {model_error}")
-                        # Skip MPJPE for this epoch
-                        mpjpe = None
-                        
-                except Exception as e:
-                    print(f"⚠ MPJPE calculation failed: {e}")
-                    mpjpe = None
-            
             # Get model path for FLOPs calculation
             model_path_for_flops = None
             try:
@@ -1127,9 +896,9 @@ def train_yolo_model(dataset_yaml, args):
             except Exception as e:
                 print(f"⚠ Could not get model path: {e}")
             
-            # Log comprehensive metrics
+            # Log comprehensive metrics (without MPJPE)
             try:
-                metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path_for_flops, mpjpe)
+                metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path_for_flops)
             except Exception as e:
                 print(f"⚠ Failed to log epoch metrics: {e}")
             
@@ -1177,25 +946,6 @@ def train_yolo_model(dataset_yaml, args):
             plots=True,
             save=True
         )
-        
-        # Final MPJPE calculation with the best model
-        try:
-            print("\n🔍 Calculating final MPJPE...")
-            # Load the best model for final evaluation
-            best_model_path = 'runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt'
-            if os.path.exists(best_model_path):
-                final_model = YOLO(best_model_path)
-                final_mpjpe = calculate_validation_mpjpe(final_model, dataset_yaml, args.device)
-            else:
-                final_mpjpe = calculate_validation_mpjpe(model, dataset_yaml, args.device)
-                
-            if final_mpjpe:
-                print(f"✓ Final MPJPE: {final_mpjpe:.2f} pixels")
-                
-                if args.use_wandb:
-                    wandb.log({"final_mpjpe": final_mpjpe})
-        except Exception as e:
-            print(f"⚠ Final MPJPE calculation failed: {e}")
         
         # Log final results
         if hasattr(results, 'results_dict'):
@@ -1269,7 +1019,6 @@ def main():
     print(f"💾 Output path: {args.output_path}")
     print(f"📊 WandB logging: {args.use_wandb}")
     print(f"🔄 Force reprocess: {args.force_reprocess}")
-    print(f"📈 MPJPE tracking: Every 5 epochs")
     print(f"🗂️ Processing: FULL DATASET (no sampling)")
     print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
     
