@@ -95,35 +95,23 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: TS1_frame000000
     annotation_filename = f"{base_filename}.txt"  # TS1_frame000000.txt
     
-    # Debug: print what we're looking for
-    print(f"DEBUG: Looking for annotation file: {annotation_filename}")
-    print(f"DEBUG: Image filename: {frame_filename} -> Base: {base_filename}")
-    
     for base_path in yolo_label_paths:
         annotation_path = os.path.join(base_path, annotation_filename)
-        print(f"DEBUG: Checking path: {annotation_path}")
         if os.path.exists(annotation_path):
-            print(f"✓ Found annotation file: {annotation_path}")
             return parse_yolo_annotation(annotation_path)
-        else:
-            print(f"✗ Not found: {annotation_path}")
     
-    print(f"✗ No annotation file found for {frame_filename}")
     return []
 
 def parse_yolo_annotation(annotation_path):
     """Parse YOLO format annotation file with pose keypoints"""
     annotations = []
-    print(f"DEBUG: Parsing annotation file: {annotation_path}")
     
     if os.path.exists(annotation_path):
         with open(annotation_path, 'r') as f:
             lines = f.readlines()
-            print(f"DEBUG: File has {len(lines)} lines")
             
-            for line_num, line in enumerate(lines):
+            for line in lines:
                 parts = line.strip().split()
-                print(f"DEBUG: Line {line_num}: {len(parts)} parts")
                 
                 if len(parts) >= 5:
                     class_id = int(parts[0])
@@ -132,14 +120,10 @@ def parse_yolo_annotation(annotation_path):
                     width = float(parts[3])
                     height = float(parts[4])
                     
-                    print(f"DEBUG: Parsed bbox - class:{class_id}, center:({x_center:.3f},{y_center:.3f}), size:({width:.3f},{height:.3f})")
-                    
                     # Parse keypoints (after bbox, all remaining values are keypoints in x,y,v format)
                     keypoints = []
                     keypoint_start = 5
                     num_remaining = len(parts) - keypoint_start
-                    
-                    print(f"DEBUG: {num_remaining} values remaining for keypoints")
                     
                     # Process keypoints in groups of 3 (x, y, visibility)
                     if num_remaining >= 3 and num_remaining % 3 == 0:
@@ -150,17 +134,8 @@ def parse_yolo_annotation(annotation_path):
                                 kpt_v = float(parts[i + 2])  # visibility
                                 keypoints.append((kpt_x, kpt_y, kpt_v))
                     
-                    print(f"DEBUG: Parsed {len(keypoints)} keypoints")
-                    if keypoints:
-                        visible_count = sum(1 for _, _, v in keypoints if v > 0)
-                        print(f"DEBUG: {visible_count} visible keypoints")
-                        print(f"DEBUG: First few keypoints: {keypoints[:3]}")
-                    
                     annotations.append((class_id, x_center, y_center, width, height, keypoints))
-                else:
-                    print(f"DEBUG: Line {line_num} has insufficient parts: {len(parts)}")
     
-    print(f"DEBUG: Total annotations parsed: {len(annotations)}")
     return annotations
 
 # MPI-INF-3DHP joint connections for skeleton drawing
@@ -186,8 +161,6 @@ def draw_annotations(image, annotations, img_width, img_height):
             class_id, x_center, y_center, width, height = annotation[:5]
             keypoints = []
         
-        print(f"DEBUG: Drawing annotation with {len(keypoints)} keypoints")
-        
         # Draw bounding box
         x1 = int((x_center - width/2) * img_width)
         y1 = int((y_center - height/2) * img_height)
@@ -204,20 +177,14 @@ def draw_annotations(image, annotations, img_width, img_height):
         if keypoints and len(keypoints) > 0:
             # Convert normalized keypoint coordinates to pixel coordinates
             pixel_keypoints = []
-            visible_keypoints = 0
             
             for i, (kpt_x, kpt_y, kpt_v) in enumerate(keypoints):
                 if kpt_v > 0:  # Only process visible keypoints
                     px = int(kpt_x * img_width)
                     py = int(kpt_y * img_height)
                     pixel_keypoints.append((px, py, kpt_v))
-                    visible_keypoints += 1
-                    print(f"DEBUG: Keypoint {i}: ({kpt_x:.3f},{kpt_y:.3f}) -> ({px},{py}) visible")
                 else:
                     pixel_keypoints.append((0, 0, 0))
-                    print(f"DEBUG: Keypoint {i}: not visible")
-            
-            print(f"DEBUG: {visible_keypoints} visible keypoints to draw")
             
             # Draw keypoint connections (skeleton) only if we have enough keypoints
             if len(pixel_keypoints) >= 17:
@@ -246,7 +213,6 @@ def draw_annotations(image, annotations, img_width, img_height):
                     cv2.circle(image, (px, py), 4, color, -1)
                     # Add joint number
                     cv2.putText(image, str(i), (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
-                    print(f"DEBUG: Drew keypoint {i} at ({px},{py})")
     
     return image
 
@@ -285,88 +251,71 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     frames_with_keypoints = 0
     total_keypoints_found = 0
     
-    # Process frames in batches of 100
-    batch_size = 100
-    total_batches = (len(image_files) + batch_size - 1) // batch_size
+    print(f"Processing {len(image_files)} frames...")
     
-    print(f"Processing {len(image_files)} frames in {total_batches} batches of {batch_size}")
-    
-    for batch_idx in range(total_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(image_files))
-        batch_files = image_files[start_idx:end_idx]
+    # Process all frames
+    for i, image_path in enumerate(image_files):
+        # Load single frame
+        frame, filename = load_single_frame(image_path)
         
-        print(f"\n{'='*60}")
-        print(f"Processing batch {batch_idx + 1}/{total_batches}")
-        print(f"Frames {start_idx + 1} to {end_idx} ({len(batch_files)} frames)")
-        print(f"{'='*60}")
+        if frame is None:
+            continue
         
-        # Process current batch
-        for i, image_path in enumerate(batch_files):
-            global_frame_idx = start_idx + i
-            print(f"\n--- Processing frame {global_frame_idx + 1}/{len(image_files)} (batch {batch_idx + 1}) ---")
-            
-            # Load single frame
-            frame, filename = load_single_frame(image_path)
-            
-            if frame is None:
-                print(f"Could not load frame: {image_path}")
-                continue
-            
-            # Get YOLO annotations for this frame
-            annotations = parse_yolo_annotation_file(sequence, filename)
-            
-            # Count annotations with keypoints
-            has_keypoints = False
-            frame_keypoints = 0
-            for annotation in annotations:
-                if len(annotation) == 6 and annotation[5]:  # Has keypoints
-                    keypoints = annotation[5]
-                    visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
-                    if visible_kpts > 0:
-                        has_keypoints = True
-                        frame_keypoints += visible_kpts
-            
-            total_keypoints_found += frame_keypoints
-            
-            print(f"Frame {filename}: {len(annotations)} annotations, {frame_keypoints} keypoints")
-            
-            # Draw annotations on image
-            annotated_image = draw_annotations(frame, annotations, width, height)
-            
-            # Add frame info
-            keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
-            frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
-            cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Add sequence info
-            seq_info = f"Sequence: {sequence} | Progress: {global_frame_idx + 1}/{len(image_files)} | Batch: {batch_idx + 1}/{total_batches}"
-            cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Add legend
-            legend_y = 90
-            cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
-                       (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            
-            # Write frame to video
-            video_writer.write(annotated_image)
-            processed_count += 1
-            
-            if len(annotations) > 0:
-                frames_with_annotations += 1
-            if has_keypoints:
-                frames_with_keypoints += 1
-            
-            # Clear frame from memory immediately
-            del frame, annotated_image
+        # Get YOLO annotations for this frame
+        annotations = parse_yolo_annotation_file(sequence, filename)
         
-        # End of batch - print batch summary
-        print(f"\nBatch {batch_idx + 1} completed: {len(batch_files)} frames processed")
-        print(f"Total progress: {processed_count}/{len(image_files)} frames")
+        # Count annotations with keypoints
+        has_keypoints = False
+        frame_keypoints = 0
+        for annotation in annotations:
+            if len(annotation) == 6 and annotation[5]:  # Has keypoints
+                keypoints = annotation[5]
+                visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
+                if visible_kpts > 0:
+                    has_keypoints = True
+                    frame_keypoints += visible_kpts
         
-        # Force garbage collection between batches
-        import gc
-        gc.collect()
+        total_keypoints_found += frame_keypoints
+        
+        # Draw annotations on image
+        annotated_image = draw_annotations(frame, annotations, width, height)
+        
+        # Add frame info
+        keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
+        frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
+        cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add sequence info
+        seq_info = f"Sequence: {sequence} | Progress: {i + 1}/{len(image_files)}"
+        cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add legend
+        legend_y = 90
+        cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
+                   (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        # Write frame to video
+        video_writer.write(annotated_image)
+        processed_count += 1
+        
+        if len(annotations) > 0:
+            frames_with_annotations += 1
+        if has_keypoints:
+            frames_with_keypoints += 1
+        
+        # Clear frame from memory immediately
+        del frame, annotated_image
+        
+        # Print progress every 100 frames
+        if (i + 1) % 100 == 0 or (i + 1) == len(image_files):
+            print(f"Processed {i + 1}/{len(image_files)} frames | "
+                  f"Annotations: {frames_with_annotations} frames | "
+                  f"Keypoints: {frames_with_keypoints} frames | "
+                  f"Total keypoints: {total_keypoints_found}")
+            
+            # Force garbage collection every 100 frames
+            import gc
+            gc.collect()
     
     video_writer.release()
     print(f"\n{'='*60}")
