@@ -659,7 +659,7 @@ def main():
                 gt_poses_2d, _, _ = load_test_3d_data_from_dataset(args.sequence)
                 if gt_poses_2d is not None:
                     total_frames = min(args.num_frames, len(gt_poses_2d)) if args.num_frames is not None else len(gt_poses_2d)
-                    create_streaming_visualization(model, sequence, gt_poses_2d, total_frames, args, device)
+                    create_streaming_visualization(model, args.sequence, gt_poses_2d, total_frames, args, device)  # Fixed: Changed 'sequence' to 'args.sequence'
         if device.startswith('cuda'):
             torch.cuda.empty_cache()
         gc.collect()
