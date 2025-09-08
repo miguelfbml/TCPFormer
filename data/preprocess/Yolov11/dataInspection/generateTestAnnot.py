@@ -79,32 +79,27 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
         '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/labels/val',
         '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/labels/train',
         './mpi_inf_3dhp_Yolo/labels/val',
-        './mpi_inf_3dhp_Yolo/labels/train'
+        './mpi_inf_3dhp_Yolo/labels/train',
+        'mpi_inf_3dhp_Yolo/labels'  # Add this for direct access
     ]
     
     # Convert image filename to annotation filename
-    # Image: frame000698.jpg -> Annotation: TS3_frame000698.txt
-    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: frame000698
-    annotation_filename = f"{sequence_name}_{base_filename}.txt"  # TS3_frame000698.txt
+    # Image: TS3_frame000698.jpg -> Annotation: TS3_frame000698.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: TS3_frame000698
+    annotation_filename = f"{base_filename}.txt"  # TS3_frame000698.txt
     
     # Debug: print what we're looking for
     print(f"DEBUG: Looking for annotation file: {annotation_filename}")
     print(f"DEBUG: Image filename: {frame_filename} -> Base: {base_filename}")
     
     for base_path in yolo_label_paths:
-        # Try different directory structures
-        possible_paths = [
-            os.path.join(base_path, annotation_filename),  # /path/TS3_frame000698.txt
-            os.path.join(base_path, sequence_name, annotation_filename),  # /path/TS3/TS3_frame000698.txt
-        ]
-        
-        for annotation_path in possible_paths:
-            print(f"DEBUG: Checking path: {annotation_path}")
-            if os.path.exists(annotation_path):
-                print(f"✓ Found annotation file: {annotation_path}")
-                return parse_yolo_annotation(annotation_path)
-            else:
-                print(f"✗ Not found: {annotation_path}")
+        annotation_path = os.path.join(base_path, annotation_filename)
+        print(f"DEBUG: Checking path: {annotation_path}")
+        if os.path.exists(annotation_path):
+            print(f"✓ Found annotation file: {annotation_path}")
+            return parse_yolo_annotation(annotation_path)
+        else:
+            print(f"✗ Not found: {annotation_path}")
     
     print(f"✗ No annotation file found for {frame_filename}")
     return []
