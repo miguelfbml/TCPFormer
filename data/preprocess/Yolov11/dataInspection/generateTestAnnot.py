@@ -84,10 +84,19 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
     ]
     
     # Convert image filename to annotation filename
-    annotation_filename = os.path.splitext(frame_filename)[0] + '.txt'
+    # Original filename: frame000450.jpg -> annotation: TS6_frame000450.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension
+    annotation_filename = f"{sequence_name}_{base_filename}.txt"
     
     for base_path in yolo_label_paths:
         annotation_path = os.path.join(base_path, sequence_name, annotation_filename)
+        if os.path.exists(annotation_path):
+            return parse_yolo_annotation(annotation_path)
+    
+    # If not found with sequence prefix, try without prefix (fallback)
+    fallback_annotation_filename = f"{base_filename}.txt"
+    for base_path in yolo_label_paths:
+        annotation_path = os.path.join(base_path, sequence_name, fallback_annotation_filename)
         if os.path.exists(annotation_path):
             return parse_yolo_annotation(annotation_path)
     
