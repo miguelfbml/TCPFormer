@@ -110,10 +110,14 @@ def parse_yolo_annotation(annotation_path):
                     width = float(parts[3])
                     height = float(parts[4])
                     
-                    # Parse keypoints if available (YOLO pose format has 51 additional values for 17 keypoints)
+                    # Parse keypoints (after bbox, all remaining values are keypoints in x,y,v format)
                     keypoints = []
-                    if len(parts) >= 56:  # 5 bbox values + 51 keypoint values (17 keypoints * 3 values each)
-                        for i in range(5, len(parts), 3):
+                    keypoint_start = 5
+                    num_remaining = len(parts) - keypoint_start
+                    
+                    # Process keypoints in groups of 3 (x, y, visibility)
+                    if num_remaining >= 3 and num_remaining % 3 == 0:
+                        for i in range(keypoint_start, len(parts), 3):
                             if i + 2 < len(parts):
                                 kpt_x = float(parts[i])
                                 kpt_y = float(parts[i + 1])
@@ -121,6 +125,12 @@ def parse_yolo_annotation(annotation_path):
                                 keypoints.append((kpt_x, kpt_y, kpt_v))
                     
                     annotations.append((class_id, x_center, y_center, width, height, keypoints))
+                    
+                    # Debug: print first annotation to verify parsing
+                    if len(annotations) == 1:
+                        print(f"DEBUG: Parsed annotation with {len(keypoints)} keypoints")
+                        print(f"DEBUG: First few keypoints: {keypoints[:5]}")
+    
     return annotations
 
 # MPI-INF-3DHP joint connections for skeleton drawing
@@ -159,26 +169,30 @@ def draw_annotations(image, annotations, img_width, img_height):
         cv2.putText(image, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         # Draw keypoints if available
-        if keypoints and len(keypoints) >= 17:
+        if keypoints and len(keypoints) > 0:
             # Convert normalized keypoint coordinates to pixel coordinates
             pixel_keypoints = []
-            for kpt_x, kpt_y, kpt_v in keypoints[:17]:  # Only use first 17 keypoints
-                if kpt_v > 0:  # Only draw visible keypoints
+            visible_keypoints = 0
+            
+            for i, (kpt_x, kpt_y, kpt_v) in enumerate(keypoints):
+                if kpt_v > 0:  # Only process visible keypoints
                     px = int(kpt_x * img_width)
                     py = int(kpt_y * img_height)
                     pixel_keypoints.append((px, py, kpt_v))
+                    visible_keypoints += 1
                 else:
                     pixel_keypoints.append((0, 0, 0))
             
-            # Draw keypoint connections (skeleton)
-            for connection in CONNECTIONS_2D:
-                joint1_idx, joint2_idx = connection
-                if (joint1_idx < len(pixel_keypoints) and joint2_idx < len(pixel_keypoints) and
-                    pixel_keypoints[joint1_idx][2] > 0 and pixel_keypoints[joint2_idx][2] > 0):
-                    
-                    pt1 = (pixel_keypoints[joint1_idx][0], pixel_keypoints[joint1_idx][1])
-                    pt2 = (pixel_keypoints[joint2_idx][0], pixel_keypoints[joint2_idx][1])
-                    cv2.line(image, pt1, pt2, (255, 0, 0), 2)  # Blue lines for skeleton
+            # Draw keypoint connections (skeleton) only if we have enough keypoints
+            if len(pixel_keypoints) >= 17:
+                for connection in CONNECTIONS_2D:
+                    joint1_idx, joint2_idx = connection
+                    if (joint1_idx < len(pixel_keypoints) and joint2_idx < len(pixel_keypoints) and
+                        pixel_keypoints[joint1_idx][2] > 0 and pixel_keypoints[joint2_idx][2] > 0):
+                        
+                        pt1 = (pixel_keypoints[joint1_idx][0], pixel_keypoints[joint1_idx][1])
+                        pt2 = (pixel_keypoints[joint2_idx][0], pixel_keypoints[joint2_idx][1])
+                        cv2.line(image, pt1, pt2, (255, 0, 0), 2)  # Blue lines for skeleton
             
             # Draw keypoints as circles
             for i, (px, py, kpt_v) in enumerate(pixel_keypoints):
@@ -231,6 +245,7 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     processed_count = 0
     frames_with_annotations = 0
     frames_with_keypoints = 0
+    total_keypoints_found = 0
     
     # Process frames one by one
     for i, image_path in enumerate(image_files):
@@ -246,16 +261,22 @@ def create_annotated_video(sequence, output_path, max_frames=None):
         
         # Count annotations with keypoints
         has_keypoints = False
+        frame_keypoints = 0
         for annotation in annotations:
             if len(annotation) == 6 and annotation[5]:  # Has keypoints
-                has_keypoints = True
-                break
+                keypoints = annotation[5]
+                visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
+                if visible_kpts > 0:
+                    has_keypoints = True
+                    frame_keypoints += visible_kpts
+        
+        total_keypoints_found += frame_keypoints
         
         # Draw annotations on image
         annotated_image = draw_annotations(frame, annotations, width, height)
         
         # Add frame info
-        keypoint_info = " | Keypoints: Yes" if has_keypoints else " | Keypoints: No"
+        keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
         frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
         cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
@@ -289,6 +310,7 @@ def create_annotated_video(sequence, output_path, max_frames=None):
     print(f"Processed {processed_count} frames")
     print(f"Frames with annotations: {frames_with_annotations}/{processed_count}")
     print(f"Frames with keypoints: {frames_with_keypoints}/{processed_count}")
+    print(f"Total visible keypoints found: {total_keypoints_found}")
     return True
 
 def main():
