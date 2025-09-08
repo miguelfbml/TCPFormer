@@ -890,6 +890,277 @@ def print_summary_results(all_metrics, model_name):
     print(f"🎯 FINAL OVERALL MPJPE: {overall_mpjpe:.2f} pixels (Confidence=0.2)")
     print(f"{'='*80}")
 
+
+
+def create_streaming_visualization(model, sequence_name, gt_poses_2d, total_frames, args, device):
+    """Create visualization by streaming frames and saving individual images, then combining into GIF"""
+    print(f"🎬 Creating streaming visualization for {total_frames} frames...")
+    
+    # Create output directory for temporary frames
+    temp_dir = os.path.join(args.output_dir, f"temp_{sequence_name}")
+    os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Process frames in small batches for visualization
+    batch_size = 50  # Small batch size for memory efficiency
+    frame_paths = []
+    
+    # Calculate visualization bounds first (sample-based for efficiency)
+    print("📏 Calculating visualization bounds...")
+    sample_indices = np.linspace(0, total_frames-1, min(100, total_frames), dtype=int)
+    sample_bounds = calculate_visualization_bounds_streaming(model, sequence_name, gt_poses_2d, sample_indices, args, device)
+    
+    print(f"📊 Processing {total_frames} frames in batches of {batch_size}...")
+    
+    for start_idx in tqdm(range(0, total_frames, batch_size), desc="Creating visualization frames"):
+        end_idx = min(start_idx + batch_size, total_frames)
+        batch_size_actual = end_idx - start_idx
+        
+        # Load batch of frames and GT data
+        frames_batch, _ = load_test_frames_batch(sequence_name, start_idx, batch_size_actual)
+        if frames_batch is None:
+            print(f"⚠️  Skipping batch {start_idx}-{end_idx} due to loading issues")
+            continue
+        
+        gt_batch = gt_poses_2d[start_idx:end_idx]
+        
+        # Ensure matching lengths
+        min_frames = min(len(frames_batch), len(gt_batch))
+        frames_batch = frames_batch[:min_frames]
+        gt_batch = gt_batch[:min_frames]
+        
+        # Process YOLO poses for this batch
+        yolo_batch, _ = estimate_yolo_poses_batch(model, frames_batch, args.img_size, device)
+        
+        # Convert coordinates
+        gt_batch_pixel = convert_coordinates_to_pixels(gt_batch, frames_batch)
+        gt_batch_root_rel = make_root_relative_2d_pixel(gt_batch_pixel, root_joint_idx=14)
+        yolo_batch_root_rel = make_root_relative_2d_pixel(yolo_batch, root_joint_idx=14)
+        
+        # Create individual frame images
+        for i in range(min_frames):
+            frame_idx = start_idx + i
+            gt_frame = gt_batch_root_rel[i]
+            yolo_frame = yolo_batch_root_rel[i]
+            
+            # Calculate frame MPJPE
+            if not np.all(gt_frame == 0) and not np.all(yolo_frame == 0):
+                joint_diffs = np.linalg.norm(gt_frame - yolo_frame, axis=1)
+                frame_mpjpe = np.mean(joint_diffs)
+            else:
+                frame_mpjpe = np.nan
+            
+            # Create frame visualization
+            frame_path = create_single_frame_image(gt_frame, yolo_frame, frame_idx, total_frames, 
+                                                 frame_mpjpe, sequence_name, temp_dir, sample_bounds)
+            if frame_path:
+                frame_paths.append(frame_path)
+        
+        # Clear memory after each batch
+        del frames_batch, gt_batch, yolo_batch, gt_batch_pixel, gt_batch_root_rel, yolo_batch_root_rel
+        if device.startswith('cuda'):
+            torch.cuda.empty_cache()
+        gc.collect()
+    
+    if frame_paths:
+        # Create GIF from saved frames
+        print(f"🎞️  Combining {len(frame_paths)} frames into GIF...")
+        model_name_clean = os.path.splitext(os.path.basename(args.model_path))[0]
+        gif_path = os.path.join(args.output_dir, 
+                               f'{sequence_name}_gt_vs_yolo_{model_name_clean}_all_frames.gif')
+        
+        create_gif_from_images(frame_paths, gif_path, total_frames)
+        
+        # Save first frame as static image
+        if frame_paths:
+            import shutil
+            static_path = os.path.join(args.output_dir, 
+                                     f'{sequence_name}_gt_vs_yolo_{model_name_clean}_all_frames.png')
+            shutil.copy2(frame_paths[0], static_path)
+            print(f"✓ Static image saved to: {static_path}")
+        
+        # Clean up temporary files
+        print("🧹 Cleaning up temporary files...")
+        import shutil
+        shutil.rmtree(temp_dir)
+        
+        print(f"✓ Visualization complete! GIF saved to: {gif_path}")
+        print(f"  Total frames processed: {len(frame_paths)}")
+    else:
+        print("❌ No frames could be processed for visualization")
+
+def calculate_visualization_bounds_streaming(model, sequence_name, gt_poses_2d, sample_indices, args, device):
+    """Calculate visualization bounds by sampling frames"""
+    all_points = []
+    
+    for idx in sample_indices:
+        # Load single frame
+        frames_batch, _ = load_test_frames_batch(sequence_name, idx, 1)
+        if not frames_batch:
+            continue
+        
+        frame = frames_batch[0]
+        gt_pose = gt_poses_2d[idx:idx+1]
+        
+        # Get YOLO prediction
+        yolo_poses, _ = estimate_yolo_poses_batch(model, [frame], args.img_size, device)
+        
+        # Convert coordinates
+        gt_pixel = convert_coordinates_to_pixels(gt_pose, [frame])
+        gt_root_rel = make_root_relative_2d_pixel(gt_pixel, root_joint_idx=14)
+        yolo_root_rel = make_root_relative_2d_pixel(yolo_poses, root_joint_idx=14)
+        
+        # Collect points
+        gt_points = gt_root_rel[0].reshape(-1, 2)
+        yolo_points = yolo_root_rel[0].reshape(-1, 2)
+        
+        valid_gt = gt_points[~np.all(gt_points == 0, axis=1)]
+        valid_yolo = yolo_points[~np.all(yolo_points == 0, axis=1)]
+        
+        if len(valid_gt) > 0:
+            all_points.extend(valid_gt)
+        if len(valid_yolo) > 0:
+            all_points.extend(valid_yolo)
+    
+    if all_points:
+        all_points = np.array(all_points)
+        x_range = [np.min(all_points[:, 0]), np.max(all_points[:, 0])]
+        y_range = [np.min(all_points[:, 1]), np.max(all_points[:, 1])]
+        
+        # Add padding
+        x_padding = max((x_range[1] - x_range[0]) * 0.1, 50)
+        y_padding = max((y_range[1] - y_range[0]) * 0.1, 50)
+        
+        bounds = {
+            'x_min': x_range[0] - x_padding,
+            'x_max': x_range[1] + x_padding,
+            'y_min': y_range[0] - y_padding,
+            'y_max': y_range[1] + y_padding
+        }
+    else:
+        bounds = {'x_min': -500, 'x_max': 500, 'y_min': -500, 'y_max': 500}
+    
+    return bounds
+
+def create_single_frame_image(gt_frame, yolo_frame, frame_idx, total_frames, frame_mpjpe, sequence_name, temp_dir, bounds):
+    """Create a single frame comparison image"""
+    try:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+        
+        # Set title
+        title = f'2D Pose Comparison: GT vs YOLO - {sequence_name}\nFrame {frame_idx+1}/{total_frames}'
+        if not np.isnan(frame_mpjpe):
+            title += f' | Frame MPJPE: {frame_mpjpe:.1f}px'
+        fig.suptitle(title, fontsize=14)
+        
+        # Set common properties
+        for ax in [ax1, ax2]:
+            ax.set_xlim(bounds['x_min'], bounds['x_max'])
+            ax.set_ylim(bounds['y_min'], bounds['y_max'])
+            ax.invert_yaxis()
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect('equal')
+        
+        # Plot GT
+        ax1.set_title('Ground Truth', fontsize=12)
+        if not np.all(gt_frame == 0):
+            plot_skeleton(ax1, gt_frame, 'blue', 'darkblue')
+        else:
+            ax1.text((bounds['x_min']+bounds['x_max'])/2, (bounds['y_min']+bounds['y_max'])/2, 
+                    'No GT Data', ha='center', va='center', fontsize=14, color='red')
+        
+        # Plot YOLO
+        ax2.set_title('YOLO Estimation', fontsize=12)
+        if not np.all(yolo_frame == 0):
+            plot_skeleton(ax2, yolo_frame, 'red', 'darkred')
+        else:
+            ax2.text((bounds['x_min']+bounds['x_max'])/2, (bounds['y_min']+bounds['y_max'])/2, 
+                    'No YOLO Detection', ha='center', va='center', fontsize=14, color='red')
+        
+        # Highlight root joint
+        for ax in [ax1, ax2]:
+            ax.scatter(0, 0, c='green', s=100, marker='*', alpha=1.0, 
+                      edgecolors='darkgreen', linewidth=2)
+        
+        # Set labels
+        ax1.set_xlabel('X (pixels)', fontsize=10)
+        ax1.set_ylabel('Y (pixels)', fontsize=10)
+        ax2.set_xlabel('X (pixels)', fontsize=10)
+        ax2.set_ylabel('Y (pixels)', fontsize=10)
+        
+        plt.tight_layout()
+        
+        # Save frame
+        frame_path = os.path.join(temp_dir, f'frame_{frame_idx:06d}.png')
+        plt.savefig(frame_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        
+        return frame_path
+    
+    except Exception as e:
+        print(f"Error creating frame {frame_idx}: {e}")
+        return None
+
+def plot_skeleton(ax, pose, color, edge_color):
+    """Plot skeleton on axis"""
+    # Draw connections
+    for connection in CONNECTIONS_2D:
+        joint1, joint2 = connection
+        if joint1 < len(pose) and joint2 < len(pose):
+            x1, y1 = pose[joint1]
+            x2, y2 = pose[joint2]
+            ax.plot([x1, x2], [y1, y2], color=color, linewidth=2, alpha=0.7)
+    
+    # Draw joints
+    for joint_idx, (x, y) in enumerate(pose):
+        if joint_idx != 14:  # Skip root joint
+            ax.scatter(x, y, c=color, s=40, alpha=0.9, edgecolors=edge_color, linewidth=1)
+
+def create_gif_from_images(frame_paths, output_path, total_frames):
+    """Create GIF from individual frame images"""
+    try:
+        from PIL import Image
+        
+        # Load all images
+        images = []
+        for path in frame_paths:
+            if os.path.exists(path):
+                img = Image.open(path)
+                images.append(img)
+        
+        if images:
+            # Adjust duration based on number of frames
+            if total_frames > 1000:
+                duration = 50  # Very fast for long sequences
+            elif total_frames > 500:
+                duration = 100
+            elif total_frames > 200:
+                duration = 200
+            else:
+                duration = 300
+            
+            # Save as GIF
+            images[0].save(
+                output_path,
+                save_all=True,
+                append_images=images[1:],
+                duration=duration,
+                loop=0,
+                optimize=True
+            )
+            
+            print(f"✓ GIF created: {output_path}")
+            print(f"  Frames: {len(images)}")
+            print(f"  Duration per frame: {duration}ms")
+        else:
+            print("❌ No valid images to create GIF")
+    
+    except ImportError:
+        print("❌ PIL/Pillow required for GIF creation. Install with: pip install Pillow")
+    except Exception as e:
+        print(f"❌ Error creating GIF: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Compare Ground Truth and YOLO 2D poses with comprehensive metrics')
     parser.add_argument('--sequence', type=str, default='TS1', 
@@ -1042,26 +1313,31 @@ def main():
         
         # Create visualization only for single sequence
                 # Create visualization only for single sequence
-                # Create visualization only for single sequence
         if args.save_video or not args.all:
-            print(f"\n🎬 Creating visualization...")
+            print(f"\n🎬 Creating memory-efficient visualization for ALL frames...")
             
             # Load ground truth data for visualization
             gt_poses_2d, _, _ = load_test_3d_data_from_dataset(args.sequence)
             
             if gt_poses_2d is not None:
-                # FIXED: Use reasonable batch size for visualization to avoid memory issues
+                # FIXED: Process ALL frames with memory-efficient streaming approach
                 if args.num_frames is None:
-                    # For all frames, use a reasonable limit for visualization (memory constraint)
-                    max_viz_frames = 1000  # Reasonable limit for GIF creation
-                    viz_frames = min(len(gt_poses_2d), max_viz_frames)
-                    if len(gt_poses_2d) > max_viz_frames:
-                        print(f"⚠️  Limiting visualization to {max_viz_frames} frames (out of {len(gt_poses_2d)}) for memory efficiency")
-                        print(f"   Metrics were calculated on ALL {len(gt_poses_2d)} frames, but visualization is limited")
+                    viz_frames = len(gt_poses_2d)  # Use ALL frames
+                    print(f"Creating visualization with ALL {viz_frames} frames using streaming approach")
                 else:
                     viz_frames = args.num_frames
+                    print(f"Creating visualization with {viz_frames} frames")
                 
-                print(f"Creating visualization with {viz_frames} frames...")
+                try:
+                    # Use streaming visualization for large sequences
+                    create_streaming_visualization(model, args.sequence, gt_poses_2d, viz_frames, args, device)
+                        
+                except Exception as e:
+                    print(f"❌ Error creating visualization: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("❌ Failed to load ground truth data for visualization")
                 
                 # Load frames in smaller batches for visualization
                 frames = load_test_frames(args.sequence, viz_frames)
