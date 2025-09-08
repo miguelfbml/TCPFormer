@@ -467,7 +467,7 @@ class MPIDatasetConverter:
         y_min, y_max = np.min(y_coords), np.max(y_coords)
         
         # Add padding to bounding box
-        padding = 0.1
+        padding = 0.18
         width = x_max - x_min
         height = y_max - y_min
         
