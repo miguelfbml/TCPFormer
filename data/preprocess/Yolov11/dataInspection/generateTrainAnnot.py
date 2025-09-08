@@ -1,0 +1,368 @@
+import os
+import cv2
+import argparse
+import numpy as np
+import glob
+from pathlib import Path
+
+def get_image_files_list(subject_num, sequence_num):
+    """Get the list of image files for a specific subject and sequence from YOLO training dataset"""
+    yolo_image_paths = [
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/images/train',
+        './mpi_inf_3dhp_Yolo/images/train',
+        'mpi_inf_3dhp_Yolo/images/train'
+    ]
+    
+    all_image_files = []
+    
+    for base_path in yolo_image_paths:
+        if os.path.exists(base_path):
+            # Look for images with the pattern: S{subject}_Seq{sequence}_cam0_frame*.jpg
+            pattern = os.path.join(base_path, f"S{subject_num}_Seq{sequence_num}_cam0_frame*.jpg")
+            image_files = glob.glob(pattern)
+            image_files.extend(glob.glob(os.path.join(base_path, f"S{subject_num}_Seq{sequence_num}_cam0_frame*.png")))
+            
+            if image_files:
+                all_image_files.extend(image_files)
+                print(f"✓ Found {len(image_files)} images in: {base_path}")
+    
+    if all_image_files:
+        all_image_files.sort()
+        print(f"✓ Total found {len(all_image_files)} images for S{subject_num}_Seq{sequence_num}")
+        return all_image_files
+    
+    print(f"✗ No YOLO images found for S{subject_num}_Seq{sequence_num}")
+    return []
+
+def load_single_frame(image_path):
+    """Load a single frame from file path"""
+    frame = cv2.imread(image_path)
+    filename = os.path.basename(image_path)
+    return frame, filename
+
+def parse_yolo_annotation_file(frame_filename):
+    """Parse YOLO annotation for a specific frame in the Yolo training dataset"""
+    # Try to find the YOLO annotation files
+    yolo_label_paths = [
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/labels/train',
+        './mpi_inf_3dhp_Yolo/labels/train',
+        'mpi_inf_3dhp_Yolo/labels/train'
+    ]
+    
+    # Convert image filename to annotation filename
+    # Image: S8_Seq2_cam0_frame006053.jpg -> Annotation: S8_Seq2_cam0_frame006053.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension
+    annotation_filename = f"{base_filename}.txt"
+    
+    for base_path in yolo_label_paths:
+        annotation_path = os.path.join(base_path, annotation_filename)
+        if os.path.exists(annotation_path):
+            return parse_yolo_annotation(annotation_path)
+    
+    return []
+
+def parse_yolo_annotation(annotation_path):
+    """Parse YOLO format annotation file with pose keypoints"""
+    annotations = []
+    
+    if os.path.exists(annotation_path):
+        with open(annotation_path, 'r') as f:
+            lines = f.readlines()
+            
+            for line in lines:
+                parts = line.strip().split()
+                
+                if len(parts) >= 5:
+                    class_id = int(parts[0])
+                    x_center = float(parts[1])
+                    y_center = float(parts[2])
+                    width = float(parts[3])
+                    height = float(parts[4])
+                    
+                    # Parse keypoints (after bbox, all remaining values are keypoints in x,y,v format)
+                    keypoints = []
+                    keypoint_start = 5
+                    num_remaining = len(parts) - keypoint_start
+                    
+                    # Process keypoints in groups of 3 (x, y, visibility)
+                    if num_remaining >= 3 and num_remaining % 3 == 0:
+                        for i in range(keypoint_start, len(parts), 3):
+                            if i + 2 < len(parts):
+                                kpt_x = float(parts[i])
+                                kpt_y = float(parts[i + 1])
+                                kpt_v = float(parts[i + 2])  # visibility
+                                keypoints.append((kpt_x, kpt_y, kpt_v))
+                    
+                    annotations.append((class_id, x_center, y_center, width, height, keypoints))
+    
+    return annotations
+
+# MPI-INF-3DHP joint connections for skeleton drawing
+CONNECTIONS_2D = [
+    (0, 16), (16, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
+    (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
+]
+
+# Joint names for reference
+JOINT_NAMES = [
+    'Head', 'SpineShoulder', 'LShoulder', 'LElbow', 'LHand', 'RShoulder', 
+    'RElbow', 'RHand', 'LHip', 'LKnee', 'LAnkle', 'RHip', 'RKnee', 'RAnkle', 
+    'Sacrum', 'Spine', 'Neck'
+]
+
+def draw_annotations(image, annotations, img_width, img_height):
+    """Draw bounding boxes and keypoints on image"""
+    for annotation in annotations:
+        if len(annotation) == 6:
+            class_id, x_center, y_center, width, height, keypoints = annotation
+        else:
+            # Fallback for old format without keypoints
+            class_id, x_center, y_center, width, height = annotation[:5]
+            keypoints = []
+        
+        # Draw bounding box
+        x1 = int((x_center - width/2) * img_width)
+        y1 = int((y_center - height/2) * img_height)
+        x2 = int((x_center + width/2) * img_width)
+        y2 = int((y_center + height/2) * img_height)
+        
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+        # Draw class label
+        label = f"Person"
+        cv2.putText(image, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Draw keypoints if available
+        if keypoints and len(keypoints) > 0:
+            # Convert normalized keypoint coordinates to pixel coordinates
+            pixel_keypoints = []
+            
+            for i, (kpt_x, kpt_y, kpt_v) in enumerate(keypoints):
+                if kpt_v > 0:  # Only process visible keypoints
+                    px = int(kpt_x * img_width)
+                    py = int(kpt_y * img_height)
+                    pixel_keypoints.append((px, py, kpt_v))
+                else:
+                    pixel_keypoints.append((0, 0, 0))
+            
+            # Draw keypoint connections (skeleton) only if we have enough keypoints
+            if len(pixel_keypoints) >= 17:
+                for connection in CONNECTIONS_2D:
+                    joint1_idx, joint2_idx = connection
+                    if (joint1_idx < len(pixel_keypoints) and joint2_idx < len(pixel_keypoints) and
+                        pixel_keypoints[joint1_idx][2] > 0 and pixel_keypoints[joint2_idx][2] > 0):
+                        
+                        pt1 = (pixel_keypoints[joint1_idx][0], pixel_keypoints[joint1_idx][1])
+                        pt2 = (pixel_keypoints[joint2_idx][0], pixel_keypoints[joint2_idx][1])
+                        cv2.line(image, pt1, pt2, (255, 0, 0), 2)  # Blue lines for skeleton
+            
+            # Draw keypoints as circles
+            for i, (px, py, kpt_v) in enumerate(pixel_keypoints):
+                if kpt_v > 0:
+                    # Different colors for different body parts
+                    if i == 0:  # Head
+                        color = (0, 0, 255)  # Red
+                    elif i in [2, 3, 4, 5, 6, 7]:  # Arms
+                        color = (255, 255, 0)  # Cyan
+                    elif i in [8, 9, 10, 11, 12, 13]:  # Legs
+                        color = (0, 255, 255)  # Yellow
+                    else:  # Torso
+                        color = (255, 0, 255)  # Magenta
+                    
+                    cv2.circle(image, (px, py), 4, color, -1)
+                    # Add joint number
+                    cv2.putText(image, str(i), (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+    
+    return image
+
+def create_annotated_video(subject_num, sequence_num, output_path, max_frames=None):
+    """Create video with annotations for a specific subject and sequence - batch processing version"""
+    sequence_name = f"S{subject_num}_Seq{sequence_num}"
+    print(f"Loading image file list for sequence: {sequence_name}")
+    
+    # Get list of image files without loading them
+    image_files = get_image_files_list(subject_num, sequence_num)
+    
+    if not image_files:
+        print(f"No image files found for sequence: {sequence_name}")
+        return False
+    
+    # Limit number of frames if specified
+    if max_frames is not None:
+        image_files = image_files[:max_frames]
+    
+    print(f"Found {len(image_files)} frames to process")
+    
+    # Load first frame to get dimensions
+    first_frame, _ = load_single_frame(image_files[0])
+    if first_frame is None:
+        print(f"Could not load first frame: {image_files[0]}")
+        return False
+    
+    height, width, _ = first_frame.shape
+    print(f"Video dimensions: {width}x{height}")
+    
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(output_path, fourcc, 10.0, (width, height))
+    
+    processed_count = 0
+    frames_with_annotations = 0
+    frames_with_keypoints = 0
+    total_keypoints_found = 0
+    
+    print(f"Processing {len(image_files)} frames...")
+    
+    # Process all frames
+    for i, image_path in enumerate(image_files):
+        # Load single frame
+        frame, filename = load_single_frame(image_path)
+        
+        if frame is None:
+            continue
+        
+        # Get YOLO annotations for this frame
+        annotations = parse_yolo_annotation_file(filename)
+        
+        # Count annotations with keypoints
+        has_keypoints = False
+        frame_keypoints = 0
+        for annotation in annotations:
+            if len(annotation) == 6 and annotation[5]:  # Has keypoints
+                keypoints = annotation[5]
+                visible_kpts = sum(1 for _, _, v in keypoints if v > 0)
+                if visible_kpts > 0:
+                    has_keypoints = True
+                    frame_keypoints += visible_kpts
+        
+        total_keypoints_found += frame_keypoints
+        
+        # Draw annotations on image
+        annotated_image = draw_annotations(frame, annotations, width, height)
+        
+        # Add frame info
+        keypoint_info = f" | Keypoints: {frame_keypoints}" if has_keypoints else " | Keypoints: 0"
+        frame_info = f"Frame: {filename} | Annotations: {len(annotations)}{keypoint_info}"
+        cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add sequence info
+        seq_info = f"Sequence: {sequence_name} | Progress: {i + 1}/{len(image_files)}"
+        cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add legend
+        legend_y = 90
+        cv2.putText(annotated_image, "Legend: Green=BBox, Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso", 
+                   (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        # Write frame to video
+        video_writer.write(annotated_image)
+        processed_count += 1
+        
+        if len(annotations) > 0:
+            frames_with_annotations += 1
+        if has_keypoints:
+            frames_with_keypoints += 1
+        
+        # Clear frame from memory immediately
+        del frame, annotated_image
+        
+        # Print progress every 100 frames
+        if (i + 1) % 100 == 0 or (i + 1) == len(image_files):
+            print(f"Processed {i + 1}/{len(image_files)} frames | "
+                  f"Annotations: {frames_with_annotations} frames | "
+                  f"Keypoints: {frames_with_keypoints} frames | "
+                  f"Total keypoints: {total_keypoints_found}")
+            
+            # Force garbage collection every 100 frames
+            import gc
+            gc.collect()
+    
+    video_writer.release()
+    print(f"\n{'='*60}")
+    print(f"Created annotated video: {output_path}")
+    print(f"Processed {processed_count} frames")
+    print(f"Frames with annotations: {frames_with_annotations}/{processed_count}")
+    print(f"Frames with keypoints: {frames_with_keypoints}/{processed_count}")
+    print(f"Total visible keypoints found: {total_keypoints_found}")
+    print(f"{'='*60}")
+    return True
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate annotated videos to check training ground truth annotations with keypoints')
+    
+    # Subject flags
+    for i in range(1, 9):
+        parser.add_argument(f'--S{i}', action='store_true', help=f'Process subject S{i}')
+    
+    # Sequence flags
+    parser.add_argument('--Seq1', action='store_true', help='Process sequence 1')
+    parser.add_argument('--Seq2', action='store_true', help='Process sequence 2')
+    
+    parser.add_argument('--all', action='store_true', help='Process all available subjects and sequences (S1-S8, Seq1-Seq2)')
+    parser.add_argument('--output_dir', type=str, default='./annotated_videos_train', help='Output directory for videos')
+    parser.add_argument('--max_frames', type=int, default=None, help='Maximum number of frames to process per sequence')
+    
+    args = parser.parse_args()
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Determine which subjects to process
+    subjects = []
+    if args.all:
+        subjects = list(range(1, 9))  # S1 to S8
+    else:
+        for i in range(1, 9):
+            if getattr(args, f'S{i}'):
+                subjects.append(i)
+    
+    # Determine which sequences to process
+    sequences = []
+    if args.all:
+        sequences = [1, 2]  # Seq1 and Seq2
+    else:
+        if args.Seq1:
+            sequences.append(1)
+        if args.Seq2:
+            sequences.append(2)
+    
+    # Check if any subjects or sequences were specified
+    if not subjects:
+        print("Error: Must specify at least one subject (--S1 to --S8) or --all")
+        parser.print_help()
+        return
+    
+    if not sequences:
+        print("Error: Must specify at least one sequence (--Seq1, --Seq2) or --all")
+        parser.print_help()
+        return
+    
+    print(f"Processing subjects: {['S' + str(s) for s in subjects]}")
+    print(f"Processing sequences: {['Seq' + str(s) for s in sequences]}")
+    
+    # Generate videos for selected combinations
+    successful = 0
+    failed = 0
+    
+    for subject_num in subjects:
+        for sequence_num in sequences:
+            sequence_name = f"S{subject_num}_Seq{sequence_num}"
+            output_path = os.path.join(args.output_dir, f"{sequence_name}_annotated_with_keypoints.mp4")
+            
+            print(f"\n{'='*50}")
+            print(f"Processing: {sequence_name}")
+            print(f"{'='*50}")
+            
+            success = create_annotated_video(subject_num, sequence_num, output_path, args.max_frames)
+            if success:
+                successful += 1
+            else:
+                failed += 1
+                print(f"Failed to create video for: {sequence_name}")
+    
+    print(f"\n{'='*50}")
+    print(f"Summary: {successful} successful, {failed} failed")
+    print(f"{'='*50}")
+
+if __name__ == "__main__":
+    main()
