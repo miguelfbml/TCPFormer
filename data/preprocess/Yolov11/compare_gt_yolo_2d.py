@@ -1041,70 +1041,111 @@ def main():
         print(f"="*60)
         
         # Create visualization only for single sequence
+                # Create visualization only for single sequence
+                # Create visualization only for single sequence
         if args.save_video or not args.all:
-            # CHANGED: For visualization, we need to handle the case where we processed all frames
-            # We'll need to reload data for visualization purposes with limited frames for memory
             print(f"\n🎬 Creating visualization...")
             
-            # Load data again for visualization (limit to reasonable number for animation)
+            # Load ground truth data for visualization
             gt_poses_2d, _, _ = load_test_3d_data_from_dataset(args.sequence)
             
-            # For visualization, limit frames to avoid memory issues with animations
-            viz_frames = min(100, len(gt_poses_2d)) if args.num_frames is None else args.num_frames
-            frames = load_test_frames(args.sequence, viz_frames)
-            
-            if gt_poses_2d is not None and frames is not None:
-                # Process data for visualization
-                min_frames = min(len(frames), len(gt_poses_2d), viz_frames)
-                frames = frames[:min_frames]
-                gt_poses_2d = gt_poses_2d[:min_frames]
+            if gt_poses_2d is not None:
+                # FIXED: Use reasonable batch size for visualization to avoid memory issues
+                if args.num_frames is None:
+                    # For all frames, use a reasonable limit for visualization (memory constraint)
+                    max_viz_frames = 1000  # Reasonable limit for GIF creation
+                    viz_frames = min(len(gt_poses_2d), max_viz_frames)
+                    if len(gt_poses_2d) > max_viz_frames:
+                        print(f"⚠️  Limiting visualization to {max_viz_frames} frames (out of {len(gt_poses_2d)}) for memory efficiency")
+                        print(f"   Metrics were calculated on ALL {len(gt_poses_2d)} frames, but visualization is limited")
+                else:
+                    viz_frames = args.num_frames
                 
-                print(f"Creating visualization with {min_frames} frames...")
-                yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size, device)
+                print(f"Creating visualization with {viz_frames} frames...")
                 
-                gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
-                gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
-                yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+                # Load frames in smaller batches for visualization
+                frames = load_test_frames(args.sequence, viz_frames)
                 
-                # Create metrics for visualization
-                viz_metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
-                if viz_metrics:
-                    viz_metrics['sequence'] = args.sequence
-                
-                try:
-                    result = create_comparison_visualization(
-                        gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, viz_metrics, 
-                        argparse.Namespace(num_frames=min_frames))
+                if frames is not None:
+                    # Process data for visualization
+                    min_frames = min(len(frames), len(gt_poses_2d), viz_frames)
+                    frames = frames[:min_frames]
+                    gt_poses_2d_viz = gt_poses_2d[:min_frames]
                     
-                    if result[0] is not None:
-                        update_func, fig, min_frames = result
+                    # Process YOLO poses in batches to avoid memory issues
+                    print(f"Processing YOLO inference for visualization...")
+                    yolo_poses_2d, _ = estimate_yolo_poses_batch(model, frames, args.img_size, device)
+                    
+                    gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_viz, frames)
+                    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
+                    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+                    
+                    # Create metrics for visualization
+                    viz_metrics = compute_mpjpe_2d(gt_poses_2d_root_rel, yolo_poses_2d_root_rel)
+                    if viz_metrics:
+                        viz_metrics['sequence'] = args.sequence
+                    
+                    try:
+                        result = create_comparison_visualization(
+                            gt_poses_2d_root_rel, yolo_poses_2d_root_rel, args.sequence, viz_metrics, 
+                            argparse.Namespace(num_frames=min_frames))
                         
-                        if args.save_video:
-                            print("Creating animation...")
-                            ani = FuncAnimation(fig, update_func, frames=min_frames, 
-                                              interval=300, repeat=True, blit=False)
+                        if result[0] is not None:
+                            update_func, fig, min_frames = result
                             
-                            os.makedirs(args.output_dir, exist_ok=True)
-                            model_name_clean = os.path.splitext(os.path.basename(args.model_path))[0]
-                            output_path = os.path.join(args.output_dir, 
-                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.gif')
-                            ani.save(output_path, writer='pillow', fps=3, dpi=100)
-                            print(f"✓ Animation saved to: {output_path}")
-                            
-                            update_func(0)
-                            static_path = os.path.join(args.output_dir, 
-                                                     f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.png')
-                            plt.savefig(static_path, dpi=150, bbox_inches='tight')
-                            print(f"✓ Static image saved to: {static_path}")
-                            
-                            plt.close(fig)
-                        else:
-                            print("Showing interactive visualization...")
-                            update_func(0)
-                            plt.show()
-                            
-                except Exception as e:
-                    print(f"❌ Error creating visualization: {e}")
-
+                            if args.save_video:
+                                print(f"Creating animation with {min_frames} frames...")
+                                
+                                # Adjust animation settings based on number of frames
+                                if min_frames > 500:
+                                    fps = 10  # Faster playback for long sequences
+                                    interval = 100
+                                elif min_frames > 200:
+                                    fps = 5
+                                    interval = 200
+                                else:
+                                    fps = 3
+                                    interval = 300
+                                
+                                ani = FuncAnimation(fig, update_func, frames=min_frames, 
+                                                  interval=interval, repeat=True, blit=False)
+                                
+                                os.makedirs(args.output_dir, exist_ok=True)
+                                model_name_clean = os.path.splitext(os.path.basename(args.model_path))[0]
+                                output_path = os.path.join(args.output_dir, 
+                                                         f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.gif')
+                                
+                                print(f"Saving animation to {output_path}...")
+                                ani.save(output_path, writer='pillow', fps=fps, dpi=100)
+                                print(f"✓ Animation saved to: {output_path}")
+                                
+                                # Save static image of first frame
+                                update_func(0)
+                                static_path = os.path.join(args.output_dir, 
+                                                         f'{args.sequence}_gt_vs_yolo_{model_name_clean}_conf02_comprehensive.png')
+                                plt.savefig(static_path, dpi=150, bbox_inches='tight')
+                                print(f"✓ Static image saved to: {static_path}")
+                                
+                                plt.close(fig)
+                            else:
+                                print("Showing interactive visualization...")
+                                update_func(0)
+                                plt.show()
+                                
+                        # Clear memory after visualization
+                        del frames, gt_poses_2d_viz, yolo_poses_2d, gt_poses_2d_pixel
+                        del gt_poses_2d_root_rel, yolo_poses_2d_root_rel
+                        if device.startswith('cuda'):
+                            torch.cuda.empty_cache()
+                        gc.collect()
+                        
+                    except Exception as e:
+                        print(f"❌ Error creating visualization: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print("❌ Failed to load frames for visualization")
+            else:
+                print("❌ Failed to load ground truth data for visualization")
 if __name__ == '__main__':
     main()
