@@ -43,27 +43,34 @@ def get_available_sequences():
     return ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
 
 def get_image_files_list(sequence_name):
-    """Get the list of image files for a sequence without loading them"""
-    test_image_paths = [
-        '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
-        '../motion3d/mpi_inf_3dhp_test_set',
-        '../../motion3d/mpi_inf_3dhp_test_set',
-        '../../../motion3d/mpi_inf_3dhp_test_set'
+    """Get the list of image files for a sequence from YOLO dataset"""
+    yolo_image_paths = [
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/images/val',
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/images/train',
+        './mpi_inf_3dhp_Yolo/images/val',
+        './mpi_inf_3dhp_Yolo/images/train',
+        'mpi_inf_3dhp_Yolo/images'
     ]
     
-    for base_path in test_image_paths:
-        image_folder = os.path.join(base_path, sequence_name, 'imageSequence')
-        if os.path.exists(image_folder):
-            image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
-            image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
-            image_files.sort()
+    all_image_files = []
+    
+    for base_path in yolo_image_paths:
+        if os.path.exists(base_path):
+            # Look for images with the sequence name prefix
+            pattern = os.path.join(base_path, f"{sequence_name}_frame*.jpg")
+            image_files = glob.glob(pattern)
+            image_files.extend(glob.glob(os.path.join(base_path, f"{sequence_name}_frame*.png")))
             
             if image_files:
-                print(f"✓ Found image folder: {image_folder}")
-                print(f"✓ Found {len(image_files)} images")
-                return image_files
+                all_image_files.extend(image_files)
+                print(f"✓ Found {len(image_files)} images in: {base_path}")
     
-    print(f"✗ No image folder found for {sequence_name}")
+    if all_image_files:
+        all_image_files.sort()
+        print(f"✓ Total found {len(all_image_files)} images for sequence {sequence_name}")
+        return all_image_files
+    
+    print(f"✗ No YOLO images found for sequence {sequence_name}")
     return []
 
 def load_single_frame(image_path):
@@ -80,13 +87,13 @@ def parse_yolo_annotation_file(sequence_name, frame_filename):
         '/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo/labels/train',
         './mpi_inf_3dhp_Yolo/labels/val',
         './mpi_inf_3dhp_Yolo/labels/train',
-        'mpi_inf_3dhp_Yolo/labels'  # Add this for direct access
+        'mpi_inf_3dhp_Yolo/labels'
     ]
     
     # Convert image filename to annotation filename
-    # Image: TS3_frame000698.jpg -> Annotation: TS3_frame000698.txt
-    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: TS3_frame000698
-    annotation_filename = f"{base_filename}.txt"  # TS3_frame000698.txt
+    # Image: TS1_frame000000.jpg -> Annotation: TS1_frame000000.txt
+    base_filename = os.path.splitext(frame_filename)[0]  # Remove extension: TS1_frame000000
+    annotation_filename = f"{base_filename}.txt"  # TS1_frame000000.txt
     
     # Debug: print what we're looking for
     print(f"DEBUG: Looking for annotation file: {annotation_filename}")
