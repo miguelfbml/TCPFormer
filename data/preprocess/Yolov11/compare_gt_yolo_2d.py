@@ -246,8 +246,6 @@ def load_test_3d_data_from_dataset(sequence_name):
     """Load test data for a specific sequence"""
     test_data_paths = [
         '../../motion3d/data_test_3dhp.npz',
-        '../../../motion3d/data_test_3dhp.npz',
-        '../../../../motion3d/data_test_3dhp.npz'
     ]
     
     for data_path in test_data_paths:
@@ -315,7 +313,7 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
         for frame in batch_frames:
             try:
                 # Run YOLO inference with device specification
-                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.2, device=device)
+                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.35, device=device)
                 
                 if (results and len(results) > 0 and 
                     hasattr(results[0], 'keypoints') and 
