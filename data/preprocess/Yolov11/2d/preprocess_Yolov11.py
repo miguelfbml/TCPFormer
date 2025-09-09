@@ -76,7 +76,7 @@ class YOLO2DPoseEstimator:
         try:
             # Run YOLO inference
             results = self.model.predict(image, verbose=False, imgsz=self.img_size, 
-                                       conf=0.35, device=self.device)
+                                       conf=0.65, device=self.device)
             
             if (results and len(results) > 0 and 
                 hasattr(results[0], 'keypoints') and 
