@@ -237,6 +237,7 @@ def get_available_sequences():
     for data_path in test_data_paths:
         if os.path.exists(data_path):
             print(f"✓ Found ground truth data at: {os.path.abspath(data_path)}")
+            print(f"Data Path: {data_path}")
             data = np.load(data_path, allow_pickle=True)['data'].item()
             return list(data.keys())
     
@@ -278,6 +279,7 @@ def load_test_frames_batch(sequence_name, start_frame=0, num_frames=None):
         image_folder = os.path.join(base_path, sequence_name, 'imageSequence')
         if os.path.exists(image_folder):
             print(f"✓ Found images at: {os.path.abspath(image_folder)}")
+            print(f"test image path: {base_path}")
             image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
             image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
             image_files.sort()
