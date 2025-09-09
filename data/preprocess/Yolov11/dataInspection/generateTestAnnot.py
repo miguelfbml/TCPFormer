@@ -1,3 +1,15 @@
+"""
+python generateTestAnnot.py --list
+
+python generateTestAnnot.py --sequence TS1
+"""
+
+
+
+
+
+
+
 import os
 import cv2
 import argparse
