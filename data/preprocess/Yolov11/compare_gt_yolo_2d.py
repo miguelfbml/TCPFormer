@@ -230,8 +230,6 @@ def get_available_sequences():
     """Get list of available test sequences from data file"""
     test_data_paths = [
         '../../motion3d/data_test_3dhp.npz',
-        '../../../motion3d/data_test_3dhp.npz',
-        '../../../../motion3d/data_test_3dhp.npz'
     ]
     
     for data_path in test_data_paths:
@@ -270,9 +268,6 @@ def load_test_frames_batch(sequence_name, start_frame=0, num_frames=None):
     """Load test frames for the sequence in batches"""
     test_image_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
-        '../motion3d/mpi_inf_3dhp_test_set',
-        '../../motion3d/mpi_inf_3dhp_test_set',
-        '../../../motion3d/mpi_inf_3dhp_test_set'
     ]
     
     for base_path in test_image_paths:
