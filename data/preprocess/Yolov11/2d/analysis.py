@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load your YOLO dataset
-data = np.load('custom_yolo_dataset.npz', allow_pickle=True)['data'].item()
+data = np.load('data_test_3dhp.npz', allow_pickle=True)['data'].item()
 
 for seq_name, seq_data in data.items():
     poses_2d = seq_data['data_2d']
