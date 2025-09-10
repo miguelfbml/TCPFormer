@@ -10,11 +10,10 @@ echo "Starting YOLO training on MPI-INF-3DHP"
 cd data/preprocess/Yolov11
 
 python train.py \
-    --force-reprocess \
     --base-path /nas-ctm01/datasets/public/mpi_inf_3dhp \
     --annotations-path ../../motion3d/data_train_3dhp.npz \
     --epochs 100 \
-    --batch-size 12 \
+    --batch-size 4 \
     --img-size 1280 \
     --lr 0.001 \
     --device 0 \
