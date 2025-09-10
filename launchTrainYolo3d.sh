@@ -15,7 +15,7 @@ python train_3d.py \
     --annotations-path ../../motion3d/data_train_3dhp.npz \
     --output-path /nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo_3D \
     --epochs 200 \
-    --batch-size 8 \
+    --batch-size 4 \
     --img-size 1280 \
     --lr 0.001 \
     --device 0 \

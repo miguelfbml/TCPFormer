@@ -672,9 +672,10 @@ class MPI3DDatasetConverter:
             'flip_idx': [0, 1, 5, 6, 7, 2, 3, 4, 11, 12, 13, 8, 9, 10, 14, 15, 16],  # MPI joint flip indices
             'pose_3d': True,  # Flag for 3D pose
             'joint_names': MPI_JOINT_NAMES,
-            'skeleton': MPI_SKELETON
+            # Convert tuples to lists for YAML compatibility
+            'skeleton': [[int(a), int(b)] for a, b in MPI_SKELETON]  # Convert tuples to lists
         }
-        
+    
         yaml_path = os.path.join(self.output_path, 'mpi_3d_dataset.yaml')
         
         print(f"Creating YOLO 3D dataset configuration...")
