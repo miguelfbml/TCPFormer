@@ -789,7 +789,7 @@ def train_yolo_model(dataset_yaml, args):
     # Initialize metrics tracker
     metrics_tracker = YOLOMetricsTracker(
         use_wandb=args.use_wandb, 
-        wandb_project="YOLO_MPI_3DHP_Enhanced_Training"
+        wandb_project=getattr(args, 'wandb_project', 'YOLO_MPI_3DHP_Enhanced_Training')
     )
     
     # Start monitoring
@@ -820,11 +820,7 @@ def train_yolo_model(dataset_yaml, args):
     print(f"  Batch size: {args.batch_size} (optimized for 1280px)")
     print(f"  Image size: {args.img_size} (HIGH RESOLUTION)")
     print(f"  Learning rate: {args.lr} (AUTO-DETERMINED)")
-    print(f"  Pose loss weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
-    print(f"  Keypoint obj loss weight: {args.kobj_loss_weight}")
-    print(f"  Box loss weight: {args.box_loss_weight}")
-    print(f"  Cls loss weight: {args.cls_loss_weight}")
-    print(f"  DFL loss weight: {args.dfl_loss_weight}")
+    print(f"  Pose loss weight: 17.0 (MAXIMUM KEYPOINT FOCUS)")
     print(f"  Device: {args.device}")
     print(f"  WandB logging: {args.use_wandb}")
     print(f"  Patience: {args.patience}")
@@ -840,11 +836,7 @@ def train_yolo_model(dataset_yaml, args):
             "batch_size": args.batch_size,
             "img_size": args.img_size,
             "lr": args.lr,
-            "pose_loss_weight": args.pose_loss_weight,
-            "kobj_loss_weight": args.kobj_loss_weight,
-            "box_loss_weight": args.box_loss_weight,
-            "cls_loss_weight": args.cls_loss_weight,
-            "dfl_loss_weight": args.dfl_loss_weight,
+            "pose_loss_weight": 17.0,
             "device": args.device,
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
@@ -990,20 +982,13 @@ def train_yolo_model(dataset_yaml, args):
             training_config['lr0'] = args.lr
             training_config['lrf'] = 0.1
         
-        # Enhanced loss weights for maximum keypoint accuracy
-        training_config['pose'] = args.pose_loss_weight    # MAXIMUM focus on pose
-        training_config['kobj'] = args.kobj_loss_weight    # Keypoint objectness
-        training_config['box'] = args.box_loss_weight      # Bounding box
-        training_config['cls'] = args.cls_loss_weight      # Classification
-        training_config['dfl'] = args.dfl_loss_weight      # Distribution focal loss
+        # Enhanced loss weights for maximum keypoint accuracy - HARDCODED
+        training_config['pose'] = 17.0    # MAXIMUM focus on pose
+        # Let YOLO use defaults for other loss weights
         
         print(f"\n🎯 ENHANCED TRAINING CONFIGURATION:")
         print(f"   📏 Image Resolution: {args.img_size}px (HIGH)")
-        print(f"   🎯 Pose Loss Weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
-        print(f"   🎯 Keypoint Obj Weight: {args.kobj_loss_weight}")
-        print(f"   📦 Box Loss Weight: {args.box_loss_weight}")
-        print(f"   🏷️ Class Loss Weight: {args.cls_loss_weight}")
-        print(f"   📊 DFL Loss Weight: {args.dfl_loss_weight}")
+        print(f"   🎯 Pose Loss Weight: 17.0 (MAXIMUM KEYPOINT FOCUS)")
         print(f"   🔄 Learning Rate: {args.lr} (AUTO-OPTIMIZED)")
         print(f"   💾 Cache Strategy: {args.cache} (RAM-OPTIMIZED)")
         print(f"   ⏱️ Patience: {args.patience} epochs")
@@ -1066,18 +1051,6 @@ def main():
     parser.add_argument('--cache', type=str, default='disk',
                        help='Cache strategy: "ram", "disk", or False (optimized for limited RAM)')
     
-    # Enhanced loss weight parameters for maximum keypoint accuracy
-    parser.add_argument('--pose-loss-weight', type=float, default=17.0,
-                       help='Weight for pose keypoint loss (MAXIMUM for best keypoints)')
-    parser.add_argument('--kobj-loss-weight', type=float, default=2.5,
-                       help='Weight for keypoint objectness loss')
-    parser.add_argument('--box-loss-weight', type=float, default=7.5,
-                       help='Weight for bounding box loss')
-    parser.add_argument('--cls-loss-weight', type=float, default=0.5,
-                       help='Weight for classification loss')
-    parser.add_argument('--dfl-loss-weight', type=float, default=1.5,
-                       help='Weight for distribution focal loss')
-    
     # Monitoring options
     parser.add_argument('--use-wandb', action='store_true',
                        help='Enable WandB logging for comprehensive monitoring')
@@ -1110,11 +1083,7 @@ def main():
     print(f"🖼️ Image size: {args.img_size}px (HIGH RESOLUTION)")
     print(f"📚 Batch size: {args.batch_size} (optimized for large images)")
     print(f"📈 Learning rate: {args.lr} (AUTO-OPTIMIZED)")
-    print(f"🎯 Pose loss weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
-    print(f"🎯 Keypoint obj loss weight: {args.kobj_loss_weight}")
-    print(f"📦 Box loss weight: {args.box_loss_weight}")
-    print(f"🏷️ Cls loss weight: {args.cls_loss_weight}")
-    print(f"📊 DFL loss weight: {args.dfl_loss_weight}")
+    print(f"🎯 Pose loss weight: 17.0 (MAXIMUM KEYPOINT FOCUS)")
     print(f"💾 Cache strategy: {args.cache} (RAM-OPTIMIZED)")
     print(f"⏱️ Patience: {args.patience} epochs")
     print(f"📊 WandB logging: {args.use_wandb}")
