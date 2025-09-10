@@ -815,23 +815,19 @@ def train_yolo_model(dataset_yaml, args):
     
     print(f"Enhanced Training Configuration:")
     print(f"  Model: {model_name}")
-    print(f"  Model path: {model_path}")
     print(f"  Epochs: {args.epochs}")
-    print(f"  Batch size: {args.batch_size} (optimized for 1280px)")
-    print(f"  Image size: {args.img_size} (HIGH RESOLUTION)")
-    print(f"  Learning rate: {args.lr} (AUTO-DETERMINED)")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  Image size: {args.img_size}")
+    print(f"  Learning rate: {args.lr}")
     print(f"  Pose loss weight: 17.0 (MAXIMUM KEYPOINT FOCUS)")
     print(f"  Device: {args.device}")
-    print(f"  WandB logging: {args.use_wandb}")
+    print(f"  Cache: {args.cache}")
     print(f"  Patience: {args.patience}")
-    print(f"  Cache: {args.cache} (optimized for limited RAM)")
-    print(f"  Keypoint order: {MPI_JOINT_NAMES}")
     
     # Log configuration to WandB
     if args.use_wandb:
         wandb.config.update({
             "model": model_name,
-            "model_path": model_path,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "img_size": args.img_size,
@@ -840,19 +836,9 @@ def train_yolo_model(dataset_yaml, args):
             "device": args.device,
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
-            "keypoint_order": MPI_JOINT_NAMES,
-            "classes": 1,
-            "optimized_for": "keypoint_accuracy",
             "cache": args.cache,
             "patience": args.patience,
         })
-        
-        # Log environment info
-        try:
-            installed_packages = {d.project_name: d.version for d in pkg_resources.working_set}
-            wandb.config.update({'installed_packages': installed_packages})
-        except:
-            pass
     
     # Enhanced callback functions
     def on_train_epoch_end(trainer):
@@ -888,26 +874,14 @@ def train_yolo_model(dataset_yaml, args):
             except Exception as e:
                 print(f"⚠ Could not extract validation metrics: {e}")
             
-            # Get model path for FLOPs calculation
-            model_path_for_flops = None
-            try:
-                if hasattr(trainer, 'best') and trainer.best and hasattr(trainer.best, 'exists') and trainer.best.exists():
-                    model_path_for_flops = str(trainer.best)
-                elif hasattr(trainer, 'last') and trainer.last and hasattr(trainer.last, 'exists') and trainer.last.exists():
-                    model_path_for_flops = str(trainer.last)
-            except Exception as e:
-                print(f"⚠ Could not get model path: {e}")
-            
             # Log comprehensive metrics
             try:
-                metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path_for_flops)
+                metrics_tracker.log_epoch_metrics(epoch, results_dict)
             except Exception as e:
                 print(f"⚠ Failed to log epoch metrics: {e}")
             
         except Exception as e:
             print(f"⚠ Error in epoch callback: {e}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
     
     def on_val_end(trainer):
         """Enhanced callback for end of validation"""
@@ -929,9 +903,9 @@ def train_yolo_model(dataset_yaml, args):
     model.add_callback("on_val_end", on_val_end)
     
     try:
-        print(f"\n🚀 Starting enhanced YOLO training with {model_name}...")
+        print(f"\n🚀 Starting YOLO training with {model_name}...")
         
-        # Enhanced training parameters for maximum keypoint accuracy
+        # SIMPLIFIED training configuration - just the essentials + pose weight
         training_config = {
             'data': dataset_yaml,
             'epochs': args.epochs,
@@ -941,60 +915,27 @@ def train_yolo_model(dataset_yaml, args):
             'workers': args.workers,
             'project': 'runs/pose',
             'name': 'mpi_yolo11x_pose_enhanced_keypoints',
-            'save_period': 10,
             'patience': args.patience,
-            'verbose': True,
-            'plots': True,
-            'save': True,
-            'amp': True,  # Automatic Mixed Precision for efficiency
-            'freeze': None,
-            'resume': False,
-            'nosave': False,
-            'noval': False,
-            'cache': args.cache,  # Optimized caching
-            'copy_paste': 0.0,  # Disable copy-paste for pose
-            'auto_augment': 'randaugment',
-            'erasing': 0.3,
-            'crop_fraction': 1.0,
-            # Enhanced pose-specific augmentations
-            'degrees': 8.0,      # Reduced rotation for pose preservation
-            'translate': 0.08,   # Reduced translation for pose preservation
-            'scale': 0.4,        # Reduced scaling for pose preservation
-            'shear': 1.5,        # Reduced shear for pose preservation
-            'perspective': 0.0,  # No perspective for pose preservation
-            'flipud': 0.0,       # No vertical flip
-            'fliplr': 0.5,       # Horizontal flip with keypoint handling
-            'bgr': 0.0,          # No BGR conversion
-            'mosaic': 0.0,       # Disable mosaic for pose
-            'mixup': 0.0,        # Disable mixup for pose
-            'hsv_h': 0.012,      # Reduced HSV augmentation
-            'hsv_s': 0.6,        # Reduced saturation changes
-            'hsv_v': 0.3,        # Reduced value changes
+            'cache': args.cache,
+            'pose': 17.0,    # ONLY CUSTOM SETTING - Maximum focus on pose estimation
         }
         
         # Auto learning rate configuration
         if args.lr == 'auto':
-            training_config['lr0'] = 0.01      # Let YOLO determine optimal LR
-            training_config['lrf'] = 0.01      # Final LR fraction
-            training_config['momentum'] = 0.937 # Momentum
-            training_config['weight_decay'] = 0.0005  # Weight decay
+            # Let YOLO use its default learning rate
+            pass  # Don't set lr0, let YOLO decide
         else:
             training_config['lr0'] = args.lr
-            training_config['lrf'] = 0.1
         
-        # Enhanced loss weights for maximum keypoint accuracy - HARDCODED
-        training_config['pose'] = 17.0    # MAXIMUM focus on pose
-        # Let YOLO use defaults for other loss weights
-        
-        print(f"\n🎯 ENHANCED TRAINING CONFIGURATION:")
-        print(f"   📏 Image Resolution: {args.img_size}px (HIGH)")
-        print(f"   🎯 Pose Loss Weight: 17.0 (MAXIMUM KEYPOINT FOCUS)")
-        print(f"   🔄 Learning Rate: {args.lr} (AUTO-OPTIMIZED)")
-        print(f"   💾 Cache Strategy: {args.cache} (RAM-OPTIMIZED)")
+        print(f"\n🎯 TRAINING CONFIGURATION:")
+        print(f"   📏 Image Resolution: {args.img_size}px")
+        print(f"   🎯 Pose Loss Weight: 17.0 (ENHANCED)")
+        print(f"   🔄 Learning Rate: {args.lr}")
+        print(f"   💾 Cache: {args.cache}")
         print(f"   ⏱️ Patience: {args.patience} epochs")
-        print(f"   🔍 Augmentations: POSE-OPTIMIZED")
+        print(f"   📦 All other settings: YOLO DEFAULTS")
         
-        # Train the model with enhanced configuration
+        # Train the model with simplified configuration
         results = model.train(**training_config)
         
         # Log final results
@@ -1003,12 +944,11 @@ def train_yolo_model(dataset_yaml, args):
             if args.use_wandb:
                 wandb.log({"final_results": final_metrics})
         
-        print(f"\n✅ Enhanced training completed successfully!")
+        print(f"\n✅ Training completed successfully!")
         print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/")
         print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/best.pt")
         print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/last.pt")
-        print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
-        print(f"🎯 Optimized for: MAXIMUM 2D KEYPOINT ACCURACY")
+        print(f"🎯 Enhanced for: 2D KEYPOINT ACCURACY")
         
         return results
         
