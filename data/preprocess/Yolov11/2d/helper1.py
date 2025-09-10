@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 print("🔍 DIAGNOSING MPJPE ISSUE")
 print("=" * 60)
