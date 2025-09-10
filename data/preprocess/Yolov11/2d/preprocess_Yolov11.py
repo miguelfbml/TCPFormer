@@ -226,7 +226,7 @@ def create_yolo_dataset(original_data, estimator, output_path):
         print(f"  Original 2D shape: {original_2d.shape}")
         print(f"  Processing {num_frames} frames...")
         
-        # Process images with YOLO
+        # Process images with YOLO - SINGLE LOOP ONLY
         yolo_poses_2d = []
         detection_failures = 0
         
@@ -258,37 +258,12 @@ def create_yolo_dataset(original_data, estimator, output_path):
                 yolo_seq_data['valid'][frame_idx] = False
                 detection_failures += 1
         
-        # Convert to numpy array and store
+        # Convert to numpy array and store - ONLY ONCE
         yolo_seq_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
         
         print(f"  ✓ YOLO 2D shape: {yolo_seq_data['data_2d'].shape}")
         print(f"  ✓ Detection failures: {detection_failures}/{num_frames} ({detection_failures/num_frames*100:.1f}%)")
         print(f"  ✓ Valid frames: {np.sum(yolo_seq_data['valid'])}/{num_frames}")
-        
-        # Process images with YOLO
-        yolo_poses_2d = []
-        
-        for frame_idx in tqdm(range(num_frames), desc=f"Processing {seq_name}"):
-            if frame_idx < len(image_files):
-                # Load and process image
-                image_path = image_files[frame_idx]
-                image = cv2.imread(image_path)
-                
-                if image is not None:
-                    # Get YOLO 2D pose in original pixel coordinates
-                    pose_2d_with_conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
-                    yolo_poses_2d.append(pose_2d_with_conf[:, :2])  # Only x, y coordinates
-                else:
-                    # Use zero pose for missing image
-                    yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
-            else:
-                # Use zero pose for missing frame
-                yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
-        
-        # Convert to numpy array and store
-        yolo_seq_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
-        
-        print(f"  ✓ YOLO 2D shape: {yolo_seq_data['data_2d'].shape}")
         
         # Check YOLO coordinate range
         if yolo_seq_data['data_2d'].size > 0:
@@ -318,7 +293,10 @@ def create_yolo_dataset(original_data, estimator, output_path):
     
     # Save the new dataset
     print(f"\nSaving YOLO dataset to: {output_path}")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:  # Only create directory if there is one
+        os.makedirs(output_dir, exist_ok=True)
+    
     np.savez_compressed(output_path, data=yolo_data)
     
     print("✓ YOLO dataset created successfully!")
