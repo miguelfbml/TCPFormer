@@ -167,7 +167,67 @@ class YOLO2DPoseEstimator:
             torch.cuda.empty_cache()
         gc.collect()
 
-# ... (keep all other functions from your original script: get_sequence_image_dimensions, load_original_dataset, etc.)
+def get_sequence_image_dimensions(seq_name):
+    """Get original image dimensions for a sequence"""
+    if seq_name in ['TS1', 'TS2', 'TS3', 'TS4']:
+        return 2048, 2048
+    elif seq_name in ['TS5', 'TS6']:
+        return 1920, 1080
+    else:
+        print(f"Warning: Unknown sequence {seq_name}, using default dimensions")
+        return 2048, 2048
+
+def load_sequence_images(seq_name):
+    """Load list of image files for a sequence"""
+    # Try multiple possible paths for images
+    possible_image_paths = [
+        f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{seq_name}/imageFrames/video_0/',
+        f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{seq_name}/imageSequence/',
+        f'/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/{seq_name}/images/',
+    ]
+    
+    for image_dir in possible_image_paths:
+        if os.path.exists(image_dir):
+            print(f"  ✓ Found images at: {image_dir}")
+            
+            # Look for common image extensions
+            image_files = []
+            for ext in ['*.jpg', '*.jpeg', '*.png', '*.bmp']:
+                image_files.extend(glob.glob(os.path.join(image_dir, ext)))
+            
+            if image_files:
+                image_files.sort()  # Ensure proper ordering
+                print(f"  ✓ Found {len(image_files)} images")
+                return image_files
+            else:
+                print(f"  ❌ No images found in {image_dir}")
+    
+    print(f"  ❌ No image directory found for {seq_name}")
+    return None
+
+def load_original_dataset():
+    """Load the original MPI-INF-3DHP test dataset"""
+    possible_paths = [
+        os.path.join(project_root, 'data/motion3d/data_test_3dhp.npz'),
+        'data_test_3dhp.npz',
+        '../../../motion3d/data_test_3dhp.npz',
+        '../../../../data/motion3d/data_test_3dhp.npz'
+    ]
+    
+    for dataset_path in possible_paths:
+        if os.path.exists(dataset_path):
+            print(f"✓ Found dataset at: {dataset_path}")
+            try:
+                data = np.load(dataset_path, allow_pickle=True)['data'].item()
+                print(f"✓ Loaded dataset with {len(data)} sequences")
+                return data
+            except Exception as e:
+                print(f"❌ Error loading dataset: {e}")
+                continue
+    
+    print("❌ Could not find original dataset file 'data_test_3dhp.npz'")
+    print("Please make sure the original MPI-INF-3DHP dataset is available")
+    return None
 
 def create_yolo_dataset(original_data, estimator, output_path):
     """Create new dataset with YOLO 2D poses in camera coordinate system"""
@@ -338,7 +398,7 @@ def main():
     print(f"Output path: {args.output_path}")
     print(f"Image size: {args.img_size}")
     print(f"Device: {args.device}")
-    print(f"Note: Coordinates will be stored in original image pixel coordinates")
+    print(f"Note: Coordinates will be converted to camera coordinate system")
     
     # Check if model exists
     if not os.path.exists(args.model_path):
@@ -364,9 +424,9 @@ def main():
         verify_dataset(original_data, yolo_data)
         
         print(f"\n✓ Success! YOLO dataset saved to: {args.output_path}")
-        print(f"\nCoordinate format: Original image pixel coordinates")
-        print(f"- TS1-TS4: 2048x2048 pixel coordinates")
-        print(f"- TS5-TS6: 1920x1080 pixel coordinates")
+        print(f"\nCoordinate format: Camera coordinate system")
+        print(f"- Coordinates should now match ground truth ranges")
+        print(f"- Negative values and coordinates beyond image boundaries are expected")
         print(f"\nTo use in training/evaluation:")
         print(f"1. Modify data_root in config to point to the new dataset")
         print(f"2. Or rename the file to replace the original")
