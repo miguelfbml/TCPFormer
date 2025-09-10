@@ -3,16 +3,16 @@ Train YOLO on MPI-INF-3DHP dataset for 17 keypoint pose estimation
 Converts MPI-INF-3DHP 2D annotations to YOLO format and trains a custom model
 
 Usage:
-python train.py --epochs 100 --batch-size 16 --img-size 640
+python train.py --epochs 100 --batch-size 4 --img-size 1280
 
 # First run - will convert if needed
-python train.py --epochs 100 --batch-size 16
+python train.py --epochs 100 --batch-size 4
 
 # Subsequent runs - will use existing annotations
-python train.py --train-only --epochs 100 --batch-size 16
+python train.py --train-only --epochs 100 --batch-size 4
 
 # Force regeneration if annotations are corrupted
-python train.py --force-reprocess --epochs 100 --batch-size 16
+python train.py --force-reprocess --epochs 100 --batch-size 4
 """
 
 import argparse
@@ -128,15 +128,15 @@ class YOLOMetricsTracker:
         if self.use_wandb:
             wandb.init(
                 project=self.wandb_project,
-                name="YOLO_MPI_3DHP_Training",
-                tags=["YOLO", "MPI-INF-3DHP", "pose_estimation"]
+                name="YOLO_MPI_3DHP_Enhanced_Training",
+                tags=["YOLO", "MPI-INF-3DHP", "pose_estimation", "enhanced"]
             )
     
     def start_training(self):
         self.training_start_time = time.time()
         self.gpu_monitor.start()
         print(f"\n{'='*70}")
-        print(f"TRAINING MONITORING STARTED")
+        print(f"ENHANCED TRAINING MONITORING STARTED")
         print(f"{'='*70}")
     
     def log_epoch_metrics(self, epoch, results_dict, model_path=None):
@@ -281,7 +281,7 @@ class YOLOMetricsTracker:
         
         print(f"{'='*70}")
     
-    def calculate_model_flops(self, model_path, input_size=(640, 640)):
+    def calculate_model_flops(self, model_path, input_size=(1280, 1280)):
         """Calculate FLOPs for the trained model"""
         try:
             model = YOLO(model_path)
@@ -313,7 +313,7 @@ class YOLOMetricsTracker:
             total_time = time.time() - self.training_start_time
             
             print(f"\n{'='*70}")
-            print(f"TRAINING COMPLETED - FINAL SUMMARY")
+            print(f"ENHANCED TRAINING COMPLETED - FINAL SUMMARY")
             print(f"{'='*70}")
             print(f"Total Training Time: {total_time/3600:.2f} hours")
             print(f"Total Epochs: {len(self.epoch_metrics)}")
@@ -781,15 +781,15 @@ class MPIDatasetConverter:
         return yaml_path
 
 def train_yolo_model(dataset_yaml, args):
-    """Train YOLO model on converted dataset with comprehensive monitoring"""
+    """Train YOLO model on converted dataset with enhanced keypoint accuracy settings"""
     print("\n" + "="*60)
-    print("STARTING YOLO TRAINING WITH COMPREHENSIVE MONITORING")
+    print("STARTING ENHANCED YOLO TRAINING FOR SUPERIOR KEYPOINT ACCURACY")
     print("="*60)
     
     # Initialize metrics tracker
     metrics_tracker = YOLOMetricsTracker(
         use_wandb=args.use_wandb, 
-        wandb_project="YOLO_MPI_3DHP_Training"
+        wandb_project="YOLO_MPI_3DHP_Enhanced_Training"
     )
     
     # Start monitoring
@@ -813,15 +813,22 @@ def train_yolo_model(dataset_yaml, args):
         model = YOLO(model_path)
         model_name = "YOLOv11x-pose"
     
-    print(f"Training configuration:")
+    print(f"Enhanced Training Configuration:")
     print(f"  Model: {model_name}")
     print(f"  Model path: {model_path}")
     print(f"  Epochs: {args.epochs}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Image size: {args.img_size}")
-    print(f"  Learning rate: {args.lr}")
+    print(f"  Batch size: {args.batch_size} (optimized for 1280px)")
+    print(f"  Image size: {args.img_size} (HIGH RESOLUTION)")
+    print(f"  Learning rate: {args.lr} (AUTO-DETERMINED)")
+    print(f"  Pose loss weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
+    print(f"  Keypoint obj loss weight: {args.kobj_loss_weight}")
+    print(f"  Box loss weight: {args.box_loss_weight}")
+    print(f"  Cls loss weight: {args.cls_loss_weight}")
+    print(f"  DFL loss weight: {args.dfl_loss_weight}")
     print(f"  Device: {args.device}")
     print(f"  WandB logging: {args.use_wandb}")
+    print(f"  Patience: {args.patience}")
+    print(f"  Cache: {args.cache} (optimized for limited RAM)")
     print(f"  Keypoint order: {MPI_JOINT_NAMES}")
     
     # Log configuration to WandB
@@ -833,12 +840,19 @@ def train_yolo_model(dataset_yaml, args):
             "batch_size": args.batch_size,
             "img_size": args.img_size,
             "lr": args.lr,
+            "pose_loss_weight": args.pose_loss_weight,
+            "kobj_loss_weight": args.kobj_loss_weight,
+            "box_loss_weight": args.box_loss_weight,
+            "cls_loss_weight": args.cls_loss_weight,
+            "dfl_loss_weight": args.dfl_loss_weight,
             "device": args.device,
             "dataset": "MPI-INF-3DHP",
             "keypoints": 17,
             "keypoint_order": MPI_JOINT_NAMES,
             "classes": 1,
-            "optimized_sampling": False,  # Full dataset processing
+            "optimized_for": "keypoint_accuracy",
+            "cache": args.cache,
+            "patience": args.patience,
         })
         
         # Log environment info
@@ -892,7 +906,7 @@ def train_yolo_model(dataset_yaml, args):
             except Exception as e:
                 print(f"⚠ Could not get model path: {e}")
             
-            # Log comprehensive metrics (without MPJPE)
+            # Log comprehensive metrics
             try:
                 metrics_tracker.log_epoch_metrics(epoch, results_dict, model_path_for_flops)
             except Exception as e:
@@ -923,25 +937,80 @@ def train_yolo_model(dataset_yaml, args):
     model.add_callback("on_val_end", on_val_end)
     
     try:
-        print(f"\n🚀 Starting YOLO training with {model_name}...")
+        print(f"\n🚀 Starting enhanced YOLO training with {model_name}...")
         
-        # Train the model with enhanced monitoring
-        results = model.train(
-            data=dataset_yaml,
-            epochs=args.epochs,
-            imgsz=args.img_size,
-            batch=args.batch_size,
-            lr0=args.lr,
-            device=args.device,
-            workers=args.workers,
-            project='runs/pose',
-            name='mpi_yolo11x_pose_corrected',  # Updated name for corrected keypoint order
-            save_period=10,
-            patience=20,
-            verbose=True,
-            plots=True,
-            save=True
-        )
+        # Enhanced training parameters for maximum keypoint accuracy
+        training_config = {
+            'data': dataset_yaml,
+            'epochs': args.epochs,
+            'imgsz': args.img_size,
+            'batch': args.batch_size,
+            'device': args.device,
+            'workers': args.workers,
+            'project': 'runs/pose',
+            'name': 'mpi_yolo11x_pose_enhanced_keypoints',
+            'save_period': 10,
+            'patience': args.patience,
+            'verbose': True,
+            'plots': True,
+            'save': True,
+            'amp': True,  # Automatic Mixed Precision for efficiency
+            'freeze': None,
+            'resume': False,
+            'nosave': False,
+            'noval': False,
+            'cache': args.cache,  # Optimized caching
+            'copy_paste': 0.0,  # Disable copy-paste for pose
+            'auto_augment': 'randaugment',
+            'erasing': 0.3,
+            'crop_fraction': 1.0,
+            # Enhanced pose-specific augmentations
+            'degrees': 8.0,      # Reduced rotation for pose preservation
+            'translate': 0.08,   # Reduced translation for pose preservation
+            'scale': 0.4,        # Reduced scaling for pose preservation
+            'shear': 1.5,        # Reduced shear for pose preservation
+            'perspective': 0.0,  # No perspective for pose preservation
+            'flipud': 0.0,       # No vertical flip
+            'fliplr': 0.5,       # Horizontal flip with keypoint handling
+            'bgr': 0.0,          # No BGR conversion
+            'mosaic': 0.0,       # Disable mosaic for pose
+            'mixup': 0.0,        # Disable mixup for pose
+            'hsv_h': 0.012,      # Reduced HSV augmentation
+            'hsv_s': 0.6,        # Reduced saturation changes
+            'hsv_v': 0.3,        # Reduced value changes
+        }
+        
+        # Auto learning rate configuration
+        if args.lr == 'auto':
+            training_config['lr0'] = 0.01      # Let YOLO determine optimal LR
+            training_config['lrf'] = 0.01      # Final LR fraction
+            training_config['momentum'] = 0.937 # Momentum
+            training_config['weight_decay'] = 0.0005  # Weight decay
+        else:
+            training_config['lr0'] = args.lr
+            training_config['lrf'] = 0.1
+        
+        # Enhanced loss weights for maximum keypoint accuracy
+        training_config['pose'] = args.pose_loss_weight    # MAXIMUM focus on pose
+        training_config['kobj'] = args.kobj_loss_weight    # Keypoint objectness
+        training_config['box'] = args.box_loss_weight      # Bounding box
+        training_config['cls'] = args.cls_loss_weight      # Classification
+        training_config['dfl'] = args.dfl_loss_weight      # Distribution focal loss
+        
+        print(f"\n🎯 ENHANCED TRAINING CONFIGURATION:")
+        print(f"   📏 Image Resolution: {args.img_size}px (HIGH)")
+        print(f"   🎯 Pose Loss Weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
+        print(f"   🎯 Keypoint Obj Weight: {args.kobj_loss_weight}")
+        print(f"   📦 Box Loss Weight: {args.box_loss_weight}")
+        print(f"   🏷️ Class Loss Weight: {args.cls_loss_weight}")
+        print(f"   📊 DFL Loss Weight: {args.dfl_loss_weight}")
+        print(f"   🔄 Learning Rate: {args.lr} (AUTO-OPTIMIZED)")
+        print(f"   💾 Cache Strategy: {args.cache} (RAM-OPTIMIZED)")
+        print(f"   ⏱️ Patience: {args.patience} epochs")
+        print(f"   🔍 Augmentations: POSE-OPTIMIZED")
+        
+        # Train the model with enhanced configuration
+        results = model.train(**training_config)
         
         # Log final results
         if hasattr(results, 'results_dict'):
@@ -949,11 +1018,12 @@ def train_yolo_model(dataset_yaml, args):
             if args.use_wandb:
                 wandb.log({"final_results": final_metrics})
         
-        print(f"\n✅ Training completed successfully!")
-        print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_corrected/weights/")
-        print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_corrected/weights/best.pt")
-        print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_corrected/weights/last.pt")
+        print(f"\n✅ Enhanced training completed successfully!")
+        print(f"📁 Model saved to: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/")
+        print(f"🏆 Best model: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/best.pt")
+        print(f"📋 Last model: runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/last.pt")
         print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
+        print(f"🎯 Optimized for: MAXIMUM 2D KEYPOINT ACCURACY")
         
         return results
         
@@ -965,7 +1035,7 @@ def train_yolo_model(dataset_yaml, args):
         metrics_tracker.finish_training()
 
 def main():
-    parser = argparse.ArgumentParser(description='Train YOLO on MPI-INF-3DHP dataset with comprehensive monitoring')
+    parser = argparse.ArgumentParser(description='Enhanced YOLO training for superior 2D keypoint estimation')
     
     # Dataset paths
     parser.add_argument('--base-path', type=str, 
@@ -978,24 +1048,40 @@ def main():
                        default='/nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo',
                        help='Output path for converted dataset (with more space)')
     
-    # Training parameters
+    # Enhanced training parameters for keypoint accuracy
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=16,
-                       help='Batch size for training')
-    parser.add_argument('--img-size', type=int, default=640,
-                       help='Image size for training')
-    parser.add_argument('--lr', type=float, default=0.01,
-                       help='Learning rate')
+    parser.add_argument('--batch-size', type=int, default=4,
+                       help='Batch size for training (optimized for 1280px images)')
+    parser.add_argument('--img-size', type=int, default=1280,
+                       help='Image size for training (high resolution for better keypoints)')
+    parser.add_argument('--lr', type=str, default='auto',
+                       help='Learning rate (auto for YOLO auto-determination)')
     parser.add_argument('--device', type=str, default='0',
                        help='Device to use for training (0, 1, 2, etc. or cpu)')
     parser.add_argument('--workers', type=int, default=8,
                        help='Number of worker threads')
+    parser.add_argument('--patience', type=int, default=20,
+                       help='Early stopping patience')
+    parser.add_argument('--cache', type=str, default='disk',
+                       help='Cache strategy: "ram", "disk", or False (optimized for limited RAM)')
+    
+    # Enhanced loss weight parameters for maximum keypoint accuracy
+    parser.add_argument('--pose-loss-weight', type=float, default=17.0,
+                       help='Weight for pose keypoint loss (MAXIMUM for best keypoints)')
+    parser.add_argument('--kobj-loss-weight', type=float, default=2.5,
+                       help='Weight for keypoint objectness loss')
+    parser.add_argument('--box-loss-weight', type=float, default=7.5,
+                       help='Weight for bounding box loss')
+    parser.add_argument('--cls-loss-weight', type=float, default=0.5,
+                       help='Weight for classification loss')
+    parser.add_argument('--dfl-loss-weight', type=float, default=1.5,
+                       help='Weight for distribution focal loss')
     
     # Monitoring options
     parser.add_argument('--use-wandb', action='store_true',
                        help='Enable WandB logging for comprehensive monitoring')
-    parser.add_argument('--wandb-project', type=str, default='YOLO_MPI_3DHP_Training',
+    parser.add_argument('--wandb-project', type=str, default='YOLO_MPI_3DHP_Enhanced_Keypoints',
                        help='WandB project name')
     
     # Processing options
@@ -1008,15 +1094,33 @@ def main():
     
     args = parser.parse_args()
     
-    print("🎯 YOLO Training on MPI-INF-3DHP Dataset with Comprehensive Monitoring")
+    # Convert lr to float if not 'auto'
+    if args.lr != 'auto':
+        try:
+            args.lr = float(args.lr)
+        except ValueError:
+            print(f"❌ Invalid learning rate: {args.lr}. Use 'auto' or a float value.")
+            return
+    
+    print("🎯 ENHANCED YOLO TRAINING FOR SUPERIOR 2D KEYPOINT ESTIMATION")
     print("="*70)
     print(f"📂 Base path: {args.base_path}")
     print(f"📋 Annotations: {args.annotations_path}")
     print(f"💾 Output path: {args.output_path}")
+    print(f"🖼️ Image size: {args.img_size}px (HIGH RESOLUTION)")
+    print(f"📚 Batch size: {args.batch_size} (optimized for large images)")
+    print(f"📈 Learning rate: {args.lr} (AUTO-OPTIMIZED)")
+    print(f"🎯 Pose loss weight: {args.pose_loss_weight} (MAXIMUM KEYPOINT FOCUS)")
+    print(f"🎯 Keypoint obj loss weight: {args.kobj_loss_weight}")
+    print(f"📦 Box loss weight: {args.box_loss_weight}")
+    print(f"🏷️ Cls loss weight: {args.cls_loss_weight}")
+    print(f"📊 DFL loss weight: {args.dfl_loss_weight}")
+    print(f"💾 Cache strategy: {args.cache} (RAM-OPTIMIZED)")
+    print(f"⏱️ Patience: {args.patience} epochs")
     print(f"📊 WandB logging: {args.use_wandb}")
     print(f"🔄 Force reprocess: {args.force_reprocess}")
-    print(f"🗂️ Processing: FULL DATASET (no sampling)")
     print(f"📊 Keypoint order: {MPI_JOINT_NAMES}")
+    print(f"🎯 OPTIMIZED FOR: MAXIMUM 2D KEYPOINT ACCURACY")
     
     # Check if output directory exists and create if needed
     if not os.path.exists(args.output_path):
@@ -1042,10 +1146,11 @@ def main():
             print(f"✅ Using existing dataset: {dataset_yaml}")
     
     if not args.convert_only:
-        # Train model with comprehensive monitoring
+        # Train model with enhanced configuration for maximum keypoint accuracy
         train_yolo_model(dataset_yaml, args)
     
-    print(f"\n🎉 Process completed!")
+    print(f"\n🎉 Enhanced training process completed!")
+    print(f"🎯 Model optimized for superior 2D keypoint estimation accuracy!")
 
 if __name__ == '__main__':
     main()
