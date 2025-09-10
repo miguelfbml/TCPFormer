@@ -26,4 +26,5 @@ python train.py \
     --cls-loss-weight 0.5 \
     --dfl-loss-weight 1.5 \
     --use-wandb \
-    --wandb-project YOLO_MPI_3DHP_Enhanced_Keypoints
+    --wandb-project YOLO_MPI_3DHP_Enhanced_Keypoints \
+    --train-only
