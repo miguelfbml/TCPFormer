@@ -16,10 +16,10 @@ python train_3d.py \
     --output-path /nas-ctm01/datasets/public/mpi_inf_3dhp_Yolo_3D \
     --epochs 200 \
     --batch-size 8 \
-    --img-size 640 \
+    --img-size 1280 \
     --lr 0.001 \
     --device 0 \
-    --workers 16 \
+    --workers 10 \
     --use-wandb
 
 echo "3D YOLO training completed!"
