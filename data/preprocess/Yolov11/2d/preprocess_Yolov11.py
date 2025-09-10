@@ -11,6 +11,7 @@ python3 preprocess_yolo_2d.py --model-path ../runs/pose/best.pt --output-path cu
 python3 preprocess_yolo_2d.py --model-path ../runs/pose/best.pt --device cpu
 """
 
+
 import argparse
 import os
 import cv2
@@ -22,6 +23,9 @@ from tqdm import tqdm
 import gc
 import torch
 from ultralytics import YOLO
+
+# Import our camera utilities
+from camera_utils import get_camera_calibration_for_sequence, pixel_to_camera_coordinates
 
 # Navigate to project root
 import sys
@@ -61,22 +65,23 @@ class YOLO2DPoseEstimator:
         self.img_size = img_size
         print(f"✓ Image size: {img_size}")
         
-    def estimate_2d_pose_from_image(self, image, target_width, target_height):
+    def estimate_2d_pose_from_image(self, image, calib_data, target_width, target_height):
         """
-        Estimate 2D pose from image and return in target image coordinate system
+        Estimate 2D pose from image and convert to camera coordinate system
         
         Args:
             image: OpenCV image (BGR format)
+            calib_data: Camera calibration data
             target_width: Target width for coordinate conversion
             target_height: Target height for coordinate conversion
             
         Returns:
-            numpy array of shape (17, 3) with x, y, confidence for each joint
+            numpy array of shape (17, 3) with x, y in camera coords, confidence
         """
         try:
-            # Run YOLO inference
+            # Run YOLO inference with lower confidence threshold
             results = self.model.predict(image, verbose=False, imgsz=self.img_size, 
-                                       conf=0.65, device=self.device)
+                                       conf=0.25, device=self.device)  # Lower confidence
             
             if (results and len(results) > 0 and 
                 hasattr(results[0], 'keypoints') and 
@@ -89,7 +94,7 @@ class YOLO2DPoseEstimator:
                 
                 # Ensure we have 17 keypoints
                 if keypoints.shape[0] == 17:
-                    # Convert coordinates to target image dimensions
+                    # Convert coordinates to target image dimensions first
                     img_height, img_width = image.shape[:2]
                     
                     # Scale coordinates to target dimensions
@@ -97,14 +102,35 @@ class YOLO2DPoseEstimator:
                     scaled_keypoints[:, 0] = keypoints[:, 0] * (target_width / img_width)
                     scaled_keypoints[:, 1] = keypoints[:, 1] * (target_height / img_height)
                     
+                    # Validate keypoints are reasonable
+                    valid_kpts = 0
+                    for i in range(17):
+                        if (0 <= scaled_keypoints[i, 0] <= target_width and 
+                            0 <= scaled_keypoints[i, 1] <= target_height and 
+                            conf[i] > 0.2):
+                            valid_kpts += 1
+                    
+                    # Require at least 8 valid keypoints
+                    if valid_kpts < 8:
+                        return np.zeros((17, 3), dtype=np.float32)
+                    
+                    # Convert pixel coordinates to camera coordinates
+                    if calib_data is not None:
+                        camera_coords = pixel_to_camera_coordinates(
+                            scaled_keypoints, calib_data, target_width, target_height
+                        )
+                    else:
+                        print("Warning: No calibration data, using pixel coordinates")
+                        camera_coords = scaled_keypoints
+                    
                     # Combine coordinates with confidence
                     pose_2d = np.zeros((17, 3), dtype=np.float32)
-                    pose_2d[:, :2] = scaled_keypoints
+                    pose_2d[:, :2] = camera_coords
                     pose_2d[:, 2] = conf
                     
                     return pose_2d
                 else:
-                    # Pad or truncate to 17 keypoints
+                    # Handle non-17 keypoints case
                     pose_2d = np.zeros((17, 3), dtype=np.float32)
                     
                     n_kpts = min(17, keypoints.shape[0])
@@ -115,7 +141,15 @@ class YOLO2DPoseEstimator:
                     scaled_keypoints[:, 0] = keypoints[:n_kpts, 0] * (target_width / img_width)
                     scaled_keypoints[:, 1] = keypoints[:n_kpts, 1] * (target_height / img_height)
                     
-                    pose_2d[:n_kpts, :2] = scaled_keypoints
+                    # Convert to camera coordinates
+                    if calib_data is not None and n_kpts > 0:
+                        camera_coords = pixel_to_camera_coordinates(
+                            scaled_keypoints, calib_data, target_width, target_height
+                        )
+                        pose_2d[:n_kpts, :2] = camera_coords
+                    else:
+                        pose_2d[:n_kpts, :2] = scaled_keypoints
+                    
                     pose_2d[:n_kpts, 2] = conf[:n_kpts] if len(conf) >= n_kpts else 0.5
                     
                     return pose_2d
@@ -133,74 +167,25 @@ class YOLO2DPoseEstimator:
             torch.cuda.empty_cache()
         gc.collect()
 
-def get_sequence_image_dimensions(sequence_name):
-    """Get the original image dimensions for a sequence"""
-    # MPI-INF-3DHP sequence image dimensions
-    sequence_dimensions = {
-        'TS1': (2048, 2048),  # width, height
-        'TS2': (2048, 2048),
-        'TS3': (2048, 2048), 
-        'TS4': (2048, 2048),
-        'TS5': (1920, 1080),
-        'TS6': (1920, 1080)
-    }
-    
-    return sequence_dimensions.get(sequence_name, (2048, 2048))
-
-def load_original_dataset():
-    """Load the original MPI-INF-3DHP test dataset"""
-    test_data_paths = [
-        '../../../motion3d/data_test_3dhp.npz',
-        '../motion3d/data_test_3dhp.npz',
-        'data_test_3dhp.npz'
-    ]
-    
-    for data_path in test_data_paths:
-        if os.path.exists(data_path):
-            print(f"✓ Loading original dataset from: {os.path.abspath(data_path)}")
-            data = np.load(data_path, allow_pickle=True)['data'].item()
-            return data
-    
-    print("ERROR: Original dataset not found. Tried:")
-    for path in test_data_paths:
-        print(f"  - {path}")
-    return None
-
-def load_sequence_images(sequence_name):
-    """Load all images for a sequence"""
-    test_image_paths = [
-        '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set',
-        '../motion3d/mpi_inf_3dhp_test_set',
-        '../../../motion3d/mpi_inf_3dhp_test_set',
-        'mpi_inf_3dhp_test_set'
-    ]
-    
-    for base_path in test_image_paths:
-        image_folder = os.path.join(base_path, sequence_name, 'imageSequence')
-        if os.path.exists(image_folder):
-            print(f"  ✓ Found images at: {os.path.abspath(image_folder)}")
-            
-            image_files = glob.glob(os.path.join(image_folder, "*.jpg"))
-            image_files.extend(glob.glob(os.path.join(image_folder, "*.png")))
-            image_files.sort()
-            
-            if image_files:
-                print(f"  ✓ Found {len(image_files)} images")
-                return image_files
-            else:
-                print(f"  ❌ No images found in: {image_folder}")
-    
-    print(f"  ❌ Images not found for {sequence_name}")
-    return None
+# ... (keep all other functions from your original script: get_sequence_image_dimensions, load_original_dataset, etc.)
 
 def create_yolo_dataset(original_data, estimator, output_path):
-    """Create new dataset with YOLO 2D poses"""
-    print("Creating YOLO version of dataset...")
+    """Create new dataset with YOLO 2D poses in camera coordinate system"""
+    print("Creating YOLO version of dataset with camera coordinate conversion...")
     
     yolo_data = {}
     
     for seq_name, seq_data in original_data.items():
         print(f"\nProcessing sequence: {seq_name}")
+        
+        # Get camera calibration for this sequence
+        calib_data = get_camera_calibration_for_sequence(seq_name)
+        if calib_data:
+            print(f"  ✓ Camera calibration loaded")
+            print(f"    Focal length: {calib_data['focal_length']:.2f}mm")
+        else:
+            print(f"  ❌ Failed to load camera calibration")
+            continue
         
         # Get original image dimensions for this sequence
         orig_width, orig_height = get_sequence_image_dimensions(seq_name)
@@ -215,7 +200,7 @@ def create_yolo_dataset(original_data, estimator, output_path):
         # Copy all original data
         yolo_seq_data = {
             'data_3d': seq_data['data_3d'].copy(),
-            'valid': seq_data['valid'].copy(),  # Start with original valid flags
+            'valid': seq_data['valid'].copy(),
             'camera': seq_data.get('camera', None)
         }
         
@@ -226,7 +211,7 @@ def create_yolo_dataset(original_data, estimator, output_path):
         print(f"  Original 2D shape: {original_2d.shape}")
         print(f"  Processing {num_frames} frames...")
         
-        # Process images with YOLO - SINGLE LOOP ONLY
+        # Process images with YOLO
         yolo_poses_2d = []
         detection_failures = 0
         
@@ -237,8 +222,10 @@ def create_yolo_dataset(original_data, estimator, output_path):
                 image = cv2.imread(image_path)
                 
                 if image is not None:
-                    # Get YOLO 2D pose in original pixel coordinates
-                    pose_2d_with_conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
+                    # Get YOLO 2D pose in camera coordinates
+                    pose_2d_with_conf = estimator.estimate_2d_pose_from_image(
+                        image, calib_data, orig_width, orig_height
+                    )
                     
                     # Check if YOLO detected a valid pose
                     if np.all(pose_2d_with_conf[:, :2] == 0):
@@ -258,20 +245,19 @@ def create_yolo_dataset(original_data, estimator, output_path):
                 yolo_seq_data['valid'][frame_idx] = False
                 detection_failures += 1
         
-        # Convert to numpy array and store - ONLY ONCE
+        # Convert to numpy array and store
         yolo_seq_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
         
         print(f"  ✓ YOLO 2D shape: {yolo_seq_data['data_2d'].shape}")
         print(f"  ✓ Detection failures: {detection_failures}/{num_frames} ({detection_failures/num_frames*100:.1f}%)")
         print(f"  ✓ Valid frames: {np.sum(yolo_seq_data['valid'])}/{num_frames}")
         
-        # Check YOLO coordinate range
+        # Check YOLO coordinate range (should now match ground truth range)
         if yolo_seq_data['data_2d'].size > 0:
-            # Filter out zero poses for coordinate range analysis
             non_zero_mask = ~np.all(yolo_seq_data['data_2d'] == 0, axis=(1, 2))
             if np.any(non_zero_mask):
                 valid_poses = yolo_seq_data['data_2d'][non_zero_mask]
-                print(f"  YOLO coordinate range (valid poses only):")
+                print(f"  YOLO coordinate range (camera coords):")
                 print(f"    X: [{np.min(valid_poses[:, :, 0]):.1f}, {np.max(valid_poses[:, :, 0]):.1f}]")
                 print(f"    Y: [{np.min(valid_poses[:, :, 1]):.1f}, {np.max(valid_poses[:, :, 1]):.1f}]")
             else:
@@ -294,12 +280,12 @@ def create_yolo_dataset(original_data, estimator, output_path):
     # Save the new dataset
     print(f"\nSaving YOLO dataset to: {output_path}")
     output_dir = os.path.dirname(output_path)
-    if output_dir:  # Only create directory if there is one
+    if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
     np.savez_compressed(output_path, data=yolo_data)
     
-    print("✓ YOLO dataset created successfully!")
+    print("✓ YOLO dataset created successfully with camera coordinate conversion!")
     return yolo_data
 
 def verify_dataset(original_data, yolo_data):
