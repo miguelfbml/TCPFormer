@@ -61,3 +61,38 @@ for seq_name, seq_data in data.items():
         print(f"  3D data range: [{np.min(data_3d):.1f}, {np.max(data_3d):.1f}]")
     
     print("-" * 50)
+
+print("\n\n=== CAMERA CALIBRATION FILE ANALYSIS ===")
+
+# Check available calibration files
+calib_paths = [
+    '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/test_util/camera_calibration/ts1-4cameras.calib',
+    '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/test_util/camera_calibration/ts5-6cameras.calib'
+]
+
+for calib_path in calib_paths:
+    try:
+        print(f"\nReading calibration file: {calib_path}")
+        with open(calib_path, 'r') as f:
+            lines = f.readlines()
+        
+        print(f"Total lines: {len(lines)}")
+        print("First 20 lines:")
+        for i, line in enumerate(lines[:20]):
+            print(f"  {i+1:2d}: {line.strip()}")
+        
+        if len(lines) > 20:
+            print("  ... (showing first 20 lines only)")
+            
+    except FileNotFoundError:
+        print(f"File not found: {calib_path}")
+    except Exception as e:
+        print(f"Error reading {calib_path}: {e}")
+
+# Also check for other potential calibration files
+import os
+calib_dir = '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_test_set/test_util/camera_calibration/'
+if os.path.exists(calib_dir):
+    print(f"\nAll files in calibration directory:")
+    for file in os.listdir(calib_dir):
+        print(f"  - {file}")
