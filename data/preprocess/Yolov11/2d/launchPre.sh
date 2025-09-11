@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 preprocess_Yolov11.py --model-path ../runs/pose/modelEnhanced/best.pt --output-path ./custom_yolo_datasetEnhanced.npz --img-size 1280 --conf-threshold 0.03
+python3 preprocess_Yolov11.py --model-path ../runs/pose/modelEnhanced/best.pt --output-path ./custom_yolo_datasetEnhanced.npz --img-size 1280
