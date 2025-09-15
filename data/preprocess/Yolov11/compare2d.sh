@@ -8,5 +8,7 @@
 
 echo "Running job in reserved partition"
 
+
+export CUDA_LAUNCH_BLOCKING=1
 # Commands / scripts to run (e.g., python3 train.py)
-python3 compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected2/weights/best.pt
+python3 compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt
