@@ -308,7 +308,7 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
     inference_count = 0
     
     # Process frames in smaller batches to avoid memory issues
-    batch_size = 32 if device.startswith('cuda') else 16
+    batch_size = 8 if device.startswith('cuda') else 4
     
     print(f"  Processing {len(frames)} frames in batches of {batch_size} on {device}")
     
