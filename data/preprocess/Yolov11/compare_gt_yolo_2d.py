@@ -321,7 +321,7 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
                 start_time = time.time()
                 
                 # Run YOLO inference with device specification
-                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.65, device=device)
+                results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.2, device=device)
                 
                 # End timing
                 end_time = time.time()
