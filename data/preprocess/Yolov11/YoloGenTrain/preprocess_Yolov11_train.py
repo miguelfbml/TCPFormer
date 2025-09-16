@@ -109,11 +109,15 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
             if '0' in cam_data:
                 cam0_data = cam_data['0']
                 print(f"DEBUG: cam0_data keys: {list(cam0_data.keys())}")
-                if 'data_3d' in cam0_data and 'valid' in cam0_data and 'data_2d' in cam0_data:
+                # Only use available keys
+                if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
+                    num_frames = len(cam0_data['data_2d'])
+                    # Create a validity flag: all frames valid by default
+                    valid_flag = np.ones(num_frames, dtype=bool)
                     yolo_cam_data = {
                         'data_3d': cam0_data['data_3d'].copy(),
-                        'valid': cam0_data['valid'].copy(),
-                        'camera': cam0_data.get('camera', None)
+                        'valid': valid_flag,
+                        'camera': None  # Not available
                     }
                     original_2d = cam0_data['data_2d']
                 else:
@@ -125,11 +129,13 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
         elif isinstance(cam_data, (list, np.ndarray)) and isinstance(cam_data[0], dict):
             cam0_data = cam_data[0]
             print(f"DEBUG: cam0_data keys: {list(cam0_data.keys())}")
-            if 'data_3d' in cam0_data and 'valid' in cam0_data and 'data_2d' in cam0_data:
+            if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
+                num_frames = len(cam0_data['data_2d'])
+                valid_flag = np.ones(num_frames, dtype=bool)
                 yolo_cam_data = {
                     'data_3d': cam0_data['data_3d'].copy(),
-                    'valid': cam0_data['valid'].copy(),
-                    'camera': cam0_data.get('camera', None)
+                    'valid': valid_flag,
+                    'camera': None
                 }
                 original_2d = cam0_data['data_2d']
             else:
