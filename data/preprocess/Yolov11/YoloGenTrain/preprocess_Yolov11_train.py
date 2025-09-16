@@ -157,7 +157,7 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
 def main():
     parser = argparse.ArgumentParser(description='Create YOLO version of MPI-INF-3DHP train dataset (S1-S8, Seq1/Seq2, cam0 only)')
     parser.add_argument('--model-path', type=str, required=True, help='Path to trained YOLO model (.pt file)')
-    parser.add_argument('--train-data-path', type=str, default='data_train_3dhp.npz', help='Path to original train dataset')
+    parser.add_argument('--train-data-path', type=str, default='../../../motion3d/data_train_3dhp.npz', help='Path to original train dataset')
     parser.add_argument('--output-path', type=str, default='data_train_3dhp_yolo.npz', help='Output path for YOLO train dataset')
     parser.add_argument('--img-size', type=int, default=640, help='Input image size for YOLO inference')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (auto, cpu, cuda, etc.)')
