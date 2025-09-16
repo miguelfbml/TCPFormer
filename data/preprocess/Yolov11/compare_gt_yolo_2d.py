@@ -52,8 +52,8 @@ def check_gpu_availability():
         print(f"CUDA compute capability: {torch.cuda.get_device_capability(current_device)}")
         
         # Set memory fraction to avoid OOM
-        torch.cuda.set_per_process_memory_fraction(0.8)
-        print(f"GPU memory fraction set to: 80%")
+        #torch.cuda.set_per_process_memory_fraction(0.8)
+        #print(f"GPU memory fraction set to: 80%")
         
         device = f'cuda:{current_device}'
     else:
