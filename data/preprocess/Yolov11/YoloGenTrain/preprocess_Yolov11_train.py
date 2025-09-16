@@ -118,13 +118,17 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
             print(f"  Skipping {subj} {seq} cam0: No images found")
             continue
 
-        # Copy original metadata
-        yolo_cam_data = {
-            'data_3d': cam_dict['data_3d'].copy(),
-            'valid': cam_dict['valid'].copy(),
-            'camera': cam_dict.get('camera', None)
-        }
-        original_2d = cam_dict['data_2d']
+        print(f"DEBUG: cam_dict keys: {list(cam_dict.keys())}")
+        if 'data_3d' in cam_dict and 'valid' in cam_dict and 'data_2d' in cam_dict:
+            yolo_cam_data = {
+                'data_3d': cam_dict['data_3d'].copy(),
+                'valid': cam_dict['valid'].copy(),
+                'camera': cam_dict.get('camera', None)
+            }
+            original_2d = cam_dict['data_2d']
+        else:
+            print(f"ERROR: Missing expected keys in cam_dict for {subj} {seq} cam0: {list(cam_dict.keys())}")
+            continue
         num_frames = len(original_2d)
         print(f"    Number of frames in original 2D: {num_frames}")
         yolo_poses_2d = []
