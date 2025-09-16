@@ -220,6 +220,7 @@ class MPI3DHP(Dataset):
         assert X.shape[-1] == 2
         return X / w * 2 - [1, h / w]
     
+    '''
     def partition(self, data, clip_length=243, stride=81, valid_frames=None):
         """Partitions data (n_frames, 17, 3) into list of (clip_length, 17, 3) data with given stride"""
         data_list, valid_list = [], []
@@ -244,6 +245,25 @@ class MPI3DHP(Dataset):
                     new_indices = self.resample(sequence_length, clip_length)
                     extrapolated_sequence = valid_sequence[new_indices]
                     valid_list.append(extrapolated_sequence[None, ...])
+
+        return data_list, valid_list
+        '''
+    
+    def partition(self, data, clip_length=243, stride=81, valid_frames=None):
+        """
+        Partitions data (n_frames, 17, 3) into list of (clip_length, 17, 3) data with given stride.
+        If valid_frames is provided, only keeps windows where all frames are valid.
+        """
+        data_list, valid_list = [], []
+        n_frames = data.shape[0]
+        for i in range(0, n_frames - clip_length + 1, stride):
+            sequence = data[i:i+clip_length]
+            if valid_frames is not None:
+                valid_sequence = valid_frames[i:i+clip_length]
+                if not np.all(valid_sequence):
+                    continue  # Skip windows with any invalid frame
+                valid_list.append(valid_sequence[None, ...])
+            data_list.append(sequence[None, ...])
 
         return data_list, valid_list
 
