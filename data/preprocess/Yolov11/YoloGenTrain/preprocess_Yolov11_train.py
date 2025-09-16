@@ -80,13 +80,11 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
     print("Creating YOLO version of train dataset...")
     yolo_data = {}
 
-    # Only keep S1-S8, Seq1/Seq2, cam0
     subjects = [f'S{i}' for i in range(1, 9)]
     seqs = ['Seq1', 'Seq2']
     cam_idx = 0  # Only cam0
 
     for key in original_data:
-        # key format: 'S1 Seq1'
         try:
             subj, seq = key.split()
         except Exception as e:
@@ -105,18 +103,16 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
         # --- DEBUG: Inspect cam_data structure ---
         print(f"DEBUG: cam_data type={type(cam_data)}")
         if isinstance(cam_data, dict):
-            # cam_data keys: ['0', '1', ...]
             if '0' in cam_data:
                 cam0_data = cam_data['0']
                 print(f"DEBUG: cam0_data keys: {list(cam0_data.keys())}")
-                # Only use available keys
                 if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
                     num_frames = len(cam0_data['data_2d'])
                     valid_flag = np.ones(num_frames, dtype=bool)
                     yolo_cam_data = {
                         'data_3d': cam0_data['data_3d'].copy(),
                         'valid': valid_flag,
-                        'camera': None  # Not available
+                        'camera': None
                     }
                     original_2d = cam0_data['data_2d']
                     # Debug: Print shape and sample of original 2D data
@@ -140,7 +136,6 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                     'camera': None
                 }
                 original_2d = cam0_data['data_2d']
-                # Debug: Print shape and sample of original 2D data
                 print(f"DEBUG: original_2d shape: {original_2d.shape}")
                 print(f"DEBUG: original_2d sample (frame 0): {original_2d[0]}")
             else:
