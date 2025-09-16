@@ -57,10 +57,7 @@ def load_original_train_dataset(path):
 def load_sequence_images(subject, seq):
     # subject: 'S1', seq: 'Seq1'
     base_paths = [
-        '/nas-ctm01/datasets/public/mpi_inf_3dhp/mpi_inf_3dhp_train_set',
-        '../motion3d/mpi_inf_3dhp_train_set',
-        '../../../motion3d/mpi_inf_3dhp_train_set',
-        'mpi_inf_3dhp_train_set'
+        '/nas-ctm01/datasets/public/mpi_inf_3dhp/S1/Seq2/imageFrames/video_0',
     ]
     for base_path in base_paths:
         image_folder = os.path.join(base_path, subject, seq, 'imageSequence')
