@@ -57,7 +57,13 @@ def load_original_train_dataset(path):
         print(f"ERROR: Train dataset not found: {path}")
         return None
     print(f"✓ Loading train dataset from: {os.path.abspath(path)}")
-    return np.load(path, allow_pickle=True)['data'].item()
+    data = np.load(path, allow_pickle=True)['data'].item()
+    print(f"Top-level keys (subjects): {list(data.keys())}")
+    for subj in data:
+        print(f"  {subj} sequences: {list(data[subj].keys())}")
+        for seq in data[subj]:
+            print(f"    {seq} cameras: {list(data[subj][seq].keys())}")
+    return data
 
 def load_sequence_images(sequence_name, seq_idx):
     # Try to find images for the sequence
@@ -69,10 +75,15 @@ def load_sequence_images(sequence_name, seq_idx):
     ]
     for base_path in base_paths:
         image_folder = os.path.join(base_path, sequence_name, f'Seq{seq_idx}', 'imageSequence')
+        print(f"  Looking for images in: {image_folder}")
         if os.path.exists(image_folder):
             image_files = sorted(glob.glob(os.path.join(image_folder, "*.jpg")) + glob.glob(os.path.join(image_folder, "*.png")))
+            print(f"    Found {len(image_files)} images")
             if image_files:
                 return image_files
+            else:
+                print(f"    No images found in {image_folder}")
+    print(f"    No image folder found for {sequence_name} Seq{seq_idx}")
     return None
 
 def create_yolo_train_dataset(original_data, estimator, output_path):
@@ -86,16 +97,19 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
 
     for subj in subjects:
         if subj not in original_data:
+            print(f"Subject {subj} not found in original data.")
             continue
         subj_data = original_data[subj]
         yolo_data[subj] = {}
         for seq in seqs:
             if seq not in subj_data:
+                print(f"  Sequence {seq} not found for subject {subj}.")
                 continue
             seq_data = subj_data[seq]
             yolo_data[subj][seq] = {}
             for cam in cams:
                 if cam not in seq_data:
+                    print(f"    Camera {cam} not found for {subj} {seq}.")
                     continue
                 cam_data = seq_data[cam]
                 print(f"Processing {subj} {seq} cam{cam}")
@@ -114,6 +128,7 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 }
                 original_2d = cam_data['data_2d']
                 num_frames = len(original_2d)
+                print(f"    Number of frames in original 2D: {num_frames}")
                 yolo_poses_2d = []
                 detection_failures = 0
 
@@ -127,10 +142,12 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                                 detection_failures += 1
                             yolo_poses_2d.append(pose_2d_with_conf[:, :2])
                         else:
+                            print(f"      Frame {frame_idx}: Image not loaded, marking invalid.")
                             yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                             yolo_cam_data['valid'][frame_idx] = False
                             detection_failures += 1
                     else:
+                        print(f"      Frame {frame_idx}: No image file, marking invalid.")
                         yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                         yolo_cam_data['valid'][frame_idx] = False
                         detection_failures += 1
@@ -147,11 +164,14 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                     torch.cuda.empty_cache()
 
     print(f"\nSaving YOLO train dataset to: {output_path}")
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    np.savez_compressed(output_path, data=yolo_data)
-    print("✓ YOLO train dataset created successfully!")
+    if not yolo_data:
+        print("No data processed! Check your image paths and .npz structure.")
+    else:
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        np.savez_compressed(output_path, data=yolo_data)
+        print("✓ YOLO train dataset created successfully!")
     return yolo_data
 
 def main():
@@ -178,8 +198,9 @@ def main():
     estimator = YOLO2DPoseEstimator(args.model_path, args.img_size, args.device)
     try:
         yolo_data = create_yolo_train_dataset(original_data, estimator, args.output_path)
-        print(f"\n✓ Success! YOLO train dataset saved to: {args.output_path}")
-        print("To use in training, point your config to this file or rename it to replace the original.")
+        if yolo_data:
+            print(f"\n✓ Success! YOLO train dataset saved to: {args.output_path}")
+            print("To use in training, point your config to this file or rename it to replace the original.")
     except Exception as e:
         print(f"Error: {e}")
         import traceback
