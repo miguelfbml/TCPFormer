@@ -112,7 +112,6 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 # Only use available keys
                 if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
                     num_frames = len(cam0_data['data_2d'])
-                    # Create a validity flag: all frames valid by default
                     valid_flag = np.ones(num_frames, dtype=bool)
                     yolo_cam_data = {
                         'data_3d': cam0_data['data_3d'].copy(),
@@ -120,6 +119,9 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                         'camera': None  # Not available
                     }
                     original_2d = cam0_data['data_2d']
+                    # Debug: Print shape and sample of original 2D data
+                    print(f"DEBUG: original_2d shape: {original_2d.shape}")
+                    print(f"DEBUG: original_2d sample (frame 0): {original_2d[0]}")
                 else:
                     print(f"ERROR: Missing expected keys in cam0_data for {subj} {seq} cam0: {list(cam0_data.keys())}")
                     continue
@@ -138,6 +140,9 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                     'camera': None
                 }
                 original_2d = cam0_data['data_2d']
+                # Debug: Print shape and sample of original 2D data
+                print(f"DEBUG: original_2d shape: {original_2d.shape}")
+                print(f"DEBUG: original_2d sample (frame 0): {original_2d[0]}")
             else:
                 print(f"ERROR: Missing expected keys in cam0_data for {subj} {seq} cam0: {list(cam0_data.keys())}")
                 continue
@@ -164,6 +169,7 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                     if np.all(pose_2d_with_conf[:, :2] == 0):
                         yolo_cam_data['valid'][frame_idx] = False
                         detection_failures += 1
+                    # Only take (x, y) for compatibility with original format
                     yolo_poses_2d.append(pose_2d_with_conf[:, :2])
                 else:
                     print(f"      Frame {frame_idx}: Image not loaded, marking invalid.")
@@ -177,6 +183,9 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 detection_failures += 1
 
         yolo_cam_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
+        # Debug: Print shape and sample of YOLO 2D predictions
+        print(f"DEBUG: YOLO data_2d shape: {yolo_cam_data['data_2d'].shape}")
+        print(f"DEBUG: YOLO data_2d sample (frame 0): {yolo_cam_data['data_2d'][0]}")
         print(f"  ✓ YOLO 2D shape: {yolo_cam_data['data_2d'].shape}")
         print(f"  ✓ Detection failures: {detection_failures}/{num_frames} ({detection_failures/num_frames*100:.1f}%)")
         print(f"  ✓ Valid frames: {np.sum(yolo_cam_data['valid'])}/{num_frames}")
