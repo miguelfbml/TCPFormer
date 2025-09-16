@@ -26,6 +26,7 @@ from ultralytics import YOLO
 from tqdm import tqdm
 import glob
 import gc
+import time
 
 # GPU detection and setup
 def check_gpu_availability():
@@ -298,9 +299,10 @@ def load_test_frames(sequence_name, num_frames=None):
     return frames
 
 def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
-    """Estimate poses using YOLO model with memory management and GPU support"""
+    """Estimate poses using YOLO model with memory management and GPU support, tracking execution time"""
     yolo_poses = []
     confidences = []
+    inference_times = []
     
     # Process frames in smaller batches to avoid memory issues
     batch_size = 32 if device.startswith('cuda') else 16  # Larger batches for GPU
@@ -312,8 +314,14 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
         
         for frame in batch_frames:
             try:
+                # Track inference time
+                start_time = time.time()
+                
                 # Run YOLO inference with device specification
                 results = model.predict(frame, verbose=False, imgsz=img_size, conf=0.65, device=device)
+                
+                end_time = time.time()
+                inference_times.append(end_time - start_time)
                 
                 if (results and len(results) > 0 and 
                     hasattr(results[0], 'keypoints') and 
@@ -348,6 +356,7 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
                 print(f"Error in YOLO inference: {e}")
                 yolo_poses.append(np.zeros((17, 2)))
                 confidences.append(np.zeros(17))
+                inference_times.append(0.0)  # Add 0 for failed inference
         
         # Clear memory after each batch
         if device.startswith('cuda'):
@@ -357,11 +366,24 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
     yolo_poses = np.array(yolo_poses)  # Shape: (frames, 17, 2)
     confidences = np.array(confidences)  # Shape: (frames, 17)
     
-    return yolo_poses, confidences
+    # Calculate performance metrics
+    total_inference_time = sum(inference_times)
+    mean_inference_time = np.mean(inference_times) if inference_times else 0.0
+    fps = 1.0 / mean_inference_time if mean_inference_time > 0 else 0.0
+    
+    performance_metrics = {
+        'total_inference_time': total_inference_time,
+        'mean_inference_time': mean_inference_time,
+        'fps': fps,
+        'processed_frames': len(frames)
+    }
+    
+    return yolo_poses, confidences, performance_metrics
 
 def estimate_yolo_poses(model, frames, img_size=640, device='cpu'):
     """Legacy function for compatibility"""
-    return estimate_yolo_poses_batch(model, frames, img_size, device)
+    yolo_poses, confidences, performance_metrics = estimate_yolo_poses_batch(model, frames, img_size, device)
+    return yolo_poses, confidences, performance_metrics
 
 def convert_coordinates_to_pixels(poses_2d, frames):
     """Convert normalized coordinates to pixel coordinates"""
@@ -471,6 +493,11 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
     
     total_gt_frames = len(gt_poses_2d)
     
+    # Initialize performance tracking
+    total_inference_time = 0.0
+    total_processed_frames = 0
+    all_inference_times = []
+    
     # Determine processing strategy
     if args.all and args.num_frames is None:
         # Process all frames in batches for memory efficiency
@@ -481,7 +508,6 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         all_valid_gt = []
         all_valid_yolo = []
         total_valid_frames = 0
-        total_processed_frames = 0
         
         for start_idx in range(0, total_gt_frames, batch_size):
             end_idx = min(start_idx + batch_size, total_gt_frames)
@@ -503,7 +529,12 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
             gt_batch = gt_batch[:min_frames]
             
             # Run YOLO inference on batch
-            yolo_batch, _ = estimate_yolo_poses_batch(model, frames_batch, args.img_size, device)
+            yolo_batch, _, batch_performance = estimate_yolo_poses_batch(model, frames_batch, args.img_size, device)
+            
+            # Accumulate performance metrics
+            total_inference_time += batch_performance['total_inference_time']
+            total_processed_frames += batch_performance['processed_frames']
+            all_inference_times.extend([batch_performance['mean_inference_time']] * batch_performance['processed_frames'])
             
             # Convert coordinates
             gt_batch_pixel = convert_coordinates_to_pixels(gt_batch, frames_batch)
@@ -529,8 +560,6 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
                     all_frame_mpjpe.append(frame_error)
                 else:
                     all_frame_mpjpe.append(np.nan)
-                
-                total_processed_frames += 1
             
             # Clear memory
             del frames_batch, gt_batch, yolo_batch, gt_batch_pixel, gt_batch_root_rel, yolo_batch_root_rel
@@ -553,6 +582,10 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         pck_results = compute_pck_2d(valid_yolo, valid_gt, torso_diameters, fixed_threshold=150.0)
         auc = compute_auc_2d(valid_yolo, valid_gt, max_threshold=150.0)
         
+        # Calculate overall performance metrics
+        mean_inference_time = np.mean(all_inference_times) if all_inference_times else 0.0
+        fps = 1.0 / mean_inference_time if mean_inference_time > 0 else 0.0
+        
         metrics = {
             'avg_mpjpe': float(avg_mpjpe),
             'frame_mpjpe': all_frame_mpjpe,
@@ -562,7 +595,13 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
             'valid_frames': total_valid_frames,
             'total_frames': total_processed_frames,
             'torso_diameters': torso_diameters,
-            'sequence': sequence_name
+            'sequence': sequence_name,
+            'performance': {
+                'total_inference_time': total_inference_time,
+                'mean_inference_time': mean_inference_time,
+                'fps': fps,
+                'processed_frames': total_processed_frames
+            }
         }
         
     else:
@@ -587,7 +626,7 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         
         # Run YOLO pose estimation
         print(f"🔍 Running YOLO pose estimation...")
-        yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size, device)
+        yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(model, frames, args.img_size, device)
         
         # Convert coordinates to pixels
         gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -602,11 +641,14 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         
         if metrics:
             metrics['sequence'] = sequence_name
+            metrics['performance'] = performance_metrics
     
     if metrics:
         print(f"✓ Metrics computed for {sequence_name}")
         print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
         print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+        print(f"  FPS: {metrics['performance']['fps']:.2f}")
+        print(f"  Mean inference time: {metrics['performance']['mean_inference_time']*1000:.2f} ms")
     else:
         print(f"❌ Failed to compute metrics for {sequence_name}")
     
@@ -654,7 +696,7 @@ def process_single_sequence_original(model, sequence_name, args, device='cpu'):
     
     # Run YOLO pose estimation
     print(f"🔍 Running YOLO pose estimation...")
-    yolo_poses_2d, yolo_confidences = estimate_yolo_poses(model, frames, args.img_size, device)
+    yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(model, frames, args.img_size, device)
     
     # Convert coordinates to pixels
     gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -669,9 +711,12 @@ def process_single_sequence_original(model, sequence_name, args, device='cpu'):
     
     if metrics:
         metrics['sequence'] = sequence_name
+        metrics['performance'] = performance_metrics
         print(f"✓ Metrics computed for {sequence_name}")
         print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
         print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+        print(f"  FPS: {metrics['performance']['fps']:.2f}")
+        print(f"  Mean inference time: {metrics['performance']['mean_inference_time']*1000:.2f} ms")
     else:
         print(f"❌ Failed to compute metrics for {sequence_name}")
     
@@ -691,12 +736,13 @@ def create_comparison_visualization(gt_poses_2d, yolo_poses_2d, seq_name, metric
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9))
     
-    # Enhanced title with all metrics
+    # Enhanced title with all metrics including performance
     if metrics:
         title = (f'2D Pose Comparison: GT vs YOLO - {seq_name} (Root-Relative, Pixels)\n'
                 f'Avg MPJPE: {metrics["avg_mpjpe"]:.1f}px | '
                 f'AUC: {metrics["auc"]:.4f} | '
-                f'PCK@50%_150px: {metrics["pck_results"]["PCK@50%_torso"]*100:.1f}%')
+                f'PCK@50%_150px: {metrics["pck_results"]["PCK@50%_torso"]*100:.1f}% | '
+                f'FPS: {metrics["performance"]["fps"]:.2f}')
     else:
         title = f'2D Pose Comparison: GT vs YOLO - {seq_name} (Root-Relative, Pixels)'
     
@@ -813,13 +859,15 @@ def print_sequence_results(metrics):
     print(f"  MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
     print(f"  AUC: {metrics['auc']:.4f}")
     print(f"  Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+    print(f"  FPS: {metrics['performance']['fps']:.2f}")
+    print(f"  Mean inference time: {metrics['performance']['mean_inference_time']*1000:.2f} ms")
     
     print(f"  PCK metrics:")
     for key, value in metrics['pck_results'].items():
         print(f"    {key}: {value*100:.2f}%")
 
 def print_summary_results(all_metrics, model_name):
-    """Print summary results for all sequences with overall MPJPE"""
+    """Print summary results for all sequences with overall MPJPE and performance metrics"""
     if not all_metrics:
         print("No results to summarize.")
         return
@@ -853,12 +901,36 @@ def print_summary_results(all_metrics, model_name):
     total_valid_frames = sum([m['valid_frames'] for m in valid_metrics])
     total_frames = sum([m['total_frames'] for m in valid_metrics])
     
+    # Calculate performance metrics
+    total_inference_time = sum([m['performance']['total_inference_time'] for m in valid_metrics])
+    total_processed_frames = sum([m['performance']['processed_frames'] for m in valid_metrics])
+    
+    # Calculate weighted average FPS and mean inference time
+    weighted_fps_sum = 0
+    weighted_inference_time_sum = 0
+    total_weight = 0
+    
+    for m in valid_metrics:
+        weight = m['performance']['processed_frames']
+        weighted_fps_sum += m['performance']['fps'] * weight
+        weighted_inference_time_sum += m['performance']['mean_inference_time'] * weight
+        total_weight += weight
+    
+    overall_fps = weighted_fps_sum / total_weight if total_weight > 0 else 0
+    overall_mean_inference_time = weighted_inference_time_sum / total_weight if total_weight > 0 else 0
+    
     print(f"\nOVERALL METRICS:")
     print(f"  Sequences processed: {len(valid_metrics)}")
     print(f"  Total valid frames: {total_valid_frames}/{total_frames}")
     print(f"  Overall MPJPE (weighted): {overall_mpjpe:.2f} pixels")
     print(f"  Average MPJPE (per sequence): {avg_mpjpe:.2f} pixels")
     print(f"  Average AUC: {avg_auc:.4f}")
+    
+    print(f"\nPERFORMACE METRICS:")
+    print(f"  Total inference time: {total_inference_time:.2f} seconds")
+    print(f"  Total processed frames: {total_processed_frames}")
+    print(f"  Overall FPS (weighted): {overall_fps:.2f}")
+    print(f"  Overall mean inference time: {overall_mean_inference_time*1000:.2f} ms")
     
     # PCK metrics
     pck_keys = valid_metrics[0]['pck_results'].keys()
@@ -868,20 +940,24 @@ def print_summary_results(all_metrics, model_name):
         print(f"  {key}: {avg_pck*100:.2f}%")
     
     print(f"\nPER-SEQUENCE BREAKDOWN:")
-    print(f"{'Sequence':<10} {'MPJPE':<12} {'AUC':<10} {'Valid/Total':<12}")
-    print(f"{'-'*50}")
+    print(f"{'Sequence':<10} {'MPJPE':<12} {'AUC':<10} {'FPS':<10} {'Time(ms)':<12} {'Valid/Total':<12}")
+    print(f"{'-'*70}")
     
     for metrics in valid_metrics:
         mpjpe = metrics['avg_mpjpe']
         auc = metrics['auc']
+        fps = metrics['performance']['fps']
+        mean_time = metrics['performance']['mean_inference_time'] * 1000
         valid_frames = metrics['valid_frames']
         total_frames = metrics['total_frames']
         sequence = metrics['sequence']
         
-        print(f"{sequence:<10} {mpjpe:<12.2f} {auc:<10.4f} {valid_frames}/{total_frames:<12}")
+        print(f"{sequence:<10} {mpjpe:<12.2f} {auc:<10.4f} {fps:<10.2f} {mean_time:<12.2f} {valid_frames}/{total_frames:<12}")
     
     print(f"{'='*80}")
     print(f"🎯 FINAL OVERALL MPJPE: {overall_mpjpe:.2f} pixels")
+    print(f"⚡ FINAL OVERALL FPS: {overall_fps:.2f}")
+    print(f"⏱️  FINAL MEAN INFERENCE TIME: {overall_mean_inference_time*1000:.2f} ms")
     print(f"{'='*80}")
 
 def main():
@@ -927,7 +1003,7 @@ def main():
         print(f"Mode: Process {frame_count} frames from sequence {args.sequence}")
     
     print(f"Input size: {args.img_size}")
-    print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve)")
+    print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve), FPS, Inference Time")
     print("Coordinate system: Root-relative poses in pixel domain")
     print("="*80)
     
@@ -1012,6 +1088,13 @@ def main():
         print(f"Model: {model_name}")
         print(f"Device: {device}")
         print(f"Valid frames: {metrics['valid_frames']}/{metrics['total_frames']}")
+        
+        print(f"\nPERFORMANCE METRICS:")
+        print(f"  FPS: {metrics['performance']['fps']:.2f}")
+        print(f"  Mean inference time: {metrics['performance']['mean_inference_time']*1000:.2f} ms")
+        print(f"  Total inference time: {metrics['performance']['total_inference_time']:.2f} seconds")
+        print(f"  Processed frames: {metrics['performance']['processed_frames']}")
+        
         print(f"\nMPJPE (Mean Per Joint Position Error):")
         print(f"  Average MPJPE: {metrics['avg_mpjpe']:.2f} pixels")
         
@@ -1043,7 +1126,7 @@ def main():
                 frames = frames[:min_frames]
                 gt_poses_2d = gt_poses_2d[:min_frames]
                 
-                yolo_poses_2d, _ = estimate_yolo_poses(model, frames, args.img_size, device)
+                yolo_poses_2d, _, _ = estimate_yolo_poses(model, frames, args.img_size, device)
                 
                 gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d, frames)
                 gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
