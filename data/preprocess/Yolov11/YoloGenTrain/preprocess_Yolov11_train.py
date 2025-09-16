@@ -102,6 +102,16 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
         cam_data = cam_list[cam_idx]
         print(f"Processing {subj} {seq} cam0")
 
+        # --- DEBUG: Inspect cam_data structure ---
+        print(f"DEBUG: cam_data type={type(cam_data)}")
+        if isinstance(cam_data, dict):
+            cam_dict = cam_data
+        elif isinstance(cam_data, (list, np.ndarray)) and isinstance(cam_data[0], dict):
+            cam_dict = cam_data[0]
+        else:
+            print(f"ERROR: Unexpected cam_data structure for {subj} {seq} cam0")
+            continue
+
         orig_width, orig_height = get_sequence_image_dimensions(subj)
         image_files = load_sequence_images(subj, seq)
         if image_files is None:
@@ -110,11 +120,11 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
 
         # Copy original metadata
         yolo_cam_data = {
-            'data_3d': cam_data['data_3d'].copy(),
-            'valid': cam_data['valid'].copy(),
-            'camera': cam_data.get('camera', None)
+            'data_3d': cam_dict['data_3d'].copy(),
+            'valid': cam_dict['valid'].copy(),
+            'camera': cam_dict.get('camera', None)
         }
-        original_2d = cam_data['data_2d']
+        original_2d = cam_dict['data_2d']
         num_frames = len(original_2d)
         print(f"    Number of frames in original 2D: {num_frames}")
         yolo_poses_2d = []
