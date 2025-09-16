@@ -196,6 +196,10 @@ def evaluate(model, test_loader, n_frames):
         inference_out = pred_out + out_target[..., 14:15, :]  # Final inference (not root-relative for PCK/AUC)
         out_target = out_target - out_target[..., 14:15, :]  # Root-relative ground truth
 
+        torch.cuda.synchronize()
+        batch_time = time.perf_counter() - batch_start
+        batch_times.append(batch_time)
+
         # Calculate MPJPE
         joint_error_test = mpjpe_cal(pred_out, out_target).item()
         error_sum_test.update(joint_error_test * N, N)
@@ -227,9 +231,9 @@ def evaluate(model, test_loader, n_frames):
             else:
                 data_inference[seq_name] = inference_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
 
-        torch.cuda.synchronize()
-        batch_time = time.perf_counter() - batch_start
-        batch_times.append(batch_time)
+        # torch.cuda.synchronize()
+        # batch_time = time.perf_counter() - batch_start
+        # batch_times.append(batch_time)
 
     for seq_name in data_inference.keys():
         data_inference[seq_name] = data_inference[seq_name][:, :, None, :]

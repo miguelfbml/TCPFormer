@@ -198,7 +198,7 @@ def create_yolo_dataset(original_data, estimator, output_path):
     print("Creating YOLO version of dataset...")
     
     yolo_data = {}
-    
+     
     for seq_name, seq_data in original_data.items():
         print(f"\nProcessing sequence: {seq_name}")
         
