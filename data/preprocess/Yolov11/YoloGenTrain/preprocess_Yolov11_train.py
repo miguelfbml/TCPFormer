@@ -77,12 +77,12 @@ def load_sequence_images(subject, seq):
     return None
 
 def create_yolo_train_dataset(original_data, estimator, output_path):
-    print("Creating YOLO version of train dataset...")
+    print("Creating YOLO version of train dataset... (cams 0-8)")
     yolo_data = {}
 
     subjects = [f'S{i}' for i in range(1, 9)]
     seqs = ['Seq1', 'Seq2']
-    cam_idx = 0  # Only cam0
+    cam_keys = ['0', '1', '2', '4', '5', '6', '7', '8']
 
     for key in original_data:
         try:
@@ -94,104 +94,73 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
             print(f"Skipping {key}: not in subjects/sequences filter")
             continue
         cam_list = original_data[key]
-        if not isinstance(cam_list, list) or len(cam_list) <= cam_idx:
-            print(f"  {key}: cam0 not found (type={type(cam_list)}, len={len(cam_list)})")
+        if not isinstance(cam_list, list) or len(cam_list) == 0:
+            print(f"  {key}: cam_list not found (type={type(cam_list)})")
             continue
-        cam_data = cam_list[cam_idx]
-        print(f"Processing {subj} {seq} cam0")
 
-        # --- DEBUG: Inspect cam_data structure ---
-        print(f"DEBUG: cam_data type={type(cam_data)}")
-        if isinstance(cam_data, dict):
-            if '0' in cam_data:
-                cam0_data = cam_data['0']
-                print(f"DEBUG: cam0_data keys: {list(cam0_data.keys())}")
-                if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
-                    num_frames = len(cam0_data['data_2d'])
-                    valid_flag = np.ones(num_frames, dtype=bool)
-                    yolo_cam_data = {
-                        'data_3d': cam0_data['data_3d'].copy(),
-                        'valid': valid_flag,
-                        'camera': None
-                    }
-                    original_2d = cam0_data['data_2d']
-                    # Debug: Print shape and sample of original 2D data
-                    print(f"DEBUG: original_2d shape: {original_2d.shape}")
-                    print(f"DEBUG: original_2d sample (frame 0): {original_2d[0]}")
-                else:
-                    print(f"ERROR: Missing expected keys in cam0_data for {subj} {seq} cam0: {list(cam0_data.keys())}")
-                    continue
-            else:
-                print(f"ERROR: cam_data for {subj} {seq} does not contain key '0'")
+        yolo_cam_dict = {}
+        for cam_key in cam_keys:
+            if cam_key not in cam_list[0]:
+                print(f"  {key}: camera {cam_key} not found, skipping.")
                 continue
-        elif isinstance(cam_data, (list, np.ndarray)) and isinstance(cam_data[0], dict):
-            cam0_data = cam_data[0]
-            print(f"DEBUG: cam0_data keys: {list(cam0_data.keys())}")
-            if 'data_3d' in cam0_data and 'data_2d' in cam0_data:
-                num_frames = len(cam0_data['data_2d'])
+            cam_data = cam_list[0][cam_key]
+            print(f"Processing {subj} {seq} camera {cam_key}")
+
+            if 'data_3d' in cam_data and 'data_2d' in cam_data:
+                num_frames = len(cam_data['data_2d'])
                 valid_flag = np.ones(num_frames, dtype=bool)
                 yolo_cam_data = {
-                    'data_3d': cam0_data['data_3d'].copy(),
+                    'data_3d': cam_data['data_3d'].copy(),
                     'valid': valid_flag,
                     'camera': None
                 }
-                original_2d = cam0_data['data_2d']
-                print(f"DEBUG: original_2d shape: {original_2d.shape}")
-                print(f"DEBUG: original_2d sample (frame 0): {original_2d[0]}")
+                original_2d = cam_data['data_2d']
             else:
-                print(f"ERROR: Missing expected keys in cam0_data for {subj} {seq} cam0: {list(cam0_data.keys())}")
+                print(f"ERROR: Missing expected keys in cam_data for {subj} {seq} camera {cam_key}: {list(cam_data.keys())}")
                 continue
-        else:
-            print(f"ERROR: Unexpected cam_data structure for {subj} {seq} cam0")
-            continue
 
-        orig_width, orig_height = get_sequence_image_dimensions(subj)
-        image_files = load_sequence_images(subj, seq)
-        if image_files is None:
-            print(f"  Skipping {subj} {seq} cam0: No images found")
-            continue
+            orig_width, orig_height = get_sequence_image_dimensions(subj)
+            image_files = load_sequence_images(subj, seq)
+            if image_files is None:
+                print(f"  Skipping {subj} {seq} camera {cam_key}: No images found")
+                continue
 
-        num_frames = len(original_2d)
-        print(f"    Number of frames in original 2D: {num_frames}")
-        yolo_poses_2d = []
-        detection_failures = 0
+            num_frames = len(original_2d)
+            yolo_poses_2d = []
+            detection_failures = 0
 
-        for frame_idx in tqdm(range(num_frames), desc=f"{subj} {seq} cam0"):
-            if frame_idx < len(image_files):
-                image = cv2.imread(image_files[frame_idx])
-                if image is not None:
-                    pose_2d_with_conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
-                    if np.all(pose_2d_with_conf[:, :2] == 0):
+            for frame_idx in tqdm(range(num_frames), desc=f"{subj} {seq} cam{cam_key}"):
+                if frame_idx < len(image_files):
+                    image = cv2.imread(image_files[frame_idx])
+                    if image is not None:
+                        pose_2d_with_conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
+                        if np.all(pose_2d_with_conf[:, :2] == 0):
+                            yolo_cam_data['valid'][frame_idx] = False
+                            detection_failures += 1
+                        yolo_poses_2d.append(pose_2d_with_conf[:, :2])
+                    else:
+                        yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                         yolo_cam_data['valid'][frame_idx] = False
                         detection_failures += 1
-                    # Only take (x, y) for compatibility with original format
-                    yolo_poses_2d.append(pose_2d_with_conf[:, :2])
                 else:
-                    print(f"      Frame {frame_idx}: Image not loaded, marking invalid.")
                     yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                     yolo_cam_data['valid'][frame_idx] = False
                     detection_failures += 1
-            else:
-                print(f"      Frame {frame_idx}: No image file, marking invalid.")
-                yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
-                yolo_cam_data['valid'][frame_idx] = False
-                detection_failures += 1
 
-        yolo_cam_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
-        # Debug: Print shape and sample of YOLO 2D predictions
-        print(f"DEBUG: YOLO data_2d shape: {yolo_cam_data['data_2d'].shape}")
-        print(f"DEBUG: YOLO data_2d sample (frame 0): {yolo_cam_data['data_2d'][0]}")
-        print(f"  ✓ YOLO 2D shape: {yolo_cam_data['data_2d'].shape}")
-        print(f"  ✓ Detection failures: {detection_failures}/{num_frames} ({detection_failures/num_frames*100:.1f}%)")
-        print(f"  ✓ Valid frames: {np.sum(yolo_cam_data['valid'])}/{num_frames}")
+            yolo_cam_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
+            print(f"  ✓ YOLO 2D shape: {yolo_cam_data['data_2d'].shape}")
+            print(f"  ✓ Detection failures: {detection_failures}/{num_frames} ({detection_failures/num_frames*100:.1f}%)")
+            print(f"  ✓ Valid frames: {np.sum(yolo_cam_data['valid'])}/{num_frames}")
 
-        # Store in output dict with same key structure
-        yolo_data[key] = [{'0': yolo_cam_data}]  # Only cam0
+            yolo_cam_dict[cam_key] = yolo_cam_data
 
-        del yolo_poses_2d
-        gc.collect()
-        if estimator.device.startswith('cuda'):
-            torch.cuda.empty_cache()
+            del yolo_poses_2d
+            gc.collect()
+            if estimator.device.startswith('cuda'):
+                torch.cuda.empty_cache()
+
+        if yolo_cam_dict:
+            yolo_data[key] = [yolo_cam_dict]
 
     print(f"\nSaving YOLO train dataset to: {output_path}")
     if not yolo_data:
@@ -205,10 +174,10 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
     return yolo_data
 
 def main():
-    parser = argparse.ArgumentParser(description='Create YOLO version of MPI-INF-3DHP train dataset (S1-S8, Seq1/Seq2, cam0 only)')
+    parser = argparse.ArgumentParser(description='Create YOLO version of MPI-INF-3DHP train dataset (S1-S8, Seq1/Seq2 all cams)')
     parser.add_argument('--model-path', type=str, required=True, help='Path to trained YOLO model (.pt file)')
-    parser.add_argument('--train-data-path', type=str, default='../../../motion3d/data_train_3dhp.npz', help='Path to original train dataset')
-    parser.add_argument('--output-path', type=str, default='data_train_3dhp_yolo.npz', help='Output path for YOLO train dataset')
+    parser.add_argument('--train-data-path', type=str, default='./data_train_3dhp.npz', help='Path to original train dataset')
+    parser.add_argument('--output-path', type=str, default='./data_train_3dhp_yolo_all.npz', help='Output path for YOLO train dataset')
     parser.add_argument('--img-size', type=int, default=640, help='Input image size for YOLO inference')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (auto, cpu, cuda, etc.)')
     args = parser.parse_args()
