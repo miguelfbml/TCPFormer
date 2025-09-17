@@ -355,7 +355,7 @@ def train(args, opts):
             if opts.use_wandb:
                 wandb.init(id=wandb_id,
                           project='MemoryInducedTransformer',
-                          resume="must",
+                          resume="allow",
                           settings=wandb.Settings(start_method='fork'))
         else:
             if opts.use_wandb:
