@@ -10,4 +10,4 @@ echo "Running job in reserved partition"
 
 export CUDA_LAUNCH_BLOCKING=1
 # Commands / scripts to run (e.g., python3 train.py)
-python3 preprocess_Yolov11_train.py --model-path ../runs/pose/model3/best.pt --output-path ./data_train_3dhp_yolo.npz --img-size 640
+python3 preprocess_Yolov11_train.py --model-path ../runs/pose/model3/best.pt --output-path ./data_train_3dhp_yolo_all.npz --img-size 640
