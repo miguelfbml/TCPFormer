@@ -186,7 +186,7 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
         print(f"  ✓ Valid frames: {np.sum(yolo_cam_data['valid'])}/{num_frames}")
 
         # Store in output dict with same key structure
-        yolo_data[key] = [yolo_cam_data]  # Only cam0
+        yolo_data[key] = [{'0': yolo_cam_data}]  # Only cam0
 
         del yolo_poses_2d
         gc.collect()
