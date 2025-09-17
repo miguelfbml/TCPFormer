@@ -22,4 +22,4 @@ def debug_npz_structure(npz_path):
             print(f"  Value: {data[key]}")
 
 if __name__ == "__main__":
-    debug_npz_structure("data_train_3dhp_yolo.npz")
+    debug_npz_structure("data_train_3dhp.npz")
