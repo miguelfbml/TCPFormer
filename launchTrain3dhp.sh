@@ -12,8 +12,11 @@ echo "Starting training job for TCPFormer on MPI-INF-3DHP"
 # export WANDB_API_KEY=your_api_key_here
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 train_3dhp.py \
-    --config configs/mpi/TCPFormer_mpi_27.yaml \
-    --new-checkpoint checkpoint_mpi \
-    --use-wandb \
-    --wandb-name "TCPFormer_MPI_3DHP_training_YOLOv11"
+#python3 train_3dhp.py \
+#    --config configs/mpi/TCPFormer_mpi_27.yaml \
+#    --new-checkpoint checkpoint_mpi \
+#    --use-wandb \
+#    --wandb-name "TCPFormer_MPI_3DHP_training_YOLOv11"
+
+
+python3 train_3dhp.py --config configs/mpi/TCPFormer_mpi_27.yaml --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr --new-checkpoint checkpoint_mpi --resume --use-wandb --wandb-name "TCPFormer_MPI_3DHP_resume_training_YOLOv11"
