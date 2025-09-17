@@ -29,30 +29,39 @@ def debug_one_entry(npz_path, entry_key=None):
     data = np.load(npz_path, allow_pickle=True)['data'].item()
     keys = list(data.keys())
     print(f"Top-level keys: {keys}")
-    # Pick the first key if not specified
     key = entry_key if entry_key is not None else keys[0]
     print(f"\nInspecting key: {key}")
     entry = data[key]
     print(f"  Type: {type(entry)}")
     if isinstance(entry, list):
         print(f"  List length: {len(entry)}")
-        if len(entry) > 0:
-            print(f"  First element type: {type(entry[0])}")
-            if isinstance(entry[0], dict):
-                print(f"  Dict keys: {list(entry[0].keys())}")
-                for k in entry[0]:
-                    val = entry[0][k]
+        if len(entry) > 0 and isinstance(entry[0], dict):
+            print(f"  Dict keys: {list(entry[0].keys())}")
+            # Inspect camera '0'
+            cam0 = entry[0].get('0')
+            if cam0 is not None:
+                print(f"\n  --- Inside camera '0' ---")
+                print(f"    Keys: {list(cam0.keys())}")
+                for k in cam0:
+                    val = cam0[k]
                     print(f"    {k}: type={type(val)}, shape={getattr(val, 'shape', 'N/A')}")
-                    # Print a small sample if it's an array
                     if hasattr(val, 'shape') and hasattr(val, 'flatten'):
                         print(f"      Sample: {val.flatten()[:10]}")
+            else:
+                print("    Camera '0' not found in entry[0].")
     elif isinstance(entry, dict):
         print(f"  Dict keys: {list(entry.keys())}")
-        for k in entry:
-            val = entry[k]
-            print(f"    {k}: type={type(val)}, shape={getattr(val, 'shape', 'N/A')}")
-            if hasattr(val, 'shape') and hasattr(val, 'flatten'):
-                print(f"      Sample: {val.flatten()[:10]}")
+        cam0 = entry.get('0')
+        if cam0 is not None:
+            print(f"\n  --- Inside camera '0' ---")
+            print(f"    Keys: {list(cam0.keys())}")
+            for k in cam0:
+                val = cam0[k]
+                print(f"    {k}: type={type(val)}, shape={getattr(val, 'shape', 'N/A')}")
+                if hasattr(val, 'shape') and hasattr(val, 'flatten'):
+                    print(f"      Sample: {val.flatten()[:10]}")
+        else:
+            print("    Camera '0' not found in entry.")
     else:
         print(f"  Value: {entry}")
 
