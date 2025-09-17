@@ -16,4 +16,4 @@ python3 train_3dhp.py \
     --config configs/mpi/TCPFormer_mpi_27.yaml \
     --new-checkpoint checkpoint_mpi \
     --use-wandb \
-    --wandb-name "TCPFormer_MPI_3DHP_training"
+    --wandb-name "TCPFormer_MPI_3DHP_training_YOLOv11"
