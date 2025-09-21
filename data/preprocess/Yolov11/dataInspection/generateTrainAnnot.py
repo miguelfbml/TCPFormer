@@ -37,7 +37,6 @@ def load_train_3d_data_from_dataset(subject_num, sequence_num):
 
 def get_image_files_list(subject_num, sequence_num, camera_num=None):
     """Get the list of image files for a specific subject, sequence, and camera from original dataset"""
-    # Original MPI-INF-3DHP dataset paths
     original_image_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
         '../motion3d/mpi_inf_3dhp',
@@ -48,7 +47,6 @@ def get_image_files_list(subject_num, sequence_num, camera_num=None):
     all_image_files = []
     cameras_found = set()
     
-    # Define available cameras (MPI-INF-3DHP has cameras 0,1,2,4,5,6,7,8 - camera 3 is missing)
     available_cameras = [0, 1, 2, 4, 5, 6, 7, 8]
     
     if camera_num is not None and camera_num not in available_cameras:
@@ -61,14 +59,12 @@ def get_image_files_list(subject_num, sequence_num, camera_num=None):
         if os.path.exists(subject_path):
             print(f"✓ Found subject path: {subject_path}")
             
-            # Search for specific camera or all cameras
             search_cameras = [camera_num] if camera_num is not None else available_cameras
             
             for cam in search_cameras:
                 camera_path = os.path.join(subject_path, f"video_{cam}")
                 
                 if os.path.exists(camera_path):
-                    # Look for image files in this camera folder
                     image_files = glob.glob(os.path.join(camera_path, "*.jpg"))
                     image_files.extend(glob.glob(os.path.join(camera_path, "*.JPG")))
                     image_files.extend(glob.glob(os.path.join(camera_path, "*.png")))
@@ -99,15 +95,12 @@ def load_single_frame(image_path):
 
 def extract_camera_from_filename(filename):
     """Extract camera number from filename like 'frame_000001.jpg' in video_X folder"""
-    # The camera number comes from the folder structure, not filename
-    # We'll need to track this differently
     return None
 
 def get_frame_index_from_filename(filename):
     """Extract frame index from filename like 'frame_000001.jpg'"""
     try:
-        # Extract number from filename like 'frame_000001.jpg'
-        base_name = os.path.splitext(filename)[0]  # Remove extension
+        base_name = os.path.splitext(filename)[0]
         if 'frame_' in base_name:
             frame_str = base_name.split('frame_')[-1]
             return int(frame_str)
@@ -115,13 +108,11 @@ def get_frame_index_from_filename(filename):
     except:
         return None
 
-# MPI-INF-3DHP joint connections for skeleton drawing
 CONNECTIONS_2D = [
     (0, 16), (16, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
     (1, 15), (15, 14), (14, 8), (8, 9), (9, 10), (14, 11), (11, 12), (12, 13)
 ]
 
-# Joint names for reference
 JOINT_NAMES = [
     'Head', 'SpineShoulder', 'LShoulder', 'LElbow', 'LHand', 'RShoulder', 
     'RElbow', 'RHand', 'LHip', 'LKnee', 'LAnkle', 'RHip', 'RKnee', 'RAnkle', 
@@ -131,60 +122,50 @@ JOINT_NAMES = [
 def draw_annotations_from_npz(image, poses_2d, poses_2d_conf, frame_idx, img_width, img_height):
     """Draw keypoints from .npz data on image with confidence values"""
     if frame_idx >= len(poses_2d):
-        # No pose data for this frame
         return image, 0
     
-    keypoints_2d = poses_2d[frame_idx]  # Shape: (17, 2)
+    keypoints_2d = poses_2d[frame_idx]
     
     if keypoints_2d.shape[0] != 17:
         print(f"Warning: Expected 17 keypoints, got {keypoints_2d.shape[0]}")
         return image, 0
     
-    # Get confidence values if available
     if poses_2d_conf is not None and frame_idx < len(poses_2d_conf):
-        confidences = poses_2d_conf[frame_idx]  # Shape: (17,)
+        confidences = poses_2d_conf[frame_idx]
     else:
-        confidences = np.ones(17)  # Default confidence of 1.0 if not available
+        confidences = np.ones(17)
     
-    # Convert keypoints to pixel coordinates (assuming they're already in pixel coords)
     pixel_keypoints = []
     for i, (x, y) in enumerate(keypoints_2d):
         conf = confidences[i] if i < len(confidences) else 1.0
-        if x > 0 and y > 0:  # Valid keypoint
-            pixel_keypoints.append((int(x), int(y), conf))  # x, y, confidence
+        if x > 0 and y > 0:
+            pixel_keypoints.append((int(x), int(y), conf))
         else:
             pixel_keypoints.append((0, 0, 0))
     
-    # Draw skeleton connections
     for connection in CONNECTIONS_2D:
         joint1_idx, joint2_idx = connection
         if (joint1_idx < len(pixel_keypoints) and joint2_idx < len(pixel_keypoints) and
             pixel_keypoints[joint1_idx][2] > 0 and pixel_keypoints[joint2_idx][2] > 0):
-            
             pt1 = (pixel_keypoints[joint1_idx][0], pixel_keypoints[joint1_idx][1])
             pt2 = (pixel_keypoints[joint2_idx][0], pixel_keypoints[joint2_idx][1])
-            cv2.line(image, pt1, pt2, (255, 0, 0), 2)  # Blue lines for skeleton
+            cv2.line(image, pt1, pt2, (255, 0, 0), 2)
     
-    # Draw keypoints as circles with confidence values
     visible_keypoints = 0
     for i, (px, py, confidence) in enumerate(pixel_keypoints):
         if confidence > 0:
             visible_keypoints += 1
-            # Different colors for different body parts
-            if i == 0:  # Head
-                color = (0, 0, 255)  # Red
-            elif i in [2, 3, 4, 5, 6, 7]:  # Arms
-                color = (255, 255, 0)  # Cyan
-            elif i in [8, 9, 10, 11, 12, 13]:  # Legs
-                color = (0, 255, 255)  # Yellow
-            else:  # Torso
-                color = (255, 0, 255)  # Magenta
+            if i == 0:
+                color = (0, 0, 255)
+            elif i in [2, 3, 4, 5, 6, 7]:
+                color = (255, 255, 0)
+            elif i in [8, 9, 10, 11, 12, 13]:
+                color = (0, 255, 255)
+            else:
+                color = (255, 0, 255)
             
-            # Circle size based on confidence (higher confidence = larger circle)
             radius = max(2, int(4 * confidence))
             cv2.circle(image, (px, py), radius, color, -1)
-            
-            # Add joint number and confidence
             cv2.putText(image, f"{i}", (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
             cv2.putText(image, f"{confidence:.2f}", (px+5, py+10), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (255, 255, 255), 1)
     
@@ -199,46 +180,69 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
     
     print(f"Loading annotations and images for: {sequence_name}")
     
-    # Load pose data from .npz file
     seq_data = load_train_3d_data_from_dataset(subject_num, sequence_num)
     if seq_data is None:
         print(f"Failed to load pose data for S{subject_num} Seq{sequence_num}")
         return False
     
-    # Get camera-specific pose data
     if camera_num is not None:
         camera_key = str(camera_num)
-        if camera_key not in seq_data[0]:  # seq_data is a list, first element contains camera data
+        if camera_key not in seq_data[0]:
             print(f"Camera {camera_num} not found in pose data. Available cameras: {list(seq_data[0].keys())}")
             return False
         
         camera_data = seq_data[0][camera_key]
-        poses_2d = camera_data['data_2d']  # Shape: (frames, 17, 2)
+        poses_2d = camera_data['data_2d']
         
-        # Try to load confidence data
+        # Convert poses_2d to NumPy array if it's a list
+        if isinstance(poses_2d, list):
+            poses_2d = np.array(poses_2d)
+        
         poses_2d_conf = None
         if 'data_2d_conf' in camera_data:
-            poses_2d_conf = camera_data['data_2d_conf']  # Shape: (frames, 17)
-            print(f"✓ Loaded 2D poses and confidences for cam{camera_num}: {poses_2d.shape}, {poses_2d_conf.shape}")
+            poses_2d_conf = camera_data['data_2d_conf']
         elif 'conf_2d' in camera_data:
-            poses_2d_conf = camera_data['conf_2d']  # Alternative name
-            print(f"✓ Loaded 2D poses and confidences for cam{camera_num}: {poses_2d.shape}, {poses_2d_conf.shape}")
+            poses_2d_conf = camera_data['conf_2d']
         elif 'confidences' in camera_data:
-            poses_2d_conf = camera_data['confidences']  # Another alternative
-            print(f"✓ Loaded 2D poses and confidences for cam{camera_num}: {poses_2d.shape}, {poses_2d_conf.shape}")
+            poses_2d_conf = camera_data['confidences']
+        
+        # Convert poses_2d_conf to NumPy array if it's a list
+        if isinstance(poses_2d_conf, list):
+            poses_2d_conf = np.array(poses_2d_conf)
+        
+        print(f"✓ Loaded 2D poses for cam{camera_num}: {poses_2d.shape}")
+        if poses_2d_conf is not None:
+            print(f"✓ Loaded confidences for cam{camera_num}: {poses_2d_conf.shape}")
+            # Print keypoint confidences
+            print(f"\nKeypoint Confidences for {sequence_name}:")
+            for frame_idx in range(poses_2d_conf.shape[0]):
+                print(f"Frame {frame_idx}:")
+                confidences = poses_2d_conf[frame_idx]
+                for kp_idx, conf in enumerate(confidences):
+                    print(f"  Keypoint {kp_idx} ({JOINT_NAMES[kp_idx]}): Confidence = {conf:.4f}")
         else:
-            print(f"✓ Loaded 2D poses for cam{camera_num}: {poses_2d.shape} (no confidence data found)")
-            print(f"Available keys in camera data: {list(camera_data.keys())}")
+            print(f"No confidence data found for cam{camera_num}. Available keys: {list(camera_data.keys())}")
     else:
-        # For all cameras, we'll use camera 0 as default for now
         camera_data = seq_data[0]['0']
         poses_2d = camera_data['data_2d']
+        if isinstance(poses_2d, list):
+            poses_2d = np.array(poses_2d)
+        
         poses_2d_conf = camera_data.get('data_2d_conf', camera_data.get('conf_2d', camera_data.get('confidences', None)))
+        if isinstance(poses_2d_conf, list):
+            poses_2d_conf = np.array(poses_2d_conf)
+        
         print(f"✓ Loaded 2D poses (using cam0 as reference): {poses_2d.shape}")
         if poses_2d_conf is not None:
-            print(f"✓ Found confidence data: {poses_2d_conf.shape}")
+            print(f"✓ Loaded confidences (using cam0 as reference): {poses_2d_conf.shape}")
+            # Print keypoint confidences
+            print(f"\nKeypoint Confidences for {sequence_name}:")
+            for frame_idx in range(poses_2d_conf.shape[0]):
+                print(f"Frame {frame_idx}:")
+                confidences = poses_2d_conf[frame_idx]
+                for kp_idx, conf in enumerate(confidences):
+                    print(f"  Keypoint {kp_idx} ({JOINT_NAMES[kp_idx]}): Confidence = {conf:.4f}")
     
-    # Get list of image files
     result = get_image_files_list(subject_num, sequence_num, camera_num)
     if len(result) == 2:
         image_files, cameras_found = result
@@ -249,13 +253,11 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
         print(f"No image files found for sequence: {sequence_name}")
         return False
     
-    # Limit number of frames if specified
     if max_frames is not None:
         image_files = image_files[:max_frames]
     
     print(f"Found {len(image_files)} frames to process")
     
-    # Load first frame to get dimensions
     first_frame, _ = load_single_frame(image_files[0])
     if first_frame is None:
         print(f"Could not load first frame: {image_files[0]}")
@@ -264,7 +266,6 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
     height, width, _ = first_frame.shape
     print(f"Video dimensions: {width}x{height}")
     
-    # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(output_path, fourcc, 10.0, (width, height))
     
@@ -275,33 +276,28 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
     
     print(f"Processing {len(image_files)} frames...")
     
-    # Process all frames
     for i, image_path in enumerate(image_files):
-        # Load single frame
         frame, filename = load_single_frame(image_path)
         
         if frame is None:
             continue
         
-        # Get frame index for pose data
         frame_idx = get_frame_index_from_filename(filename)
         if frame_idx is None:
-            frame_idx = i  # Fallback to sequential index
+            frame_idx = i
         
-        # Draw annotations from .npz data
         if frame_idx < len(poses_2d):
             annotated_image, visible_keypoints = draw_annotations_from_npz(
                 frame, poses_2d, poses_2d_conf, frame_idx, width, height)
             total_keypoints_found += visible_keypoints
             
-            # Calculate average confidence for this frame
             if poses_2d_conf is not None and frame_idx < len(poses_2d_conf):
                 frame_confidences = poses_2d_conf[frame_idx]
                 valid_confidences = frame_confidences[frame_confidences > 0]
                 frame_avg_conf = np.mean(valid_confidences) if len(valid_confidences) > 0 else 0.0
                 total_confidence += frame_avg_conf
             else:
-                frame_avg_conf = 1.0  # Default confidence
+                frame_avg_conf = 1.0
                 total_confidence += frame_avg_conf
             
             if visible_keypoints > 0:
@@ -311,15 +307,12 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
             visible_keypoints = 0
             frame_avg_conf = 0.0
         
-        # Add frame info with confidence
         frame_info = f"Frame: {filename} (idx:{frame_idx}) | Keypoints: {visible_keypoints} | Avg Conf: {frame_avg_conf:.3f}"
         cv2.putText(annotated_image, frame_info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # Add sequence info
         seq_info = f"Sequence: {sequence_name} | Progress: {i + 1}/{len(image_files)}"
         cv2.putText(annotated_image, seq_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # Add camera info if multiple cameras
         if camera_num is None and cameras_found:
             cam_info = f"Cameras found: {cameras_found}"
             cv2.putText(annotated_image, cam_info, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -327,22 +320,17 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
         else:
             legend_y = 90
         
-        # Add legend
         legend_text = "Legend: NPZ GT Data | Blue=Skeleton, Red=Head, Cyan=Arms, Yellow=Legs, Magenta=Torso"
         cv2.putText(annotated_image, legend_text, (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
-        # Add confidence info
         conf_text = "Confidence values shown below each keypoint | Circle size = confidence"
         cv2.putText(annotated_image, conf_text, (10, legend_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
         
-        # Write frame to video
         video_writer.write(annotated_image)
         processed_count += 1
         
-        # Clear frame from memory immediately
         del frame, annotated_image
         
-        # Print progress every 100 frames
         if (i + 1) % 100 == 0 or (i + 1) == len(image_files):
             avg_conf = total_confidence / (i + 1) if (i + 1) > 0 else 0.0
             print(f"Processed {i + 1}/{len(image_files)} frames | "
@@ -350,7 +338,6 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
                   f"Total keypoints: {total_keypoints_found} | "
                   f"Avg confidence: {avg_conf:.3f}")
             
-            # Force garbage collection every 100 frames
             import gc
             gc.collect()
     
@@ -371,15 +358,12 @@ def create_annotated_video(subject_num, sequence_num, camera_num, output_path, m
 def main():
     parser = argparse.ArgumentParser(description='Generate annotated videos using ground truth annotations from .npz training data')
     
-    # Subject flags
     for i in range(1, 9):
         parser.add_argument(f'--S{i}', action='store_true', help=f'Process subject S{i}')
     
-    # Sequence flags
     parser.add_argument('--Seq1', action='store_true', help='Process sequence 1')
     parser.add_argument('--Seq2', action='store_true', help='Process sequence 2')
     
-    # Camera flags
     parser.add_argument('--cam', type=int, choices=[0, 1, 2, 4, 5, 6, 7, 8], 
                        help='Specific camera to process (0, 1, 2, 4, 5, 6, 7, 8). Note: camera 3 is not available in MPI-INF-3DHP')
     parser.add_argument('--all_cams', action='store_true', 
@@ -391,38 +375,33 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Determine which subjects to process
     subjects = []
     if args.all:
-        subjects = list(range(1, 9))  # S1 to S8
+        subjects = list(range(1, 9))
     else:
         for i in range(1, 9):
             if getattr(args, f'S{i}'):
                 subjects.append(i)
     
-    # Determine which sequences to process
     sequences = []
     if args.all:
-        sequences = [1, 2]  # Seq1 and Seq2
+        sequences = [1, 2]
     else:
         if args.Seq1:
             sequences.append(1)
         if args.Seq2:
             sequences.append(2)
     
-    # Determine which cameras to process
     cameras = []
     if args.all or args.all_cams:
-        cameras = [0, 1, 2, 4, 5, 6, 7, 8]  # All available cameras
+        cameras = [0, 1, 2, 4, 5, 6, 7, 8]
     elif args.cam is not None:
-        cameras = [args.cam]  # Specific camera
+        cameras = [args.cam]
     else:
-        cameras = [0]  # Default to camera 0 for .npz data
+        cameras = [0]
     
-    # Check if any subjects or sequences were specified
     if not subjects:
         print("Error: Must specify at least one subject (--S1 to --S8) or --all")
         parser.print_help()
@@ -438,7 +417,6 @@ def main():
     print(f"Processing cameras: {cameras}")
     print(f"Source: Ground truth annotations from .npz training data")
     
-    # Generate videos for selected combinations
     successful = 0
     failed = 0
     
