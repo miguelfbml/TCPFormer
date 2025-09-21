@@ -167,7 +167,7 @@ def draw_annotations_from_npz(image, poses_2d, poses_2d_conf, frame_idx, img_wid
             radius = max(2, int(4 * confidence))
             cv2.circle(image, (px, py), radius, color, -1)
             cv2.putText(image, f"{i}", (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
-            cv2.putText(image, f"{confidence:.2f}", (px+5, py+10), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (255, 255, 255), 1)
+            cv2.putText(image, f"{confidence:.2f}", (px+5, py+10), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 1)
     
     return image, visible_keypoints
 
