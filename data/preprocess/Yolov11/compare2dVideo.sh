@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 compare_gt_yolo_2d.py --sequence TS6 --model-path runs/pose/mpi_yolo11x_pose_corrected2/weights/best.pt --save-video
+python3 compare_gt_yolo_2d.py --sequence TS1 --model-path runs/pose/model3/best.pt --save-video

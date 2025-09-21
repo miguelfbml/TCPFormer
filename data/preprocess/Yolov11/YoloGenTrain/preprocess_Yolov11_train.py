@@ -19,7 +19,7 @@ class YOLO2DPoseEstimator:
         self.img_size = img_size
 
     def estimate_2d_pose_from_image(self, image, target_width, target_height):
-        results = self.model.predict(image, verbose=False, imgsz=self.img_size, conf=0.3, device=self.device)
+        results = self.model.predict(image, verbose=False, imgsz=self.img_size, conf=0.3, device=self.device, max_det=1)
         # Only process the first detected person (if any)
         if (results and len(results) > 0 and hasattr(results[0], 'keypoints') and results[0].keypoints is not None and len(results[0].keypoints.xy) > 0):
             keypoints = results[0].keypoints.xy[0].cpu().numpy()
