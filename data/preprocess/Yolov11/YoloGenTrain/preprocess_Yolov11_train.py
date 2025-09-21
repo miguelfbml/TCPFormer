@@ -20,6 +20,7 @@ class YOLO2DPoseEstimator:
 
     def estimate_2d_pose_from_image(self, image, target_width, target_height):
         results = self.model.predict(image, verbose=False, imgsz=self.img_size, conf=0.3, device=self.device)
+        # Only process the first detected person (if any)
         if (results and len(results) > 0 and hasattr(results[0], 'keypoints') and results[0].keypoints is not None and len(results[0].keypoints.xy) > 0):
             keypoints = results[0].keypoints.xy[0].cpu().numpy()
             conf = results[0].keypoints.conf[0].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(17)
@@ -31,9 +32,9 @@ class YOLO2DPoseEstimator:
             scaled_keypoints[:, 1] = keypoints[:n_kpts, 1] * (target_height / img_height)
             pose_2d[:n_kpts, :2] = scaled_keypoints
             pose_2d[:n_kpts, 2] = conf[:n_kpts] if len(conf) >= n_kpts else 0.5
-            return pose_2d
+            return pose_2d, conf
         else:
-            return np.zeros((17, 3), dtype=np.float32)
+            return np.zeros((17, 3), dtype=np.float32), np.zeros(17, dtype=np.float32)
 
     def close(self):
         if self.device.startswith('cuda'):
@@ -55,8 +56,6 @@ def load_original_train_dataset(path):
     return data
 
 def load_sequence_images(subject, seq):
-    # subject: 'S1', seq: 'Seq1'
-    # Looks for images in /nas-ctm01/datasets/public/mpi_inf_3dhp/{subject}/{seq}/imageFrames/video_0/
     base_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
         '../motion3d/mpi_inf_3dhp',
@@ -112,7 +111,8 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 yolo_cam_data = {
                     'data_3d': cam_data['data_3d'].copy(),
                     'valid': valid_flag,
-                    'camera': None
+                    'camera': None,
+                    'confidences': []  # Store confidences here
                 }
                 original_2d = cam_data['data_2d']
             else:
@@ -133,18 +133,21 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 if frame_idx < len(image_files):
                     image = cv2.imread(image_files[frame_idx])
                     if image is not None:
-                        pose_2d_with_conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
+                        pose_2d_with_conf, conf = estimator.estimate_2d_pose_from_image(image, orig_width, orig_height)
                         if np.all(pose_2d_with_conf[:, :2] == 0):
                             yolo_cam_data['valid'][frame_idx] = False
                             detection_failures += 1
                         yolo_poses_2d.append(pose_2d_with_conf[:, :2])
+                        yolo_cam_data['confidences'].append(conf.tolist())
                     else:
                         yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                         yolo_cam_data['valid'][frame_idx] = False
+                        yolo_cam_data['confidences'].append([0.0]*17)
                         detection_failures += 1
                 else:
                     yolo_poses_2d.append(np.zeros((17, 2), dtype=np.float32))
                     yolo_cam_data['valid'][frame_idx] = False
+                    yolo_cam_data['confidences'].append([0.0]*17)
                     detection_failures += 1
 
             yolo_cam_data['data_2d'] = np.array(yolo_poses_2d, dtype=np.float32)
