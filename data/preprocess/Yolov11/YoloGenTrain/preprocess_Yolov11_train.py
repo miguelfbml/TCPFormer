@@ -55,7 +55,8 @@ def load_original_train_dataset(path):
         print(f"  {k}: type={type(data[k])}, len={len(data[k]) if hasattr(data[k],'__len__') else 'N/A'}")
     return data
 
-def load_sequence_images(subject, seq):
+def load_sequence_images(subject, seq, camera_num):
+    """Load images for a specific camera"""
     base_paths = [
         '/nas-ctm01/datasets/public/mpi_inf_3dhp',
         '../motion3d/mpi_inf_3dhp',
@@ -63,7 +64,7 @@ def load_sequence_images(subject, seq):
         'mpi_inf_3dhp'
     ]
     for base_path in base_paths:
-        image_folder = os.path.join(base_path, subject, seq, 'imageFrames', 'video_0')
+        image_folder = os.path.join(base_path, subject, seq, 'imageFrames', f'video_{camera_num}')
         print(f"  Looking for images in: {image_folder}")
         if os.path.exists(image_folder):
             image_files = sorted(glob.glob(os.path.join(image_folder, "*.jpg")) + glob.glob(os.path.join(image_folder, "*.png")))
@@ -72,7 +73,7 @@ def load_sequence_images(subject, seq):
                 return image_files
             else:
                 print(f"    No images found in {image_folder}")
-    print(f"    No image folder found for {subject} {seq}")
+    print(f"    No image folder found for {subject} {seq} camera {camera_num}")
     return None
 
 def create_yolo_train_dataset(original_data, estimator, output_path):
@@ -120,7 +121,8 @@ def create_yolo_train_dataset(original_data, estimator, output_path):
                 continue
 
             orig_width, orig_height = get_sequence_image_dimensions(subj)
-            image_files = load_sequence_images(subj, seq)
+            # Pass camera number to load_sequence_images
+            image_files = load_sequence_images(subj, seq, cam_key)
             if image_files is None:
                 print(f"  Skipping {subj} {seq} camera {cam_key}: No images found")
                 continue
@@ -185,7 +187,7 @@ def main():
     parser.add_argument('--device', type=str, default='auto', help='Device to use (auto, cpu, cuda, etc.)')
     args = parser.parse_args()
 
-    print("Creating YOLO version of MPI-INF-3DHP train dataset (S1-S8, Seq1/Seq2, cam0 only)")
+    print("Creating YOLO version of MPI-INF-3DHP train dataset (S1-S8, Seq1/Seq2, all cameras)")
     print("=" * 60)
     print(f"Model path: {args.model_path}")
     print(f"Train data path: {args.train_data_path}")
