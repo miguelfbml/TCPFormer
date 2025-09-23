@@ -1,3 +1,12 @@
+'''
+python generateTrainAnnot.py --S1 --Seq1 --cam 4
+
+
+python generateTrainAnnot.py --S1 --Seq1 --Seq2 --all_cams
+
+'''
+
+
 import os
 import cv2
 import argparse
