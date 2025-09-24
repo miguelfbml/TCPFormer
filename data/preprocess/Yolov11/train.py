@@ -976,9 +976,9 @@ def main():
     # Enhanced training parameters for keypoint accuracy
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=4,
-                       help='Batch size for training (optimized for 1280px images)')
-    parser.add_argument('--img-size', type=int, default=1280,
+    parser.add_argument('--batch-size', type=int, default=8,
+                       help='Batch size for training (optimized for 640px images)')
+    parser.add_argument('--img-size', type=int, default=640,
                        help='Image size for training (high resolution for better keypoints)')
     parser.add_argument('--lr', type=str, default='auto',
                        help='Learning rate (auto for YOLO auto-determination)')
