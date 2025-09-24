@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 launchGPU.py
+python3 checkGPU.py
