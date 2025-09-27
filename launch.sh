@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python3 train_3dhp.py --eval-only --checkpoint checkpoint_mpi --checkpoint-file TCPFormer_mpi_27.pth.tr --config configs/mpi/TCPFormer_mpi_27.yaml
+python3 train_3dhp.py --eval-only --checkpoint checkpoint_mpi --checkpoint-file best_epoch.pth.tr --config configs/mpi/TCPFormer_mpi_27.yaml
