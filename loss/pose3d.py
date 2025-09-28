@@ -84,10 +84,39 @@ def loss_mpjpe(predicted, target): # b t j 3
     assert predicted.shape == target.shape
     return torch.mean(torch.norm(predicted - target, dim=len(target.shape)-1))
 
+
+
+'''MPJPE weighted by keypoint confidence. ADDED BY ME'''
+def loss_mpjpe_conf(predicted, target, confidence):
+    """
+    MPJPE weighted by keypoint confidence.
+    predicted, target: (batch, time, joints, 3)
+    confidence: (batch, time, joints) or (batch, time, joints, 1)
+    """
+    assert predicted.shape == target.shape
+    # If confidence has shape (..., 1), squeeze it
+    if confidence.dim() == 4:
+        confidence = confidence.squeeze(-1)
+    # Compute per-joint error
+    error = torch.norm(predicted - target, dim=-1)  # (batch, time, joints)
+    # Weight by confidence
+    weighted_error = error * confidence
+    # Normalize by sum of confidences to avoid bias
+    total_conf = confidence.sum()
+    if total_conf > 0:
+        return weighted_error.sum() / total_conf
+    else:
+        return weighted_error.mean()
+    
+
+
+
 def loss_2d_mpjpe(predicted, target):
     #b t j 2
     assert predicted.shape == target.shape
     return torch.mean(torch.norm(predicted-target,dim=len(target.shape)-1))
+
+
 
 
 def weighted_mpjpe(predicted, target, w):

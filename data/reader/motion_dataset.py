@@ -276,22 +276,34 @@ class MPI3DHP(Dataset):
         return result
 
     def __getitem__(self, index):
-        pose_2d = self.poses_2d[index]
+        pose_2d = self.poses_2d[index]  # shape: (T, J, 3)
         pose_3d_normalized = self.normalized_poses3d[index]
+        
+        # Extract confidences (last channel of pose_2d)
+        confidences = pose_2d[..., 2]  # shape: (T, J)
         
         if not self.train:
             valid_frames = self.poses_3d_valid_frames[index]
             pose_3d = self.poses_3d[index]
             seq_name = self.seq_names[index]
-            return torch.FloatTensor(pose_2d), torch.FloatTensor(pose_3d_normalized), torch.FloatTensor(pose_3d), \
-                   torch.IntTensor(valid_frames), seq_name
+            return (
+                torch.FloatTensor(pose_2d),
+                torch.FloatTensor(pose_3d_normalized),
+                torch.FloatTensor(pose_3d),
+                torch.IntTensor(valid_frames),
+                seq_name
+            )
         
         if self.flip and random.random() > 0.5:
             pose_2d = flip_data(pose_2d, self.left_joints, self.right_joints)
             pose_3d_normalized = flip_data(pose_3d_normalized, self.left_joints, self.right_joints)
-
-        return torch.FloatTensor(pose_2d), torch.FloatTensor(pose_3d_normalized)
-            
+            confidences = confidences  # If flip_data also flips confidence, update here if needed
+        
+        return (
+            torch.FloatTensor(pose_2d),
+            torch.FloatTensor(pose_3d_normalized),
+            torch.FloatTensor(confidences)
+        )
 
 class PoseTrackDataset2D(Dataset):
     def __init__(self, flip=True, scale_range=[0.25, 1], data_root_2d='data/motion2d/', n_frames=243, data_stride=81):

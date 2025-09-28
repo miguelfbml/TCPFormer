@@ -15,6 +15,7 @@ from ptflops import get_model_complexity_info
 
 from loss.pose3d import loss_mpjpe, n_mpjpe, loss_velocity, loss_limb_var, loss_limb_gt, loss_angle, \
     loss_angle_velocity
+from loss.pose3d import loss_mpjpe_conf
 from utils.data import denormalize
 from data.reader.motion_dataset import MPI3DHP, Fusion
 from utils.tools import set_random_seed, get_config, print_args, create_directory_if_not_exists
@@ -83,19 +84,21 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
     batch_times = []
     n_frames = args.n_frames
     
-    for x, y in tqdm(train_loader, desc="Training"):
+    for x, y, confidences in tqdm(train_loader, desc="Training"):  # <-- Add confidences to the dataloader output
         batch_start = time.perf_counter()
         torch.cuda.synchronize()  # Ensure GPU operations are complete
         
         batch_size = x.shape[0]
         if torch.cuda.is_available():
-            x, y = x.cuda(), y.cuda()
+            x, y, confidences = x.cuda(), y.cuda(), confidences.cuda()  # <-- Move confidences to GPU
 
         pred = model(x)  # (N, T, 17, 3)
 
         optimizer.zero_grad()
 
+        # Use confidence-weighted loss
         loss_3d_pos = loss_mpjpe(pred, y)
+        loss_3d_pose_conf = loss_mpjpe_conf(pred, y, confidences)  # Confidence-weighted MPJPE
         loss_3d_scale = n_mpjpe(pred, y)
         loss_3d_velocity = loss_velocity(pred, y)
         loss_lv = loss_limb_var(pred)
@@ -103,7 +106,7 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
         loss_a = loss_angle(pred, y)
         loss_av = loss_angle_velocity(pred, y)
 
-        loss_total = loss_3d_pos + \
+        loss_total = loss_3d_pose_conf + \
                     args.lambda_scale * loss_3d_scale + \
                     args.lambda_3d_velocity * loss_3d_velocity + \
                     args.lambda_lv * loss_lv + \
@@ -111,6 +114,7 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
                     args.lambda_a * loss_a + \
                     args.lambda_av * loss_av
 
+        losses['3d_pose_conf'].update(loss_3d_pose_conf.item(), batch_size)
         losses['3d_pose'].update(loss_3d_pos.item(), batch_size)
         losses['3d_scale'].update(loss_3d_scale.item(), batch_size)
         losses['3d_velocity'].update(loss_3d_velocity.item(), batch_size)
@@ -388,7 +392,7 @@ def train(args, opts):
                 exit()
 
         print(f"[INFO] epoch {epoch}")
-        loss_names = ['3d_pose', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
+        loss_names = ['3d_pose', '3d_pose_conf', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
         losses = {name: AverageMeter() for name in loss_names}
 
         train_frame_time, train_gpu_util, train_gpu_mem = train_one_epoch(args, model, train_loader, optimizer, losses)
@@ -407,6 +411,7 @@ def train(args, opts):
             wandb_log_dict = {
                 'lr': lr,
                 'train/loss_3d_pose': losses['3d_pose'].avg,
+                'train/loss_3d_pose_conf': losses['3d_pose_conf'].avg,
                 'train/loss_3d_scale': losses['3d_scale'].avg,
                 'train/loss_3d_velocity': losses['3d_velocity'].avg,
                 'train/loss_2d_proj': losses['2d_proj'].avg,
