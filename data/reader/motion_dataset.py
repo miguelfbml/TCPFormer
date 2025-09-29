@@ -250,7 +250,7 @@ class MPI3DHP(Dataset):
         
     
 
-    '''
+    ''' THIS IS THE ONE USED
     def partition(self, data, clip_length=243, stride=81, valid_frames=None):
         """
         Partitions data (n_frames, 17, 3) into list of (clip_length, 17, 3) data with given stride.
@@ -268,6 +268,7 @@ class MPI3DHP(Dataset):
             data_list.append(sequence[None, ...])
 
         return data_list, valid_list
+        '''
 
     @staticmethod
     def resample(original_length, target_length):
@@ -306,7 +307,7 @@ class MPI3DHP(Dataset):
             torch.FloatTensor(pose_3d_normalized),
             torch.FloatTensor(confidences)
         )
-    '''
+    
 
 class PoseTrackDataset2D(Dataset):
     def __init__(self, flip=True, scale_range=[0.25, 1], data_root_2d='data/motion2d/', n_frames=243, data_stride=81):
