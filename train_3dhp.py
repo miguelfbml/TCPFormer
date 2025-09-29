@@ -106,7 +106,7 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
         loss_a = loss_angle(pred, y)
         loss_av = loss_angle_velocity(pred, y)
 
-        loss_total = loss_3d_pose_conf + \
+        loss_total = loss_3d_pos + \
                     args.lambda_scale * loss_3d_scale + \
                     args.lambda_3d_velocity * loss_3d_velocity + \
                     args.lambda_lv * loss_lv + \
