@@ -250,7 +250,7 @@ class MPI3DHP(Dataset):
         
     
 
-    ''' THIS IS THE ONE USED
+    ''' THIS IS THE ONE USED ADDED BY ME
     def partition(self, data, clip_length=243, stride=81, valid_frames=None):
         """
         Partitions data (n_frames, 17, 3) into list of (clip_length, 17, 3) data with given stride.

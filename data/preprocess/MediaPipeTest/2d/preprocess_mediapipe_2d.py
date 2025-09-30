@@ -86,7 +86,7 @@ class MediaPipe2DPoseEstimator:
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 confidence_threshold = 0.3
-
+        
                 # Map MediaPipe landmarks to MPI joints
                 for mp_idx, mpi_idx in self.mp_to_mpi_mapping.items():
                     if mp_idx < len(landmarks) and landmarks[mp_idx].visibility > confidence_threshold:
