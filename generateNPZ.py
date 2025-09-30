@@ -95,7 +95,7 @@ def main():
     args = get_config(config_path)
     args.n_frames = 27
     test_dataset = Fusion(args, train=False)
-    test_loader = torch.utils.data.DataLoader(test_dataset, shuffle=False, batch_size=args.test_batch_size, num_workers=4, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, shuffle=False, batch_size=8, num_workers=4, pin_memory=True)
     model = load_model_TCPFormer(args)
     if torch.cuda.is_available():
         model = torch.nn.DataParallel(model, device_ids=[0])
