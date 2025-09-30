@@ -1,6 +1,6 @@
 
 '''
-python visualize_gt_3dhp.py --sequence TS3 --num-frames 100
+python generate3D.py --sequence TS3 --num-frames 100
 '''
 
 import argparse
@@ -118,7 +118,7 @@ def main():
     parser.add_argument('--num-frames', type=int, default=50,
                         help='Number of frames to visualize')
     parser.add_argument('--data-path', type=str,
-                        default='../../data1/motion3d/data_test_3dhp.npz',
+                        default='../data1/motion3d/data_test_3dhp.npz',
                         help='Path to ground truth .npz file')
     args = parser.parse_args()
 
