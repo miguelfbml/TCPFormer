@@ -138,8 +138,8 @@ def main():
     print(f"Loaded sequence {args.sequence}: {gt_poses_3d.shape[0]} frames")
 
     # Apply upright correction and make root-relative
-    #gt_poses_3d_corrected = apply_upright_correction(gt_poses_3d)
-    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d, root_joint_idx=14)
+    gt_poses_3d_corrected = apply_upright_correction(gt_poses_3d)
+    gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d_corrected, root_joint_idx=14)
 
     # Output path
     if args.output is None:
