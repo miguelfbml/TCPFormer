@@ -1,14 +1,12 @@
-
-'''
-python generate3D.py --sequence TS3 --num-frames 100
-'''
-
 import argparse
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
+
+# Set Matplotlib backend (try 'TkAgg' for interactive, or 'Agg' for non-interactive)
+plt.switch_backend('TkAgg')  # Use 'Agg' if saving to file instead of displaying
 
 # Joint connections for MPI-INF-3DHP skeleton
 connections_3d = [
@@ -104,15 +102,15 @@ def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames):
                     fontsize=18, color='red', weight='bold')
         ax.view_init(elev=15, azim=45)
         plt.tight_layout()
-        return [ax]
 
     ani = FuncAnimation(fig, update, frames=min_frames, interval=400, repeat=True, blit=False)
     print("Showing interactive 3D visualization...")
-    update(0)
-    # Keep a reference to the animation object
-    global _ani_ref
-    _ani_ref = ani
-    plt.show()
+    
+    # Save the animation to a file (optional, for non-interactive environments)
+    # ani.save(f'{seq_name}_3d_animation.mp4', writer='ffmpeg', fps=10)
+    
+    plt.show()  # Ensure plt.show() is called to display the animation
+    return ani  # Return the animation object to prevent garbage collection
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize Ground Truth 3D poses from MPI-INF-3DHP .npz file')
@@ -144,7 +142,8 @@ def main():
     gt_poses_3d_corrected = apply_upright_correction(gt_poses_3d)
     gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d_corrected, root_joint_idx=14)
 
-    visualize_gt_sequence(gt_poses_3d_root_rel, args.sequence, args.num_frames)
+    # Call visualization and retain the animation object
+    ani = visualize_gt_sequence(gt_poses_3d_root_rel, args.sequence, args.num_frames)
 
 if __name__ == '__main__':
     main()
