@@ -93,8 +93,8 @@ def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames, output_path):
                 if joint_idx != 14:
                     ax.scatter(x, y, z, c='blue', s=80, alpha=0.9,
                                edgecolors='darkblue', linewidth=2)
-                    ax.text(x+30, y+30, z+30, str(joint_idx), fontsize=7,
-                            color='white', weight='bold',
+                    ax.text(x+30, y+30, z+30, str(joint_idx), fontsize=11,
+                            color='white', weight='bold')
                             #bbox=dict(boxstyle="round,pad=0", facecolor='blue', alpha=0.7))
         else:
             ax.text(0, 0, 100, 'No GT Data', ha='center', va='center',
