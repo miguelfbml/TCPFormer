@@ -26,7 +26,7 @@ def export_predictions(model, test_loader, n_frames, output_path):
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
-    predictions = {}
+    out_data = {}
 
     for data in tqdm(test_loader, desc="Exporting predictions"):
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
@@ -45,22 +45,39 @@ def export_predictions(model, test_loader, n_frames, output_path):
         pred_out = denormalize(pred_out, seq)
         pred_out = pred_out - pred_out[..., 14:15, :]  # Root-relative prediction
 
+        # Also get the input 2D keypoints (after denormalization if needed)
+        input_2D_np = input_2D.cpu().numpy()  # shape: (N, T, 17, 2) or (N, T, 17, 3)
+        # For each sequence in the batch
         for seq_cnt in range(len(seq)):
             seq_name = seq[seq_cnt]
-            pred_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
-            if seq_name in predictions:
-                predictions[seq_name] = np.concatenate((predictions[seq_name], pred_np), axis=2)
-            else:
-                predictions[seq_name] = pred_np
+            pred_3d_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()  # (17, 1, 1) -> (17, 1, 1)
+            pred_3d_np = np.squeeze(pred_3d_np, axis=(1,2)) if pred_3d_np.ndim == 3 else pred_3d_np
+            input_2d_np = input_2D_np[seq_cnt, pad]  # (17, 2) or (17, 3)
+            valid = np.ones(pred_3d_np.shape[0], dtype=np.int32)
 
-    # Save predictions to .npz
-    np.savez(output_path, **predictions)
-    print(f"Predictions saved to {output_path}")
+            if seq_name not in out_data:
+                out_data[seq_name] = {
+                    'data_2d': [],
+                    'data_3d': [],
+                    'valid': []
+                }
+            out_data[seq_name]['data_2d'].append(input_2d_np)
+            out_data[seq_name]['data_3d'].append(pred_3d_np)
+            out_data[seq_name]['valid'].append(valid)
+
+    # Stack arrays and save in the same structure as data_test_3dhp.npz
+    for seq_name in out_data:
+        out_data[seq_name]['data_2d'] = np.stack(out_data[seq_name]['data_2d'], axis=0)
+        out_data[seq_name]['data_3d'] = np.stack(out_data[seq_name]['data_3d'], axis=0)
+        out_data[seq_name]['valid'] = np.stack(out_data[seq_name]['valid'], axis=0)
+
+    np.savez_compressed(output_path, data=out_data)
+    print(f"✓ Saved predictions to: {output_path}")
 
 def main():
     config_path = "configs/mpi/TCPFormer_mpi_27.yaml"  # Change as needed
     checkpoint_path = "checkpoint/best_epoch.pth.tr"   # Change as needed
-    output_path = "predicted_3d_keypoints.npz"
+    output_path = "predicted_test_3dhp.npz"
 
     args = get_config(config_path)
     args.n_frames = 27
