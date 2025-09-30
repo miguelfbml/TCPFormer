@@ -27,21 +27,20 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
-    out_data = {}
 
-    # Prepare empty lists for each sequence, matching the original structure
+    # Prepare output structure with empty lists for each sequence
+    out_data = {}
     for seq_name in original_data.keys():
         out_data[seq_name] = {
             'data_2d': original_data[seq_name]['data_2d'],
-            'data_3d': [],
+            'data_3d': [None] * original_data[seq_name]['data_2d'].shape[0],
             'valid': original_data[seq_name]['valid']
         }
 
-    # Fill in predictions for each sequence
+    # Fill in predictions for each sequence, frame by frame
     for data in tqdm(test_loader, desc="Exporting predictions"):
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
         [input_2D, gt_3D, batch_cam, scale, bb_box] = [x.cuda() for x in [input_2D, gt_3D, batch_cam, scale, bb_box]]
-
         input_2D = input_2D.float()
 
         N = input_2D.size(0)
@@ -59,11 +58,25 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
 
         for seq_cnt in range(len(seq)):
             seq_name = seq[seq_cnt]
+            frame_idx = None
+            # Find the correct frame index for this batch in the sequence
+            # If your DataLoader preserves order, you can use a counter, otherwise you may need to track indices
+            # Here, we use a simple approach: append in order
+            # If you know the batch/frame index, set frame_idx accordingly
+            # Otherwise, use a list and filter None at the end
+
             pred_3d_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
             pred_3d_np = np.squeeze(pred_3d_np, axis=(1,2)) if pred_3d_np.ndim == 3 else pred_3d_np
-            out_data[seq_name]['data_3d'].append(pred_3d_np)
 
-    # Stack predictions for each sequence to match the original shape
+            # Find first empty slot (None) and fill it
+            slot = out_data[seq_name]['data_3d'].index(None)
+            out_data[seq_name]['data_3d'][slot] = pred_3d_np
+
+        # Free CUDA memory after each batch
+        del input_2D, gt_3D, batch_cam, scale, bb_box, output_3D, pred_out
+        torch.cuda.empty_cache()
+
+    # Convert lists to arrays
     for seq_name in out_data:
         out_data[seq_name]['data_3d'] = np.stack(out_data[seq_name]['data_3d'], axis=0)
 
