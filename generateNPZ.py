@@ -61,7 +61,7 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
         for seq_cnt in range(len(seq)):
             seq_name = seq[seq_cnt]
             pred_3d_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
-            pred_3d_np = np.squeeze(pred_3d_np, axis=(1,2)) if pred_3d_np.ndim == 3 else pred_3d_np
+            pred_3d_np = np.squeeze(pred_3d_np)
 
             # Fill the next available slot for this sequence
             slot = frame_counters[seq_name]
