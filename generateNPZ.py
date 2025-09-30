@@ -42,6 +42,8 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
         [input_2D, gt_3D, batch_cam, scale, bb_box] = [x.cuda() for x in [input_2D, gt_3D, batch_cam, scale, bb_box]]
 
+        input_2D = input_2D.float()
+
         N = input_2D.size(0)
         out_target = gt_3D.clone().view(N, -1, 17, 3)
         out_target[:, :, 14] = 0
