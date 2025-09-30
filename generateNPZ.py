@@ -61,7 +61,7 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
         for seq_cnt in range(len(seq)):
             seq_name = seq[seq_cnt]
             pred_3d_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
-            pred_3d_np = np.squeeze(pred_3d_np)
+            pred_3d_np = np.reshape(pred_3d_np, (17, 3))  # Ensure shape is always (17, 3)
 
             # Fill the next available slot for this sequence
             slot = frame_counters[seq_name]
@@ -72,8 +72,13 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
         del input_2D, gt_3D, batch_cam, scale, bb_box, output_3D, pred_out
         torch.cuda.empty_cache()
 
-    # Convert lists to arrays
+    # Convert lists to arrays and fill missing frames with zeros if needed
     for seq_name in out_data:
+        for i in range(len(out_data[seq_name]['data_3d'])):
+            if out_data[seq_name]['data_3d'][i] is None:
+                out_data[seq_name]['data_3d'][i] = np.zeros((17, 3), dtype=np.float32)
+            else:
+                out_data[seq_name]['data_3d'][i] = np.reshape(out_data[seq_name]['data_3d'][i], (17, 3))
         out_data[seq_name]['data_3d'] = np.stack(out_data[seq_name]['data_3d'], axis=0)
 
     np.savez_compressed(output_path, data=out_data)
