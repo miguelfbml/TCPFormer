@@ -9,7 +9,7 @@ from matplotlib.animation import FuncAnimation
 
 import sys
 
-sys.path.insert(0, os.path.dirname(os.getcwd()))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from utils.data import read_pkl
 from data.const import H36M_TO_MPI

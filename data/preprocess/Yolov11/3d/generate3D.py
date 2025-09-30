@@ -116,7 +116,8 @@ def main():
     parser.add_argument('--num-frames', type=int, default=50,
                         help='Number of frames to visualize')
     parser.add_argument('--data-path', type=str,
-                        default='../data1/motion3d/data_test_3dhp.npz',
+                        #default='../data1/motion3d/data_test_3dhp.npz',
+                        default='predicted_test_3dhp.npz',
                         help='Path to ground truth .npz file')
     parser.add_argument('--output', type=str, default=None,
                         help='Output mp4 file path')
