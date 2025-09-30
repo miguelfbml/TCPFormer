@@ -37,7 +37,9 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
             'valid': original_data[seq_name]['valid']
         }
 
-    # Fill in predictions for each sequence, frame by frame
+    # Track the next frame to fill for each sequence
+    frame_counters = {seq_name: 0 for seq_name in original_data.keys()}
+
     for data in tqdm(test_loader, desc="Exporting predictions"):
         batch_cam, gt_3D, input_2D, seq, scale, bb_box = data
         [input_2D, gt_3D, batch_cam, scale, bb_box] = [x.cuda() for x in [input_2D, gt_3D, batch_cam, scale, bb_box]]
@@ -58,19 +60,13 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
 
         for seq_cnt in range(len(seq)):
             seq_name = seq[seq_cnt]
-            frame_idx = None
-            # Find the correct frame index for this batch in the sequence
-            # If your DataLoader preserves order, you can use a counter, otherwise you may need to track indices
-            # Here, we use a simple approach: append in order
-            # If you know the batch/frame index, set frame_idx accordingly
-            # Otherwise, use a list and filter None at the end
-
             pred_3d_np = pred_out[seq_cnt].permute(2, 1, 0).cpu().numpy()
             pred_3d_np = np.squeeze(pred_3d_np, axis=(1,2)) if pred_3d_np.ndim == 3 else pred_3d_np
 
-            # Find first empty slot (None) and fill it
-            slot = out_data[seq_name]['data_3d'].index(None)
+            # Fill the next available slot for this sequence
+            slot = frame_counters[seq_name]
             out_data[seq_name]['data_3d'][slot] = pred_3d_np
+            frame_counters[seq_name] += 1
 
         # Free CUDA memory after each batch
         del input_2D, gt_3D, batch_cam, scale, bb_box, output_3D, pred_out
@@ -94,8 +90,16 @@ def main():
 
     args = get_config(config_path)
     args.n_frames = 27
+    args.test_batch_size = 1  # Reduce batch size to minimize memory usage
+
     test_dataset = Fusion(args, train=False)
-    test_loader = torch.utils.data.DataLoader(test_dataset, shuffle=False, batch_size=args.test_batch_size, num_workers=4, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        shuffle=False,
+        batch_size=args.test_batch_size,
+        num_workers=0,
+        pin_memory=False
+    )
     model = load_model_TCPFormer(args)
     if torch.cuda.is_available():
         model = torch.nn.DataParallel(model, device_ids=[0])
