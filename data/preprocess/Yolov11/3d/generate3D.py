@@ -109,6 +109,9 @@ def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames):
     ani = FuncAnimation(fig, update, frames=min_frames, interval=400, repeat=True, blit=False)
     print("Showing interactive 3D visualization...")
     update(0)
+    # Keep a reference to the animation object
+    global _ani_ref
+    _ani_ref = ani
     plt.show()
 
 def main():
