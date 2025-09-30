@@ -1,12 +1,11 @@
 import argparse
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless environments
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
-
-# Set Matplotlib backend (try 'TkAgg' for interactive, or 'Agg' for non-interactive)
-plt.switch_backend('TkAgg')  # Use 'Agg' if saving to file instead of displaying
 
 # Joint connections for MPI-INF-3DHP skeleton
 connections_3d = [
@@ -40,7 +39,7 @@ def make_root_relative_3d(poses_3d, root_joint_idx=14):
             root_relative_poses[frame_idx, root_joint_idx] = [0.0, 0.0, 0.0]
     return root_relative_poses
 
-def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames):
+def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames, output_path):
     min_frames = min(len(gt_poses_3d), num_frames)
     gt_poses = gt_poses_3d[:min_frames]
 
@@ -104,13 +103,11 @@ def visualize_gt_sequence(gt_poses_3d, seq_name, num_frames):
         plt.tight_layout()
 
     ani = FuncAnimation(fig, update, frames=min_frames, interval=400, repeat=True, blit=False)
-    print("Showing interactive 3D visualization...")
-    
-    # Save the animation to a file (optional, for non-interactive environments)
-    # ani.save(f'{seq_name}_3d_animation.mp4', writer='ffmpeg', fps=10)
-    
-    plt.show()  # Ensure plt.show() is called to display the animation
-    return ani  # Return the animation object to prevent garbage collection
+    print(f"Saving 3D animation to file: {output_path}")
+    ani.save(output_path, writer='ffmpeg', fps=2.5, dpi=120)
+    print(f"✓ Animation saved to: {output_path}")
+    plt.close(fig)
+    return ani
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize Ground Truth 3D poses from MPI-INF-3DHP .npz file')
@@ -121,6 +118,8 @@ def main():
     parser.add_argument('--data-path', type=str,
                         default='../data1/motion3d/data_test_3dhp.npz',
                         help='Path to ground truth .npz file')
+    parser.add_argument('--output', type=str, default=None,
+                        help='Output mp4 file path')
     args = parser.parse_args()
 
     # Load ground truth data
@@ -142,8 +141,13 @@ def main():
     gt_poses_3d_corrected = apply_upright_correction(gt_poses_3d)
     gt_poses_3d_root_rel = make_root_relative_3d(gt_poses_3d_corrected, root_joint_idx=14)
 
-    # Call visualization and retain the animation object
-    ani = visualize_gt_sequence(gt_poses_3d_root_rel, args.sequence, args.num_frames)
+    # Output path
+    if args.output is None:
+        output_path = f'{args.sequence}_3d_animation.mp4'
+    else:
+        output_path = args.output
+
+    ani = visualize_gt_sequence(gt_poses_3d_root_rel, args.sequence, args.num_frames, output_path)
 
 if __name__ == '__main__':
     main()
