@@ -70,7 +70,7 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
 
 def main():
     config_path = "configs/mpi/TCPFormer_mpi_27.yaml"  # Change as needed
-    checkpoint_path = "checkpoint/best_epoch.pth.tr"   # Change as needed
+    checkpoint_path = "checkpoint_mpi/best_epoch.pth.tr"   # Change as needed
     output_path = "predicted_test_3dhp.npz"
     original_npz_path = "data/motion3d/data_test_3dhp.npz"  # Path to original test npz
 
