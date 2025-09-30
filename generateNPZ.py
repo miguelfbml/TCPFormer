@@ -5,7 +5,8 @@ from tqdm import tqdm
 
 from utils.data import denormalize
 from data.reader.motion_dataset import Fusion
-from utils.tools import get_config, load_model_TCPFormer
+from utils.tools import get_config
+from utils.learning import load_model_TCPFormer
 
 def input_augmentation(input_2D, model, joints_left, joints_right):
     N, _, T, J, C = input_2D.shape
