@@ -55,7 +55,7 @@ def export_predictions(model, test_loader, n_frames, original_data, output_path)
         pad = (n_frames - 1) // 2
         pred_out = output_3D[:, pad].unsqueeze(1)
         pred_out[..., 14, :] = 0
-        pred_out = denormalize(pred_out, seq)
+        pred_out = denormalize(pred_out.detach(), seq)
         pred_out = pred_out - pred_out[..., 14:15, :]  # Root-relative prediction
 
         for seq_cnt in range(len(seq)):
