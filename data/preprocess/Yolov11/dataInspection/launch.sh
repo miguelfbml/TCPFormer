@@ -9,4 +9,4 @@
 echo "Running job in reserved partition"
 
 # Commands / scripts to run (e.g., python3 train.py)
-python generateTestAnnot.py --sequence TS1
+python generateTestAnnot.py --all
