@@ -20,7 +20,7 @@ JOINT_NAMES = [
 ]
 
 def apply_upright_correction(poses_3d):
-    """Rotate poses around X-axis by 90 degrees to make figures upright, then around Z-axis by 90 degrees."""
+    """Rotate poses around X-axis by 90 degrees to make figures upright, then around Z-axis by 90 degrees, then another 45 degrees."""
     rotation_x_90 = np.array([
         [1,  0,  0],
         [0,  0,  1],
@@ -31,8 +31,15 @@ def apply_upright_correction(poses_3d):
         [1,  0, 0],
         [0,  0, 1]
     ], dtype=np.float32)
-    # First rotate around X, then Z
-    return poses_3d @ rotation_x_90.T @ rotation_z_90.T
+    # New: rotation by 45 degrees around Z axis
+    theta = np.deg2rad(45)
+    rotation_z_45 = np.array([
+        [np.cos(theta), -np.sin(theta), 0],
+        [np.sin(theta),  np.cos(theta), 0],
+        [0,              0,             1]
+    ], dtype=np.float32)
+    # Apply all rotations: X 90°, Z 90°, then Z 45°
+    return poses_3d @ rotation_x_90.T @ rotation_z_90.T @ rotation_z_45.T
 
 def make_root_relative_3d(poses_3d, root_joint_idx=14):
     """Subtract root joint position from all joints."""
