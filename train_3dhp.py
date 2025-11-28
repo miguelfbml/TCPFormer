@@ -114,7 +114,7 @@ def train_one_epoch(args, model, train_loader, optimizer, losses):
                     args.lambda_a * loss_a + \
                     args.lambda_av * loss_av
 
-        losses['3d_pose_conf'].update(loss_3d_pose_conf.item(), batch_size)
+        #losses['3d_pose_conf'].update(loss_3d_pose_conf.item(), batch_size)
         losses['3d_pose'].update(loss_3d_pos.item(), batch_size)
         losses['3d_scale'].update(loss_3d_scale.item(), batch_size)
         losses['3d_velocity'].update(loss_3d_velocity.item(), batch_size)
