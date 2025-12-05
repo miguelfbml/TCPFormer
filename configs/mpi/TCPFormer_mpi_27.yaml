@@ -42,7 +42,7 @@ data_augmentation: True
 reverse_augmentation: False
 out_all: 1
 #test_batch_size: 64
-test_batch_size: 128
+test_batch_size: 1
 
 # Loss
 lambda_3d_velocity: 20.0
