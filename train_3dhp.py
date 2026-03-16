@@ -447,7 +447,7 @@ def main():
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     args = get_config(opts.config)
-    args.n_frames = 27  # Ensure T=27 as specified
+    #args.n_frames = 27  # Ensure T=27 as specified
     train(args, opts)
 
 if __name__ == '__main__':
