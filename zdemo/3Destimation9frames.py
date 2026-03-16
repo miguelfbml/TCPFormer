@@ -1,6 +1,6 @@
 """
 Real-time 3D Pose Estimation using YOLO + TCPFormer
-Collects 27 frames of 2D poses and predicts 3D poses with live 3D visualization
+Collects 9 frames of 2D poses and predicts 3D poses with live 3D visualization
 
 Usage:
 python 3Destimation.py
@@ -40,8 +40,8 @@ CONNECTIONS_3D = [
 
 # Default paths
 DEFAULT_YOLO_MODEL_PATH = 'weights/yolo/best.pt'
-DEFAULT_TCPFORMER_CONFIG = '../configs/mpi/TCPFormer_mpi_27.yaml'
-DEFAULT_TCPFORMER_CHECKPOINT = 'weights/tcpformer/best_epoch.pth.tr'
+DEFAULT_TCPFORMER_CONFIG = '../configs/mpi/TCPFormer_mpi_9.yaml'
+DEFAULT_TCPFORMER_CHECKPOINT = 'weights/frames9/TCPFormer_mpi_9.pth.tr'
 
 def normalize_screen_coordinates(X, w, h):
     """Normalize 2D keypoints to [-1, 1] range"""
@@ -363,8 +363,8 @@ def main():
     
     print("Starting real-time detection...")
     
-    # Sliding window buffer for collecting 27 frames
-    n_frames = 27
+    # Sliding window buffer for collecting 9 frames
+    n_frames = 9
     pose_buffer = []
 
     # Subsample 2D poses from YOLO frames (1 = every frame, 2 = every 2nd frame, etc.)
@@ -531,7 +531,7 @@ def main():
                 avg_tcpformer_time = np.mean(tcpformer_inference_times)
                 current_tcpformer_fps = 1.0 / avg_tcpformer_time if avg_tcpformer_time > 0 else 0
 
-                # Get middle frame prediction (frame 13, index 13)
+                # Get middle frame prediction (frame 4, index 4)
                 middle_frame_idx = n_frames // 2
                 pred_3d_middle = pred_3d[0, middle_frame_idx].cpu().numpy()  # (17, 3)
 

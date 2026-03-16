@@ -19,6 +19,9 @@ import os
 import sys
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 
 # Add parent directory to path to import TCPFormer modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -238,10 +241,176 @@ def print_3d_keypoints(prediction_num, keypoints_3d, print_output=True):
     
     return keypoints_3d_scaled
 
+def producer(cap, yolo_model, args, buffer_queue, stop_event, camera_width, camera_height, device):
+    pose_buffer = []
+    pose_subsample = max(1, args.pose_skip)
+    frame_count = 0
+    yolo_inference_times = []
+    yolo_window_size = 30
+    current_yolo_fps = 0
+
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+
+        frame_count += 1
+
+        # YOLO inference
+        yolo_start = time.time()
+        results = yolo_model.predict(
+            frame,
+            verbose=False,
+            imgsz=args.img_size,
+            conf=args.conf,
+            device=device
+        )
+        yolo_end = time.time()
+        yolo_time = yolo_end - yolo_start
+
+        yolo_inference_times.append(yolo_time)
+        if len(yolo_inference_times) > yolo_window_size:
+            yolo_inference_times.pop(0)
+        avg_yolo_time = np.mean(yolo_inference_times)
+        current_yolo_fps = 1.0 / avg_yolo_time if avg_yolo_time > 0 else 0
+
+        # Process results
+        if (results and len(results) > 0 and 
+            hasattr(results[0], 'keypoints') and 
+            results[0].keypoints is not None and 
+            len(results[0].keypoints.xy) > 0):
+            
+            keypoints = results[0].keypoints.xy[0].cpu().numpy()
+            confidences = results[0].keypoints.conf[0].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(17)
+            
+            pose_2d = np.zeros((17, 3), dtype=np.float32)
+            n_kpts = min(17, keypoints.shape[0])
+            pose_2d[:n_kpts, :2] = keypoints[:n_kpts]
+            pose_2d[:n_kpts, 2] = confidences[:n_kpts]
+            
+            if frame_count % pose_subsample == 0:
+                pose_buffer.append(pose_2d)
+                if len(pose_buffer) > 27:
+                    pose_buffer.pop(0)
+                if len(pose_buffer) == 27:
+                    try:
+                        buffer_queue.put(pose_buffer.copy(), timeout=1)
+                    except queue.Full:
+                        pass  # drop frame if queue full
+        else:
+            if args.fill_missing and len(pose_buffer) > 0:
+                pose_buffer.append(pose_buffer[-1])
+                if len(pose_buffer) > 27:
+                    pose_buffer.pop(0)
+                if len(pose_buffer) == 27:
+                    try:
+                        buffer_queue.put(pose_buffer.copy(), timeout=1)
+                    except queue.Full:
+                        pass
+
+        if args.show_fps:
+            print(f"YOLO: {current_yolo_fps:.1f} FPS | Buffer: {len(pose_buffer)}/27", end='\r')
+
+def consumer(tcpformer_model, buffer_queue, stop_event, args, camera_width, camera_height, input_2d):
+    prediction_count = 0
+    fig, ax, plot_objects = None, None, None
+    viz_initialized = False
+    last_prediction_time = None
+    end_to_end_times = []
+    end_to_end_window_size = 30
+    current_end_to_end_fps = 0
+    tcpformer_inference_times = []
+    tcpformer_window_size = 30
+    current_tcpformer_fps = 0
+    viz_update_times = []
+    viz_window_size = 30
+    current_viz_fps = 0
+
+    while not stop_event.is_set():
+        try:
+            pose_buffer = buffer_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+
+        prediction_count += 1
+
+        # Prepare input
+        poses_2d = np.stack(pose_buffer, axis=0)
+        poses_2d_normalized = poses_2d.copy()
+        poses_2d_normalized[:, :, :2] = normalize_screen_coordinates(
+            poses_2d[:, :, :2], 
+            camera_width, 
+            camera_height
+        )
+        # Copy data to pre-allocated tensor
+        poses_2d_normalized_tensor = torch.from_numpy(poses_2d_normalized).float()
+        input_2d.copy_(poses_2d_normalized_tensor.unsqueeze(0))
+
+        # TCPFormer inference
+        tcpformer_start = time.time()
+        with torch.no_grad():
+            pred_3d = tcpformer_model(input_2d)
+        tcpformer_end = time.time()
+        tcpformer_time = tcpformer_end - tcpformer_start
+
+        tcpformer_inference_times.append(tcpformer_time)
+        if len(tcpformer_inference_times) > tcpformer_window_size:
+            tcpformer_inference_times.pop(0)
+        avg_tcpformer_time = np.mean(tcpformer_inference_times)
+        current_tcpformer_fps = 1.0 / avg_tcpformer_time if avg_tcpformer_time > 0 else 0
+
+        middle_frame_idx = 13
+        pred_3d_middle = pred_3d[0, middle_frame_idx].cpu().numpy()
+        pose_3d_viz = print_3d_keypoints(prediction_count, pred_3d_middle, print_output=not args.no_print)
+
+        # End-to-end FPS
+        now = time.time()
+        if last_prediction_time is not None:
+            delta = now - last_prediction_time
+            end_to_end_times.append(delta)
+            if len(end_to_end_times) > end_to_end_window_size:
+                end_to_end_times.pop(0)
+            avg_delta = np.mean(end_to_end_times)
+            current_end_to_end_fps = 1.0 / avg_delta if avg_delta > 0 else 0
+        last_prediction_time = now
+
+        # Visualization
+        if not args.no_viz:
+            if not viz_initialized:
+                fig, ax, plot_objects = setup_3d_plot(args.coord_range)
+                viz_initialized = True
+                print("✓ 3D visualization window opened")
+            if current_end_to_end_fps > 0:
+                viz_start = time.time()
+                update_3d_plot_fast(fig, ax, plot_objects, pose_3d_viz, prediction_count)
+                viz_end = time.time()
+                viz_time = viz_end - viz_start
+                viz_update_times.append(viz_time)
+                if len(viz_update_times) > viz_window_size:
+                    viz_update_times.pop(0)
+                avg_viz_time = np.mean(viz_update_times)
+                current_viz_fps = 1.0 / avg_viz_time if avg_viz_time > 0 else 0
+
+        if args.show_fps:
+            base_str = f"TCPFormer: {current_tcpformer_fps:.1f} FPS"
+            if not args.no_viz and len(viz_update_times) > 0:
+                base_str += f" | 3D Viz: {current_viz_fps:.1f} FPS"
+            if current_end_to_end_fps > 0:
+                base_str += f" | End-to-End: {current_end_to_end_fps:.1f} FPS"
+            # Print on its own line to avoid being overwritten by the producer thread
+            print(base_str, flush=True)
+
+        # Check if viz window closed
+        if not args.no_viz and fig is not None and not plt.fignum_exists(fig.number):
+            stop_event.set()
+
 def main():
     parser = argparse.ArgumentParser(description='Real-time 3D Pose Estimation with YOLO + TCPFormer')
     parser.add_argument('--camera', type=int, default=0,
                        help='Camera device index (default: 0)')
+    parser.add_argument('--video', type=str, default=None,
+                       help='Path to video file (optional, overrides camera)')
     parser.add_argument('--conf', type=float, default=0.5,
                        help='Confidence threshold for detections (default: 0.5)')
     parser.add_argument('--img-size', type=int, default=640,
@@ -340,22 +509,35 @@ def main():
         traceback.print_exc()
         return
     
-    # Open camera
-    print(f"Opening camera {args.camera}...")
-    cap = cv2.VideoCapture(args.camera)
-    
-    if not cap.isOpened():
-        print(f"❌ Error: Could not open camera {args.camera}")
-        return
-    
-    # Set camera properties
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # Open camera or video
+    if args.video:
+        print(f"Opening video {args.video}...")
+        cap = cv2.VideoCapture(args.video)
+        if not cap.isOpened():
+            print(f"❌ Error: Could not open video {args.video}")
+            return
+    else:
+        print(f"Opening camera {args.camera}...")
+        cap = cv2.VideoCapture(args.camera)
+        if not cap.isOpened():
+            print(f"❌ Error: Could not open camera {args.camera}")
+            return
+        # Set camera properties
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
     # Get actual camera dimensions
     camera_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     camera_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✓ Camera opened successfully ({camera_width}x{camera_height})")
+    
+    # Pre-allocate input tensor on GPU to avoid repeated allocations
+    if torch.cuda.is_available():
+        input_2d = torch.empty((1, 27, 17, 3), dtype=torch.float32, device='cuda')
+        print("✓ Pre-allocated input tensor on GPU")
+    else:
+        input_2d = torch.empty((1, 27, 17, 3), dtype=torch.float32)
+        print("✓ Pre-allocated input tensor on CPU")
     
     # Setup 3D plot only after we have enough 2D poses (buffer full)
     fig, ax, plot_objects = None, None, None
@@ -363,216 +545,25 @@ def main():
     
     print("Starting real-time detection...")
     
-    # Sliding window buffer for collecting 27 frames
-    n_frames = 27
-    pose_buffer = []
-
-    # Subsample 2D poses from YOLO frames (1 = every frame, 2 = every 2nd frame, etc.)
-    pose_subsample = max(1, args.pose_skip)
-    
-    # FPS calculation variables for YOLO inference
-    yolo_inference_times = []
-    yolo_window_size = 30
-    current_yolo_fps = 0
-    
-    # FPS calculation variables for TCPFormer inference (3D pose estimation)
-    tcpformer_inference_times = []
-    tcpformer_window_size = 30
-    current_tcpformer_fps = 0
-    
-    # FPS calculation variables for 3D visualization update
-    viz_update_times = []
-    viz_window_size = 30
-    current_viz_fps = 0
-    
-    # FPS calculation variables for end-to-end processing (per 3D prediction update)
-    end_to_end_times = []
-    end_to_end_window_size = 30
-    current_end_to_end_fps = 0
-    last_prediction_time = None
-    
-    frame_count = 0
-    prediction_count = 0
-    buffer_full_once = False  # Flag to start end-to-end timing after first full buffer
+    # Setup queues and threading
+    buffer_queue = queue.Queue(maxsize=5)
+    stop_event = threading.Event()
     
     try:
-        while True:
-            ret, frame = cap.read()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            producer_future = executor.submit(producer, cap, yolo_model, args, buffer_queue, stop_event, camera_width, camera_height, device)
+            consumer_future = executor.submit(consumer, tcpformer_model, buffer_queue, stop_event, args, camera_width, camera_height, input_2d)
             
-            if not ret:
-                print("❌ Error: Failed to capture frame")
-                break
+            while not stop_event.is_set():
+                time.sleep(0.1)  # Main thread waits
             
-            frame_count += 1
-            
-            # Measure YOLO inference time
-            yolo_start = time.time()
-            
-            # Run YOLO inference
-            results = yolo_model.predict(
-                frame,
-                verbose=False,
-                imgsz=args.img_size,
-                conf=args.conf,
-                device=device
-            )
-            
-            yolo_end = time.time()
-            yolo_time = yolo_end - yolo_start
-            
-            # Store YOLO inference time and calculate FPS
-            yolo_inference_times.append(yolo_time)
-            if len(yolo_inference_times) > yolo_window_size:
-                yolo_inference_times.pop(0)
-            
-            avg_yolo_time = np.mean(yolo_inference_times)
-            current_yolo_fps = 1.0 / avg_yolo_time if avg_yolo_time > 0 else 0
-            
-            # Process results
-            if (results and len(results) > 0 and 
-                hasattr(results[0], 'keypoints') and 
-                results[0].keypoints is not None and 
-                len(results[0].keypoints.xy) > 0):
-                
-                # Get keypoints for first detection
-                keypoints = results[0].keypoints.xy[0].cpu().numpy()
-                confidences = results[0].keypoints.conf[0].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(17)
-                
-                # Create pose_2d array (17, 3) with x, y, confidence
-                pose_2d = np.zeros((17, 3), dtype=np.float32)
-                n_kpts = min(17, keypoints.shape[0])
-                pose_2d[:n_kpts, :2] = keypoints[:n_kpts]
-                pose_2d[:n_kpts, 2] = confidences[:n_kpts]
-                
-# Add to buffer (sliding window) with subsampling
-                # (e.g., pose_subsample=2 will store every 2nd detected pose)
-                if frame_count % pose_subsample == 0:
-                    pose_buffer.append(pose_2d)
-
-                    # Maintain sliding window of 27 frames
-                    if len(pose_buffer) > n_frames:
-                        pose_buffer.pop(0)  # Remove oldest frame
-                
-                # Show buffer status with all FPS metrics
-                if args.show_fps:
-                    base_str = f"Buffer: {len(pose_buffer)}/{n_frames} | YOLO: {current_yolo_fps:.1f} FPS"
-                    if len(tcpformer_inference_times) > 0:
-                        base_str += f" | TCPFormer: {current_tcpformer_fps:.1f} FPS"
-                    if not args.no_viz and len(viz_update_times) > 0:
-                        base_str += f" | 3D Viz: {current_viz_fps:.1f} FPS"
-                    if current_end_to_end_fps > 0:
-                        base_str += f" | End-to-End: {current_end_to_end_fps:.1f} FPS"
-                    print(base_str, end='\r')
-                
-                # (prediction step moved below so it runs even when YOLO fails)
-            
-            else:
-                # Optionally keep buffer full by repeating the last pose when detection fails
-                if args.fill_missing and len(pose_buffer) > 0:
-                    pose_buffer.append(pose_buffer[-1])
-                    if len(pose_buffer) > n_frames:
-                        pose_buffer.pop(0)
-
-                if args.show_fps:
-                    base_str = f"No person detected | Frame: {frame_count} | YOLO: {current_yolo_fps:.1f} FPS"
-                    if len(tcpformer_inference_times) > 0:
-                        base_str += f" | TCPFormer: {current_tcpformer_fps:.1f} FPS"
-                    if not args.no_viz and len(viz_update_times) > 0:
-                        base_str += f" | 3D Viz: {current_viz_fps:.1f} FPS"
-                    if current_end_to_end_fps > 0:
-                        base_str += f" | End-to-End: {current_end_to_end_fps:.1f} FPS"
-                    print(base_str, end='\r')
-
-            # Run TCPFormer prediction when we have exactly 27 frames (even if YOLO missed)
-            if len(pose_buffer) == n_frames:
-                if not buffer_full_once:
-                    buffer_full_once = True  # Start end-to-end timing after first full buffer
-
-                    # Initialize 3D visualization only after buffer is full
-                    if not args.no_viz and not viz_initialized:
-                        fig, ax, plot_objects = setup_3d_plot(args.coord_range)
-                        viz_initialized = True
-                        print("✓ 3D visualization window opened")
-
-                prediction_count += 1
-
-                # Stack poses: (27, 17, 3) -> normalize only x,y
-                poses_2d = np.stack(pose_buffer, axis=0)  # (27, 17, 3)
-
-                # Normalize x, y coordinates to [-1, 1]
-                poses_2d_normalized = poses_2d.copy()
-                poses_2d_normalized[:, :, :2] = normalize_screen_coordinates(
-                    poses_2d[:, :, :2], 
-                    camera_width, 
-                    camera_height
-                )
-
-                # Prepare input for TCPFormer: (batch=1, T=27, J=17, C=3)
-                input_2d = torch.from_numpy(poses_2d_normalized).unsqueeze(0).float()
-
-                if torch.cuda.is_available():
-                    input_2d = input_2d.cuda()
-
-                # Measure TCPFormer inference time
-                tcpformer_start = time.time()
-
-                # Run TCPFormer inference
-                with torch.no_grad():
-                    pred_3d = tcpformer_model(input_2d)  # (1, 27, 17, 3)
-
-                tcpformer_end = time.time()
-                tcpformer_time = tcpformer_end - tcpformer_start
-
-                # Store TCPFormer inference time and calculate FPS
-                tcpformer_inference_times.append(tcpformer_time)
-                if len(tcpformer_inference_times) > tcpformer_window_size:
-                    tcpformer_inference_times.pop(0)
-
-                avg_tcpformer_time = np.mean(tcpformer_inference_times)
-                current_tcpformer_fps = 1.0 / avg_tcpformer_time if avg_tcpformer_time > 0 else 0
-
-                # Get middle frame prediction (frame 13, index 13)
-                middle_frame_idx = n_frames // 2
-                pred_3d_middle = pred_3d[0, middle_frame_idx].cpu().numpy()  # (17, 3)
-
-                # Print 3D keypoints with upright correction, root-relative, and scaling
-                pose_3d_viz = print_3d_keypoints(prediction_count, pred_3d_middle, print_output=not args.no_print)
-
-                # Update end-to-end FPS (based on the rate of new 3D predictions)
-                now = time.time()
-                if last_prediction_time is not None:
-                    delta = now - last_prediction_time
-                    end_to_end_times.append(delta)
-                    if len(end_to_end_times) > end_to_end_window_size:
-                        end_to_end_times.pop(0)
-                    avg_delta = np.mean(end_to_end_times)
-                    current_end_to_end_fps = 1.0 / avg_delta if avg_delta > 0 else 0
-                last_prediction_time = now
-
-                # Update 3D visualization only if enabled and we have a valid end-to-end update rate
-                if not args.no_viz and current_end_to_end_fps > 0:
-                    viz_start = time.time()
-                    update_3d_plot_fast(fig, ax, plot_objects, pose_3d_viz, prediction_count)
-                    viz_end = time.time()
-                    viz_time = viz_end - viz_start
-
-                    # Store visualization update time and calculate FPS
-                    viz_update_times.append(viz_time)
-                    if len(viz_update_times) > viz_window_size:
-                        viz_update_times.pop(0)
-
-                    avg_viz_time = np.mean(viz_update_times)
-                    current_viz_fps = 1.0 / avg_viz_time if avg_viz_time > 0 else 0
-
-            # Check if matplotlib window is still open (only if visualization is enabled)
-            if not args.no_viz and fig is not None:
-                if not plt.fignum_exists(fig.number):
-                    print("\n3D visualization window closed. Exiting...")
-                    break
-            
-            
+            # Wait for threads to finish
+            producer_future.result()
+            consumer_future.result()
+    
     except KeyboardInterrupt:
         print("\nInterrupted by user")
+        stop_event.set()
     
     finally:
         cap.release()
@@ -582,15 +573,7 @@ def main():
         print(f"\n{'='*60}")
         print("Performance Summary:")
         print(f"{'='*60}")
-        print(f"Total frames processed: {frame_count}")
-        print(f"Total 3D predictions: {prediction_count}")
-        print(f"Average YOLO FPS: {current_yolo_fps:.1f}")
-        if len(tcpformer_inference_times) > 0:
-            print(f"Average TCPFormer FPS: {current_tcpformer_fps:.1f} (throughput after 27 frames)")
-        if not args.no_viz and len(viz_update_times) > 0:
-            print(f"Average 3D Visualization FPS: {current_viz_fps:.1f}")
-        if current_end_to_end_fps > 0:
-            print(f"Average End-to-End FPS: {current_end_to_end_fps:.1f}")
+        print("Note: Detailed FPS metrics shown in threads above")
         print(f"{'='*60}")
 
 if __name__ == '__main__':
