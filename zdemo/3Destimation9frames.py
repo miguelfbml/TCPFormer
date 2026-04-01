@@ -41,7 +41,7 @@ CONNECTIONS_3D = [
 # Default paths
 DEFAULT_YOLO_MODEL_PATH = 'weights/yolo/best.pt'
 DEFAULT_TCPFORMER_CONFIG = '../configs/mpi/TCPFormer_mpi_9.yaml'
-DEFAULT_TCPFORMER_CHECKPOINT = 'weights/frames9/TCPFormer_mpi_9.pth.tr'
+DEFAULT_TCPFORMER_CHECKPOINT = 'weights/frames9/best_epoch.pth.tr'
 
 def normalize_screen_coordinates(X, w, h):
     """Normalize 2D keypoints to [-1, 1] range"""
