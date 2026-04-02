@@ -288,12 +288,23 @@ def evaluate(model, test_loader, n_frames):
     # Print results
     print(f'Evaluation Mean Batch Time: {mean_batch_time:.4f} seconds')
     print(f'Evaluation Mean Frame Time: {mean_frame_time:.6f} seconds')
-    if call_times.size > 0:
-        print(f'Inference time / forward call (ms): mean={call_times.mean():.3f}, p50={np.percentile(call_times, 50):.3f}, p95={np.percentile(call_times, 95):.3f}')
-    if sample_times.size > 0:
-        print(f'Inference time / sample (ms): mean={sample_times.mean():.3f}, p50={np.percentile(sample_times, 50):.3f}, p95={np.percentile(sample_times, 95):.3f}')
-    if frame_times.size > 0:
-        print(f'Inference time / frame (ms): mean={frame_times.mean():.4f}, p50={np.percentile(frame_times, 50):.4f}, p95={np.percentile(frame_times, 95):.4f}')
+
+    call_stats = (
+        f'mean={call_times.mean():.3f}, p50={np.percentile(call_times, 50):.3f}, p95={np.percentile(call_times, 95):.3f}'
+        if call_times.size > 0 else 'mean=n/a, p50=n/a, p95=n/a'
+    )
+    sample_stats = (
+        f'mean={sample_times.mean():.3f}, p50={np.percentile(sample_times, 50):.3f}, p95={np.percentile(sample_times, 95):.3f}'
+        if sample_times.size > 0 else 'mean=n/a, p50=n/a, p95=n/a'
+    )
+    frame_stats = (
+        f'mean={frame_times.mean():.4f}, p50={np.percentile(frame_times, 50):.4f}, p95={np.percentile(frame_times, 95):.4f}'
+        if frame_times.size > 0 else 'mean=n/a, p50=n/a, p95=n/a'
+    )
+
+    print(f'Inference time / forward call (ms): {call_stats}')
+    print(f'Inference time / sample (ms): {sample_stats}')
+    print(f'Inference time / frame (ms): {frame_stats}')
     print(f'Evaluation GPU Utilization: {avg_gpu_util:.2f}%')
     print(f'Evaluation GPU Memory Usage: {avg_gpu_mem:.2f}%')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
