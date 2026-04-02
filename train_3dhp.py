@@ -174,6 +174,9 @@ def evaluate(model, test_loader, n_frames):
     gpu_monitor = GPUUtilizationMonitor(device_idx=0)
     gpu_monitor.start()
     batch_times = []
+    inference_call_times_ms = []
+    inference_sample_times_ms = []
+    inference_frame_times_ms = []
     
     for data in tqdm(test_loader, desc="Evaluating"):
         batch_start = time.perf_counter()
@@ -187,7 +190,32 @@ def evaluate(model, test_loader, n_frames):
         out_target[:, :, 14] = 0
         gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
 
-        input_2D, output_3D = input_augmentation(input_2D, model, joints_left, joints_right)
+        T = input_2D.shape[2]
+        input_2D_flip = input_2D[:, 1]
+        input_2D_non_flip = input_2D[:, 0]
+
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        output_3D_flip = model(input_2D_flip)
+        torch.cuda.synchronize()
+        t_flip_ms = (time.perf_counter() - t0) * 1000.0
+
+        output_3D_flip[..., 0] *= -1
+        output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
+
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        output_3D_non_flip = model(input_2D_non_flip)
+        torch.cuda.synchronize()
+        t_non_flip_ms = (time.perf_counter() - t0) * 1000.0
+
+        output_3D = (output_3D_non_flip + output_3D_flip) / 2
+        input_2D = input_2D_non_flip
+
+        total_fwd_ms = t_flip_ms + t_non_flip_ms
+        inference_call_times_ms.extend([t_flip_ms, t_non_flip_ms])
+        inference_sample_times_ms.append(total_fwd_ms / max(N, 1))
+        inference_frame_times_ms.append(total_fwd_ms / max(N * T, 1))
 
         output_3D = output_3D * scale.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, output_3D.size(1), 17, 3)
         pad = (n_frames - 1) // 2
@@ -253,9 +281,19 @@ def evaluate(model, test_loader, n_frames):
     mean_batch_time = sum(batch_times) / len(batch_times) if batch_times else 0
     mean_frame_time = mean_batch_time / n_frames if n_frames > 0 else 0
 
+    call_times = np.array(inference_call_times_ms, dtype=np.float64)
+    sample_times = np.array(inference_sample_times_ms, dtype=np.float64)
+    frame_times = np.array(inference_frame_times_ms, dtype=np.float64)
+
     # Print results
     print(f'Evaluation Mean Batch Time: {mean_batch_time:.4f} seconds')
     print(f'Evaluation Mean Frame Time: {mean_frame_time:.6f} seconds')
+    if call_times.size > 0:
+        print(f'Inference time / forward call (ms): mean={call_times.mean():.3f}, p50={np.percentile(call_times, 50):.3f}, p95={np.percentile(call_times, 95):.3f}')
+    if sample_times.size > 0:
+        print(f'Inference time / sample (ms): mean={sample_times.mean():.3f}, p50={np.percentile(sample_times, 50):.3f}, p95={np.percentile(sample_times, 95):.3f}')
+    if frame_times.size > 0:
+        print(f'Inference time / frame (ms): mean={frame_times.mean():.4f}, p50={np.percentile(frame_times, 50):.4f}, p95={np.percentile(frame_times, 95):.4f}')
     print(f'Evaluation GPU Utilization: {avg_gpu_util:.2f}%')
     print(f'Evaluation GPU Memory Usage: {avg_gpu_mem:.2f}%')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
