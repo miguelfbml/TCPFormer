@@ -402,7 +402,8 @@ class MemoryInducedTransformer(nn.Module):
                                     type='temporal')
         
 
-        self.center_pose = nn.Parameter(torch.randn(int(n_frames/3),num_joints,dim_feat))
+        center_frames = max(1, int(n_frames / 3))
+        self.center_pose = nn.Parameter(torch.randn(center_frames, num_joints, dim_feat))
         self.center_pos_embed = nn.Parameter(torch.zeros(1, num_joints, dim_feat))
 
     def forward(self, x, return_rep=False):
