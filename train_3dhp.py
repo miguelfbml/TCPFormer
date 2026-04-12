@@ -158,7 +158,7 @@ def input_augmentation(input_2D, model, joints_left, joints_right):
     input_2D = input_2D_non_flip
     return input_2D, output_3D
 
-def evaluate(model, test_loader, n_frames):
+def evaluate(model, test_loader, n_frames, test_augmentation=True):
     model.eval()
     joints_left = [5, 6, 7, 11, 12, 13]
     joints_right = [2, 3, 4, 8, 9, 10]
@@ -191,17 +191,7 @@ def evaluate(model, test_loader, n_frames):
         gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
 
         T = input_2D.shape[2]
-        input_2D_flip = input_2D[:, 1]
         input_2D_non_flip = input_2D[:, 0]
-
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        output_3D_flip = model(input_2D_flip)
-        torch.cuda.synchronize()
-        t_flip_ms = (time.perf_counter() - t0) * 1000.0
-
-        output_3D_flip[..., 0] *= -1
-        output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
 
         torch.cuda.synchronize()
         t0 = time.perf_counter()
@@ -209,11 +199,26 @@ def evaluate(model, test_loader, n_frames):
         torch.cuda.synchronize()
         t_non_flip_ms = (time.perf_counter() - t0) * 1000.0
 
-        output_3D = (output_3D_non_flip + output_3D_flip) / 2
-        input_2D = input_2D_non_flip
+        if test_augmentation:
+            input_2D_flip = input_2D[:, 1]
 
-        total_fwd_ms = t_flip_ms + t_non_flip_ms
-        inference_call_times_ms.extend([t_flip_ms, t_non_flip_ms])
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            output_3D_flip = model(input_2D_flip)
+            torch.cuda.synchronize()
+            t_flip_ms = (time.perf_counter() - t0) * 1000.0
+
+            output_3D_flip[..., 0] *= -1
+            output_3D_flip[:, :, joints_left + joints_right, :] = output_3D_flip[:, :, joints_right + joints_left, :]
+            output_3D = (output_3D_non_flip + output_3D_flip) / 2
+            total_fwd_ms = t_flip_ms + t_non_flip_ms
+            inference_call_times_ms.extend([t_flip_ms, t_non_flip_ms])
+        else:
+            output_3D = output_3D_non_flip
+            total_fwd_ms = t_non_flip_ms
+            inference_call_times_ms.append(t_non_flip_ms)
+
+        input_2D = input_2D_non_flip
         inference_sample_times_ms.append(total_fwd_ms / max(N, 1))
         inference_frame_times_ms.append(total_fwd_ms / max(N * T, 1))
 
@@ -284,6 +289,15 @@ def evaluate(model, test_loader, n_frames):
     call_times = np.array(inference_call_times_ms, dtype=np.float64)
     sample_times = np.array(inference_sample_times_ms, dtype=np.float64)
     frame_times = np.array(inference_frame_times_ms, dtype=np.float64)
+    sample_mean_ms = sample_times.mean() if sample_times.size > 0 else 0.0
+    sample_p50_ms = np.percentile(sample_times, 50) if sample_times.size > 0 else 0.0
+    sample_p95_ms = np.percentile(sample_times, 95) if sample_times.size > 0 else 0.0
+    sample_fps_mean = (1000.0 / sample_mean_ms) if sample_mean_ms > 0 else 0.0
+    sample_fps_p50 = (1000.0 / sample_p50_ms) if sample_p50_ms > 0 else 0.0
+    sample_fps_p95 = (1000.0 / sample_p95_ms) if sample_p95_ms > 0 else 0.0
+    frame_mean_ms = frame_times.mean() if frame_times.size > 0 else 0.0
+    frame_fps_mean = (1000.0 / frame_mean_ms) if frame_mean_ms > 0 else 0.0
+    window_center_delay_est_ms = ((n_frames - 1) / 2.0) * sample_mean_ms
 
     # Print results
     print(f'Evaluation Mean Batch Time: {mean_batch_time:.4f} seconds')
@@ -305,6 +319,9 @@ def evaluate(model, test_loader, n_frames):
     print(f'Inference time / forward call (ms): {call_stats}')
     print(f'Inference time / sample (ms): {sample_stats}')
     print(f'Inference time / frame (ms): {frame_stats}')
+    print(f'Inference FPS / sample: mean={sample_fps_mean:.2f}, p50={sample_fps_p50:.2f}, p95={sample_fps_p95:.2f}')
+    print(f'Inference FPS / frame: mean={frame_fps_mean:.2f}')
+    print(f'Estimated window-center delay (ms): {window_center_delay_est_ms:.3f}')
     print(f'Evaluation GPU Utilization: {avg_gpu_util:.2f}%')
     print(f'Evaluation GPU Memory Usage: {avg_gpu_mem:.2f}%')
     print(f'Protocol #1 Error (MPJPE): {mpjpe_avg:.2f} mm')
@@ -318,7 +335,19 @@ def evaluate(model, test_loader, n_frames):
     print(f'PCK@100%_150mm: {pck_results["PCK@100%_150mm"]*100:.2f}%')
     print(f'AUC: {auc_avg:.4f}')
 
-    return mpjpe_avg, data_inference, mean_frame_time, avg_gpu_util, avg_gpu_mem
+    eval_perf = {
+        'sample_time_mean_ms': sample_mean_ms,
+        'sample_time_p50_ms': sample_p50_ms,
+        'sample_time_p95_ms': sample_p95_ms,
+        'sample_fps_mean': sample_fps_mean,
+        'sample_fps_p50': sample_fps_p50,
+        'sample_fps_p95': sample_fps_p95,
+        'frame_time_mean_ms': frame_mean_ms,
+        'frame_fps_mean': frame_fps_mean,
+        'window_center_delay_est_ms': window_center_delay_est_ms,
+    }
+
+    return mpjpe_avg, data_inference, mean_frame_time, avg_gpu_util, avg_gpu_mem, eval_perf
 
 def compute_flops(model, input_shape, device):
     model.eval()
@@ -425,10 +454,14 @@ def train(args, opts):
     checkpoint_path_latest = os.path.join(opts.new_checkpoint, 'latest_epoch.pth.tr')
     checkpoint_path_best = os.path.join(opts.new_checkpoint, 'best_epoch.pth.tr')
 
+    test_augmentation = getattr(args, 'test_augmentation', True)
+
     for epoch in range(epoch_start, args.epochs):
         if opts.eval_only:
             with torch.no_grad():
-                mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem = evaluate(model, test_loader, args.n_frames)
+                mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem, eval_perf = evaluate(
+                    model, test_loader, args.n_frames, test_augmentation=test_augmentation
+                )
                 save_data_inference(opts.new_checkpoint, data_inference, latest=True)
                 print(f"Inference data saved to: {os.path.join(opts.new_checkpoint, 'inference_data.mat')}")
                 if opts.use_wandb:
@@ -436,7 +469,12 @@ def train(args, opts):
                         'eval/mean_frame_time': eval_frame_time,
                         'eval/gpu_utilization': eval_gpu_util,
                         'eval/gpu_memory_usage': eval_gpu_mem,
-                        'eval/flops_per_sample': flops / 1e9
+                        'eval/flops_per_sample': flops / 1e9,
+                        'eval/inference_sample_time_mean_ms': eval_perf['sample_time_mean_ms'],
+                        'eval/inference_sample_time_p95_ms': eval_perf['sample_time_p95_ms'],
+                        'eval/inference_sample_fps_mean': eval_perf['sample_fps_mean'],
+                        'eval/inference_sample_fps_p95': eval_perf['sample_fps_p95'],
+                        'eval/window_center_delay_est_ms': eval_perf['window_center_delay_est_ms'],
                     })
                 exit()
 
@@ -447,7 +485,9 @@ def train(args, opts):
         train_frame_time, train_gpu_util, train_gpu_mem = train_one_epoch(args, model, train_loader, optimizer, losses)
         
         with torch.no_grad():
-            mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem = evaluate(model, test_loader, args.n_frames)
+            mpjpe, data_inference, eval_frame_time, eval_gpu_util, eval_gpu_mem, eval_perf = evaluate(
+                model, test_loader, args.n_frames, test_augmentation=test_augmentation
+            )
 
         if mpjpe < min_mpjpe:
             min_mpjpe = mpjpe
@@ -477,6 +517,11 @@ def train(args, opts):
                 'eval/mean_frame_time': eval_frame_time,
                 'eval/gpu_utilization': eval_gpu_util,
                 'eval/gpu_memory_usage': eval_gpu_mem,
+                'eval/inference_sample_time_mean_ms': eval_perf['sample_time_mean_ms'],
+                'eval/inference_sample_time_p95_ms': eval_perf['sample_time_p95_ms'],
+                'eval/inference_sample_fps_mean': eval_perf['sample_fps_mean'],
+                'eval/inference_sample_fps_p95': eval_perf['sample_fps_p95'],
+                'eval/window_center_delay_est_ms': eval_perf['window_center_delay_est_ms'],
                 'train/flops_per_sample': training_flops / 1e9,
                 'eval/flops_per_sample': flops / 1e9
             }
