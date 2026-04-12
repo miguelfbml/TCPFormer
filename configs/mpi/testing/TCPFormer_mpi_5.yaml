@@ -37,7 +37,7 @@ flip: True
 stride: 9
 num_joints: 17
 out_joints: 17
-test_augmentation: False
+test_augmentation: True
 data_augmentation: True
 reverse_augmentation: False
 out_all: 1
