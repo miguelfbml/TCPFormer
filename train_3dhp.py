@@ -190,8 +190,15 @@ def evaluate(model, test_loader, n_frames, test_augmentation=True):
         out_target[:, :, 14] = 0
         gt_3D = gt_3D.view(N, -1, 17, 3).type(torch.cuda.FloatTensor)
 
-        T = input_2D.shape[2]
-        input_2D_non_flip = input_2D[:, 0]
+        has_test_views = (input_2D.dim() == 5)
+        if has_test_views:
+            T = input_2D.shape[2]
+            input_2D_non_flip = input_2D[:, 0]
+        elif input_2D.dim() == 4:
+            T = input_2D.shape[1]
+            input_2D_non_flip = input_2D
+        else:
+            raise ValueError(f'Unexpected input_2D shape in evaluate: {tuple(input_2D.shape)}')
 
         torch.cuda.synchronize()
         t0 = time.perf_counter()
@@ -199,7 +206,7 @@ def evaluate(model, test_loader, n_frames, test_augmentation=True):
         torch.cuda.synchronize()
         t_non_flip_ms = (time.perf_counter() - t0) * 1000.0
 
-        if test_augmentation:
+        if test_augmentation and has_test_views:
             input_2D_flip = input_2D[:, 1]
 
             torch.cuda.synchronize()
