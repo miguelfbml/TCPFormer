@@ -57,7 +57,7 @@ def save_checkpoint(checkpoint_path, epoch, lr, optimizer, model, min_p1, wandb_
 
 def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_shoulder_idx=2, left_hip_idx=11, right_hip_idx=8):
     """
-    Calculate torso diameter using shoulder and hip distances (same as MPI-INF-3DHP standard)
+    Calculate torso length as the distance between shoulder midpoint and hip midpoint.
     Args:
         gt_3d: Tensor of shape (N, T, J, 3) or (N, J, 3) with 3D ground truth keypoints.
         left_shoulder_idx: Index of left shoulder joint (default: 5)
@@ -73,18 +73,15 @@ def calculate_torso_diameter(gt_3d, left_shoulder_idx=5, right_shoulder_idx=2, l
     torso_diameters = torch.zeros(N, device=gt_3d.device)
     
     for i in range(N):
-        # Shoulder distance
         left_shoulder = gt_3d[i, left_shoulder_idx]   # (3,)
         right_shoulder = gt_3d[i, right_shoulder_idx] # (3,)
-        shoulder_dist = torch.norm(left_shoulder - right_shoulder)
-        
-        # Hip distance  
         left_hip = gt_3d[i, left_hip_idx]   # (3,)
         right_hip = gt_3d[i, right_hip_idx] # (3,)
-        hip_dist = torch.norm(left_hip - right_hip)
-        
-        # Average of shoulder and hip distance as torso diameter
-        torso_diameters[i] = (shoulder_dist + hip_dist) / 2.0
+
+        shoulder_midpoint = (left_shoulder + right_shoulder) / 2.0
+        hip_midpoint = (left_hip + right_hip) / 2.0
+
+        torso_diameters[i] = torch.norm(shoulder_midpoint - hip_midpoint)
     
     return torso_diameters
 
