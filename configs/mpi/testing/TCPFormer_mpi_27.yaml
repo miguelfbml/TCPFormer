@@ -9,7 +9,7 @@ epochs: 90
 model_name: MemoryInducedTransformer
 n_layers: 16
 dim_in: 3
-dim_feat: 4
+dim_feat: 128
 dim_rep: 512
 dim_out: 3
 mlp_ratio: 4
