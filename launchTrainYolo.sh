@@ -13,7 +13,7 @@ python train.py \
     --base-path /nas-ctm01/datasets/public/mpi_inf_3dhp \
     --annotations-path ../../motion3d/data_train_3dhp.npz \
     --epochs 100 \
-    --batch-size 4 \
+    --batch-size 8 \
     --img-size 1280 \
     --lr auto \
     --device 0 \

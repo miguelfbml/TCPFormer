@@ -1,12 +1,12 @@
 """
 Real-time 3D Pose Estimation using YOLO + TCPFormer
-Collects 9 frames of 2D poses and predicts 3D poses with live 3D visualization
+Collects 5 frames of 2D poses and predicts 3D poses with live 3D visualization
 
 Usage:
-python 3Destimation.py
-python 3Destimation.py --camera 0 --conf 0.5
-python 3Destimation.py --show-fps
-python 3Destimation.py --no-viz  # Disable 3D visualization for faster performance
+python 3Destimation5frames.py
+python 3Destimation5frames.py --camera 0 --conf 0.5
+python 3Destimation5frames.py --show-fps
+python 3Destimation5frames.py --no-viz  # Disable 3D visualization for faster performance
 """
 
 import argparse
@@ -40,8 +40,8 @@ CONNECTIONS_3D = [
 
 # Default paths
 DEFAULT_YOLO_MODEL_PATH = 'weights/yolo/best.pt'
-DEFAULT_TCPFORMER_CONFIG = '../configs/mpi/testing/notestaug/TCPFormer_mpi_9.yaml'
-DEFAULT_TCPFORMER_CHECKPOINT = 'weights/frames9/best_epoch.pth.tr'
+DEFAULT_TCPFORMER_CONFIG = '../configs/mpi/testing/notestaug/TCPFormer_mpi_5.yaml'
+DEFAULT_TCPFORMER_CHECKPOINT = 'weights/frames5/best_epoch.pth.tr'
 
 def normalize_screen_coordinates(X, w, h):
     """Normalize 2D keypoints to [-1, 1] range"""
@@ -363,8 +363,8 @@ def main():
     
     print("Starting real-time detection...")
     
-    # Sliding window buffer for collecting 9 frames
-    n_frames = 9
+    # Sliding window buffer for collecting 5 frames
+    n_frames = 5
     pose_buffer = []
 
     # Subsample 2D poses from YOLO frames (1 = every frame, 2 = every 2nd frame, etc.)
@@ -449,7 +449,7 @@ def main():
                 if frame_count % pose_subsample == 0:
                     pose_buffer.append(pose_2d)
 
-                    # Maintain sliding window of 27 frames
+                    # Maintain sliding window of 5 frames
                     if len(pose_buffer) > n_frames:
                         pose_buffer.pop(0)  # Remove oldest frame
                 
@@ -483,7 +483,7 @@ def main():
                         base_str += f" | End-to-End: {current_end_to_end_fps:.1f} FPS"
                     print(base_str, end='\r')
 
-            # Run TCPFormer prediction when we have exactly 27 frames (even if YOLO missed)
+            # Run TCPFormer prediction when we have exactly 5 frames (even if YOLO missed)
             if len(pose_buffer) == n_frames:
                 if not buffer_full_once:
                     buffer_full_once = True  # Start end-to-end timing after first full buffer
@@ -496,8 +496,8 @@ def main():
 
                 prediction_count += 1
 
-                # Stack poses: (27, 17, 3) -> normalize only x,y
-                poses_2d = np.stack(pose_buffer, axis=0)  # (27, 17, 3)
+                # Stack poses: (5, 17, 3) -> normalize only x,y
+                poses_2d = np.stack(pose_buffer, axis=0)  # (5, 17, 3)
 
                 # Normalize x, y coordinates to [-1, 1]
                 poses_2d_normalized = poses_2d.copy()
@@ -507,7 +507,7 @@ def main():
                     camera_height
                 )
 
-                # Prepare input for TCPFormer: (batch=1, T=27, J=17, C=3)
+                # Prepare input for TCPFormer: (batch=1, T=5, J=17, C=3)
                 input_2d = torch.from_numpy(poses_2d_normalized).unsqueeze(0).float()
 
                 if torch.cuda.is_available():
@@ -518,7 +518,7 @@ def main():
 
                 # Run TCPFormer inference
                 with torch.no_grad():
-                    pred_3d = tcpformer_model(input_2d)  # (1, 27, 17, 3)
+                    pred_3d = tcpformer_model(input_2d)  # (1, 5, 17, 3)
 
                 tcpformer_end = time.time()
                 tcpformer_time = tcpformer_end - tcpformer_start
@@ -531,7 +531,7 @@ def main():
                 avg_tcpformer_time = np.mean(tcpformer_inference_times)
                 current_tcpformer_fps = 1.0 / avg_tcpformer_time if avg_tcpformer_time > 0 else 0
 
-                # Get middle frame prediction (frame 4, index 4)
+                # Get middle frame prediction (frame 2, index 2)
                 middle_frame_idx = n_frames // 2
                 pred_3d_middle = pred_3d[0, middle_frame_idx].cpu().numpy()  # (17, 3)
 
@@ -586,7 +586,7 @@ def main():
         print(f"Total 3D predictions: {prediction_count}")
         print(f"Average YOLO FPS: {current_yolo_fps:.1f}")
         if len(tcpformer_inference_times) > 0:
-            print(f"Average TCPFormer FPS: {current_tcpformer_fps:.1f} (throughput after 27 frames)")
+            print(f"Average TCPFormer FPS: {current_tcpformer_fps:.1f} (throughput after 5 frames)")
         if not args.no_viz and len(viz_update_times) > 0:
             print(f"Average 3D Visualization FPS: {current_viz_fps:.1f}")
         if current_end_to_end_fps > 0:

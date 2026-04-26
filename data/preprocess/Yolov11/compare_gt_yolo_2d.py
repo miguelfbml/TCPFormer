@@ -298,14 +298,15 @@ def load_test_frames(sequence_name, num_frames=None):
     frames, total_frames = load_test_frames_batch(sequence_name, 0, num_frames)
     return frames
 
-def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
+def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu', batch_size=None):
     """Estimate poses using YOLO model with memory management and GPU support, tracking execution time"""
     yolo_poses = []
     confidences = []
     inference_times = []
     
     # Process frames in smaller batches to avoid memory issues
-    batch_size = 32 if device.startswith('cuda') else 16  # Larger batches for GPU
+    if batch_size is None:
+        batch_size = 32 if device.startswith('cuda') else 16  # Larger batches for GPU
     
     print(f"  Processing {len(frames)} frames in batches of {batch_size} on {device}")
     
@@ -380,9 +381,15 @@ def estimate_yolo_poses_batch(model, frames, img_size=640, device='cpu'):
     
     return yolo_poses, confidences, performance_metrics
 
-def estimate_yolo_poses(model, frames, img_size=640, device='cpu'):
+def estimate_yolo_poses(model, frames, img_size=640, device='cpu', batch_size=None):
     """Legacy function for compatibility"""
-    yolo_poses, confidences, performance_metrics = estimate_yolo_poses_batch(model, frames, img_size, device)
+    yolo_poses, confidences, performance_metrics = estimate_yolo_poses_batch(
+        model,
+        frames,
+        img_size,
+        device,
+        batch_size=batch_size,
+    )
     return yolo_poses, confidences, performance_metrics
 
 def convert_coordinates_to_pixels(poses_2d, frames):
@@ -529,7 +536,13 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
             gt_batch = gt_batch[:min_frames]
             
             # Run YOLO inference on batch
-            yolo_batch, _, batch_performance = estimate_yolo_poses_batch(model, frames_batch, args.img_size, device)
+            yolo_batch, _, batch_performance = estimate_yolo_poses_batch(
+                model,
+                frames_batch,
+                args.img_size,
+                device,
+                batch_size=args.batch_size,
+            )
             
             # Accumulate performance metrics
             total_inference_time += batch_performance['total_inference_time']
@@ -626,7 +639,13 @@ def process_single_sequence_batched(model, sequence_name, args, device='cpu'):
         
         # Run YOLO pose estimation
         print(f"🔍 Running YOLO pose estimation...")
-        yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(model, frames, args.img_size, device)
+        yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(
+            model,
+            frames,
+            args.img_size,
+            device,
+            batch_size=args.batch_size,
+        )
         
         # Convert coordinates to pixels
         gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -696,7 +715,13 @@ def process_single_sequence_original(model, sequence_name, args, device='cpu'):
     
     # Run YOLO pose estimation
     print(f"🔍 Running YOLO pose estimation...")
-    yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(model, frames, args.img_size, device)
+    yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(
+        model,
+        frames,
+        args.img_size,
+        device,
+        batch_size=args.batch_size,
+    )
     
     # Convert coordinates to pixels
     gt_poses_2d_pixel = convert_coordinates_to_pixels(gt_poses_2d_final, frames)
@@ -976,9 +1001,14 @@ def main():
                        help='Directory to save outputs')
     parser.add_argument('--img-size', type=int, default=640,
                        help='Input image size for YOLO inference')
+    parser.add_argument('--batch-size', type=int, default=None,
+                       help='Batch size for YOLO inference (default: 32 on CUDA, 16 on CPU)')
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use (auto, cpu, cuda, cuda:0, etc.)')
     args = parser.parse_args()
+    
+    if args.batch_size is not None and args.batch_size <= 0:
+        parser.error('--batch-size must be a positive integer')
     
     print("🎯 Ground Truth vs YOLO 2D Pose Comparison with Comprehensive Metrics")
     print("="*80)
@@ -1003,6 +1033,10 @@ def main():
         print(f"Mode: Process {frame_count} frames from sequence {args.sequence}")
     
     print(f"Input size: {args.img_size}")
+    if args.batch_size is not None:
+        print(f"Inference batch size (override): {args.batch_size}")
+    else:
+        print("Inference batch size: auto (32 on CUDA, 16 on CPU)")
     print("Metrics: MPJPE, PCK (Percentage of Correct Keypoints), AUC (Area Under Curve), FPS, Inference Time")
     print("Coordinate system: Root-relative poses in pixel domain")
     print("="*80)
