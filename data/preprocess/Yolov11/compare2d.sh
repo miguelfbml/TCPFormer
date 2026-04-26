@@ -9,7 +9,6 @@
 echo "Running job in reserved partition"
 
 
-export CUDA_LAUNCH_BLOCKING=1
 BATCH_SIZE=${BATCH_SIZE:-32}
 DEVICE=${DEVICE:-cuda:0}
 
