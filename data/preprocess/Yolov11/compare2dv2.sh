@@ -17,4 +17,4 @@ python3 compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_corr
 # python3 compare_gt_yolo_2d.py --all --model-path runs/pose/mpi_yolo11x_pose_enhanced_keypoints/weights/best.pt --img-size 640 --batch-size "$BATCH_SIZE" --device "$DEVICE"
 
 
-#ESTE FOI TREINADO DIRETAMENTE NO TESTSET
+#ESTE FOI O USADO

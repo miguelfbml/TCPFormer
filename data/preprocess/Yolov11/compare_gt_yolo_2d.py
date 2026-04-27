@@ -230,7 +230,7 @@ TEST_SEQUENCES = ['TS1', 'TS2', 'TS3', 'TS4', 'TS5', 'TS6']
 def get_available_sequences():
     """Get list of available test sequences from data file"""
     test_data_paths = [
-        '../../motion3d/data_test_3dhp.npz',
+        '../../motion3d/GT/data_test_3dhp.npz',
     ]
     
     for data_path in test_data_paths:
@@ -246,7 +246,7 @@ def get_available_sequences():
 def load_test_3d_data_from_dataset(sequence_name):
     """Load test data for a specific sequence"""
     test_data_paths = [
-        '../../motion3d/data_test_3dhp.npz',
+        '../../motion3d/GT/data_test_3dhp.npz',
     ]
     
     for data_path in test_data_paths:
