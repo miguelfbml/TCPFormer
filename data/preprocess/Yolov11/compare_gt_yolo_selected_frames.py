@@ -125,8 +125,10 @@ def draw_pose_panel(ax, image, pose, title, color, missing_text, show_root=True)
             bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8),
         )
 
-    if show_root:
-        ax.scatter(0, 0, c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=2)
+    if show_root and len(pose) > 14:
+        root_x, root_y = pose[14]
+        if not (root_x == 0 and root_y == 0):
+            ax.scatter(root_x, root_y, c='green', s=140, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=2)
 
 
 def save_frame_comparison(image, gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
