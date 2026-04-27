@@ -9,127 +9,68 @@
 
 echo "Running selected-frame GT vs YOLO comparison"
 
-SEQUENCE=${SEQUENCE:-TS1}
-FRAMES=${FRAMES:-"600 1200 1800 2400 3000 3600 4200 4800 5400 6000"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
 
 python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --sequence "TS1" \
+    --frames "600 1200 1800 2400 3000 3600 4200 4800 5400 6000" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
 
-
-SEQUENCE=${SEQUENCE:-TS2}
-FRAMES=${FRAMES:-"600 1200 1800 2400 3000 3600 4200 4800 5400 6000"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
 
 python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --sequence "TS2" \
+    --frames "600 1200 1800 2400 3000 3600 4200 4800 5400 6000" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
 
 
-SEQUENCE=${SEQUENCE:-TS2}
-FRAMES=${FRAMES:-"600 1200 1800 2400 3000 3600 4200 4800 5400 6000"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
 
 python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --sequence "TS3" \
+    --frames "600 1200 1800 2400 3000 3600 4200 4800 5400 5800" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
 
 
-SEQUENCE=${SEQUENCE:-TS3}
-FRAMES=${FRAMES:-"600 1200 1800 2400 3000 3600 4200 4800 5400 5800"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
 
 python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
-
-SEQUENCE=${SEQUENCE:-TS4}
-FRAMES=${FRAMES:-"600 1200 1800 2400 3000 3600 4200 4800 5400 6000"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
-
-python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
-
-
-SEQUENCE=${SEQUENCE:-TS5}
-FRAMES=${FRAMES:-"30 60 90 120 150 180 210 240 270 300"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
-
-python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --sequence "TS4" \
+    --frames "600 1200 1800 2400 3000 3600 4200 4800 5400 6000" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
 
 
 
-SEQUENCE=${SEQUENCE:-TS6}
-FRAMES=${FRAMES:-"50 100 150 200 250 300 350 400 450 490"}
-MODEL_PATH=${MODEL_PATH:-runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt}
-OUTPUT_DIR=${OUTPUT_DIR:-comparison_selected_frames}
-IMG_SIZE=${IMG_SIZE:-640}
-BATCH_SIZE=${BATCH_SIZE:-32}
-DEVICE=${DEVICE:-cuda:0}
 
 python3 compare_gt_yolo_selected_frames.py \
-    --sequence "$SEQUENCE" \
-    --frames $FRAMES \
-    --model-path "$MODEL_PATH" \
-    --output-dir "$OUTPUT_DIR" \
-    --img-size "$IMG_SIZE" \
-    --batch-size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --sequence "TS5" \
+    --frames "30 60 90 120 150 180 210 240 270 300" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
+
+
+
+
+python3 compare_gt_yolo_selected_frames.py \
+    --sequence "TS6" \
+    --frames "50 100 150 200 250 300 350 400 450 490" \
+    --model-path "runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt" \
+    --output-dir "comparison_selected_frames" \
+    --img-size "640" \
+    --batch-size "32" \
+    --device "cuda:0"
