@@ -1,9 +1,9 @@
 """
 Compare Ground Truth and YOLO 2D poses for selected frames only.
 
-This script is a focused variant of compare_gt_yolo_2d.py. It processes a
-single sequence and only the frames selected through the command line, then
-stores side-by-side GT vs YOLO comparisons as PNG images in an output folder.
+This script keeps the same connectivity as compare_gt_yolo_selected_frames.py
+but uses the dataset image as the canvas. For each selected frame it draws the
+GT and YOLO poses on top of the image and saves a side-by-side PNG.
 
 Example:
 python compare_gt_yolo_selected_frames.py --sequence TS1 --frames 0 10 20 --model-path runs/pose/mpi_yolo11x_pose_corrected3/weights/best.pt
@@ -16,7 +16,6 @@ import os
 import sys
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from ultralytics import YOLO
@@ -82,131 +81,118 @@ def load_selected_frames(sequence_name, frame_indices):
     return frames, valid_indices
 
 
-def draw_pose_panel(ax, pose, title, color, missing_text, bounds=None, show_root=True):
-    ax.set_title(title, fontsize=14)
+def draw_pose_on_image(image, pose, title, line_color, point_color, missing_text):
+    output = image.copy()
+
+    cv2.putText(
+        output,
+        title,
+        (20, 35),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
 
     if pose is None or np.all(pose == 0):
-        ax.text(
-            0.5,
-            0.5,
+        cv2.putText(
+            output,
             missing_text,
-            transform=ax.transAxes,
-            ha='center',
-            va='center',
-            fontsize=16,
-            color='red',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8),
+            (20, 75),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
         )
-        ax.axis('off')
-        return
-
-    if bounds is not None:
-        x_min, x_max, y_min, y_max = bounds
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-    else:
-        valid_points = pose[~np.all(pose == 0, axis=1)]
-        if len(valid_points) > 0:
-            x_min = np.min(valid_points[:, 0])
-            x_max = np.max(valid_points[:, 0])
-            y_min = np.min(valid_points[:, 1])
-            y_max = np.max(valid_points[:, 1])
-            x_padding = max((x_max - x_min) * 0.1, 10)
-            y_padding = max((y_max - y_min) * 0.1, 10)
-            ax.set_xlim(x_min - x_padding, x_max + x_padding)
-            ax.set_ylim(y_min - y_padding, y_max + y_padding)
-        else:
-            ax.set_xlim(-500, 500)
-            ax.set_ylim(-500, 500)
-
-    ax.invert_yaxis()
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal')
+        return output
 
     for joint1, joint2 in CONNECTIONS_2D:
         if joint1 < len(pose) and joint2 < len(pose):
-            x1, y1 = pose[joint1]
-            x2, y2 = pose[joint2]
-            if not ((x1 == 0 and y1 == 0) or (x2 == 0 and y2 == 0)):
-                ax.plot([x1, x2], [y1, y2], '-', color=color, linewidth=3, alpha=0.85)
+            p1 = pose[joint1]
+            p2 = pose[joint2]
+            if np.allclose(p1, 0.0) or np.allclose(p2, 0.0):
+                continue
+            cv2.line(
+                output,
+                (int(round(p1[0])), int(round(p1[1]))),
+                (int(round(p2[0])), int(round(p2[1]))),
+                line_color,
+                2,
+                cv2.LINE_AA,
+            )
 
-    for joint_idx, (x, y) in enumerate(pose):
-        if joint_idx == 14:
+    for joint_idx, joint_xy in enumerate(pose):
+        if np.allclose(joint_xy, 0.0):
             continue
-        if x == 0 and y == 0:
-            continue
-        ax.scatter(x, y, c=color, s=70, alpha=0.95, edgecolors='black', linewidth=1)
-        ax.text(
-            x + 15,
-            y + 15,
+        center = (int(round(joint_xy[0])), int(round(joint_xy[1])))
+        cv2.circle(output, center, 4, point_color, -1, cv2.LINE_AA)
+        cv2.putText(
+            output,
             str(joint_idx),
-            fontsize=9,
-            ha='left',
-            va='bottom',
-            color='black',
-            weight='bold',
-            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8),
+            (center[0] + 5, center[1] - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
         )
 
-    if show_root:
-        ax.scatter(0, 0, c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=2)
-
-    ax.set_xlabel('X (pixels)', fontsize=12)
-    ax.set_ylabel('Y (pixels)', fontsize=12)
+    return output
 
 
-def save_frame_comparison(gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9))
-
-    frame_error = np.mean(np.linalg.norm(gt_frame - yolo_frame, axis=1)) if gt_frame is not None and yolo_frame is not None else 0.0
-    fig.suptitle(
-        f'2D Pose Comparison: GT vs YOLO - {sequence_name} | Frame {frame_idx}',
-        fontsize=14,
+def save_frame_comparison(image, gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
+    gt_image = draw_pose_on_image(
+        image,
+        gt_frame,
+        'Ground Truth',
+        line_color=(255, 140, 0),
+        point_color=(255, 80, 0),
+        missing_text='No GT Data',
     )
 
-    all_points = np.vstack([
-        gt_frame.reshape(-1, 2),
-        yolo_frame.reshape(-1, 2),
-    ])
-    valid_points = all_points[~np.all(all_points == 0, axis=1)]
-    if len(valid_points) > 0:
-        x_range = [np.min(valid_points[:, 0]), np.max(valid_points[:, 0])]
-        y_range = [np.min(valid_points[:, 1]), np.max(valid_points[:, 1])]
-        x_padding = max((x_range[1] - x_range[0]) * 0.1, 10)
-        y_padding = max((y_range[1] - y_range[0]) * 0.1, 10)
-        bounds = (
-            x_range[0] - x_padding,
-            x_range[1] + x_padding,
-            y_range[0] - y_padding,
-            y_range[1] + y_padding,
+    pred_image = draw_pose_on_image(
+        image,
+        yolo_frame,
+        'YOLO Prediction',
+        line_color=(0, 180, 255),
+        point_color=(0, 255, 255),
+        missing_text='No YOLO Detection',
+    )
+
+    frame_err = float('nan')
+    if gt_frame is not None and yolo_frame is not None and not np.all(gt_frame == 0) and not np.all(yolo_frame == 0):
+        frame_err = float(np.mean(np.linalg.norm(gt_frame - yolo_frame, axis=1)))
+
+    if not np.isnan(frame_err):
+        cv2.putText(
+            pred_image,
+            'Frame MPJPE: {:.2f}px'.format(frame_err),
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
         )
     else:
-        bounds = (-500, 500, -500, 500)
+        cv2.putText(
+            pred_image,
+            'Frame MPJPE: N/A',
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
-    draw_pose_panel(
-        ax1,
-        gt_frame,
-        f'Ground Truth\nFrame {frame_idx}',
-        'blue',
-        'No GT Data',
-        bounds=bounds,
-    )
-
-    draw_pose_panel(
-        ax2,
-        yolo_frame,
-        f'YOLO Prediction\nFrame {frame_idx} | MPJPE: {frame_error:.1f}px',
-        'red',
-        'No YOLO Detection',
-        bounds=bounds,
-    )
+    side_by_side = np.concatenate([gt_image, pred_image], axis=1)
 
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f'frame_{frame_idx:06d}_gt_vs_yolo.png')
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
+    output_path = os.path.join(output_dir, 'frame_{:06d}_gt_vs_yolo.png'.format(frame_idx))
+    cv2.imwrite(output_path, side_by_side)
     return output_path
 
 
@@ -249,8 +235,6 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
 
     gt_poses_2d_pixel = convert_coordinates_to_pixels(np.array(selected_gt), selected_frames)
     yolo_poses_2d_pixel = convert_coordinates_to_pixels(yolo_poses_2d, selected_frames)
-    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
-    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d_pixel, root_joint_idx=14)
 
     sequence_output_dir = os.path.join(args.output_dir, sequence_name)
     os.makedirs(sequence_output_dir, exist_ok=True)
@@ -258,8 +242,9 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
     saved_files = []
     for local_idx, frame_idx in enumerate(selected_frame_indices):
         saved_path = save_frame_comparison(
-            gt_poses_2d_root_rel[local_idx],
-            yolo_poses_2d_root_rel[local_idx],
+            selected_frames[local_idx],
+            gt_poses_2d_pixel[local_idx],
+            yolo_poses_2d_pixel[local_idx],
             sequence_name,
             frame_idx,
             sequence_output_dir,
