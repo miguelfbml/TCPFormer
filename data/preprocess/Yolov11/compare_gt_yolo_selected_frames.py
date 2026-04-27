@@ -30,7 +30,6 @@ from compare_gt_yolo_2d import (  # noqa: E402
     convert_coordinates_to_pixels,
     estimate_yolo_poses,
     load_test_3d_data_from_dataset,
-    make_root_relative_2d_pixel,
 )
 
 
@@ -82,45 +81,38 @@ def load_selected_frames(sequence_name, frame_indices):
     return frames, valid_indices
 
 
-def draw_pose_panel(ax, pose, title, color, missing_text, show_root=True):
+def draw_pose_panel(ax, image, pose, title, color, missing_text, show_root=True):
     ax.set_title(title, fontsize=14)
+    ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    ax.axis('off')
 
     if pose is None or np.all(pose == 0):
-        ax.text(0.5, 0.5, missing_text, transform=ax.transAxes, ha='center', va='center', fontsize=16, color='red')
-        ax.axis('off')
+        ax.text(
+            0.5,
+            0.5,
+            missing_text,
+            transform=ax.transAxes,
+            ha='center',
+            va='center',
+            fontsize=16,
+            color='red',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8),
+        )
         return
-
-    valid_points = pose[~np.all(pose == 0, axis=1)]
-    if len(valid_points) > 0:
-        x_min = np.min(valid_points[:, 0])
-        x_max = np.max(valid_points[:, 0])
-        y_min = np.min(valid_points[:, 1])
-        y_max = np.max(valid_points[:, 1])
-        x_padding = max((x_max - x_min) * 0.1, 10)
-        y_padding = max((y_max - y_min) * 0.1, 10)
-        ax.set_xlim(x_min - x_padding, x_max + x_padding)
-        ax.set_ylim(y_min - y_padding, y_max + y_padding)
-    else:
-        ax.set_xlim(-500, 500)
-        ax.set_ylim(-500, 500)
-
-    ax.invert_yaxis()
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal')
 
     for joint1, joint2 in CONNECTIONS_2D:
         if joint1 < len(pose) and joint2 < len(pose):
             x1, y1 = pose[joint1]
             x2, y2 = pose[joint2]
             if not ((x1 == 0 and y1 == 0) or (x2 == 0 and y2 == 0)):
-                ax.plot([x1, x2], [y1, y2], '-', color=color, linewidth=2, alpha=0.7)
+                ax.plot([x1, x2], [y1, y2], '-', color=color, linewidth=3, alpha=0.85)
 
     for joint_idx, (x, y) in enumerate(pose):
         if joint_idx == 14:
             continue
         if x == 0 and y == 0:
             continue
-        ax.scatter(x, y, c=color, s=60, alpha=0.9, edgecolors='black', linewidth=1)
+        ax.scatter(x, y, c=color, s=70, alpha=0.95, edgecolors='black', linewidth=1)
         ax.text(
             x + 15,
             y + 15,
@@ -136,11 +128,8 @@ def draw_pose_panel(ax, pose, title, color, missing_text, show_root=True):
     if show_root:
         ax.scatter(0, 0, c='green', s=120, marker='*', alpha=1.0, edgecolors='darkgreen', linewidth=2)
 
-    ax.set_xlabel('X (pixels)', fontsize=12)
-    ax.set_ylabel('Y (pixels)', fontsize=12)
 
-
-def save_frame_comparison(gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
+def save_frame_comparison(image, gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9))
 
     frame_error = np.mean(np.linalg.norm(gt_frame - yolo_frame, axis=1)) if gt_frame is not None and yolo_frame is not None else 0.0
@@ -151,6 +140,7 @@ def save_frame_comparison(gt_frame, yolo_frame, sequence_name, frame_idx, output
 
     draw_pose_panel(
         ax1,
+        image,
         gt_frame,
         f'Ground Truth\nFrame {frame_idx}',
         'blue',
@@ -159,6 +149,7 @@ def save_frame_comparison(gt_frame, yolo_frame, sequence_name, frame_idx, output
 
     draw_pose_panel(
         ax2,
+        image,
         yolo_frame,
         f'YOLO Prediction\nFrame {frame_idx} | MPJPE: {frame_error:.1f}px',
         'red',
@@ -212,8 +203,7 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
     )
 
     gt_poses_2d_pixel = convert_coordinates_to_pixels(np.array(selected_gt), selected_frames)
-    gt_poses_2d_root_rel = make_root_relative_2d_pixel(gt_poses_2d_pixel, root_joint_idx=14)
-    yolo_poses_2d_root_rel = make_root_relative_2d_pixel(yolo_poses_2d, root_joint_idx=14)
+    yolo_poses_2d_pixel = convert_coordinates_to_pixels(yolo_poses_2d, selected_frames)
 
     sequence_output_dir = os.path.join(args.output_dir, sequence_name)
     os.makedirs(sequence_output_dir, exist_ok=True)
@@ -221,8 +211,9 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
     saved_files = []
     for local_idx, frame_idx in enumerate(selected_frame_indices):
         saved_path = save_frame_comparison(
-            gt_poses_2d_root_rel[local_idx],
-            yolo_poses_2d_root_rel[local_idx],
+            selected_frames[local_idx],
+            gt_poses_2d_pixel[local_idx],
+            yolo_poses_2d_pixel[local_idx],
             sequence_name,
             frame_idx,
             sequence_output_dir,
