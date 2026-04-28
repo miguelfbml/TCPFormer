@@ -795,23 +795,34 @@ def train_yolo_model(dataset_yaml, args):
     # Start monitoring
     metrics_tracker.start_training()
     
-    # Load YOLOv11x-pose model from local folder
+    # Load YOLO model. Optionally initialize without pretrained weights.
     model_path = 'model/yolo11x-pose.pt'
-    
-    # Check if the model file exists
-    if not os.path.exists(model_path):
-        print(f"❌ Error: Model file not found at {model_path}")
-        print(f"📁 Current directory: {os.getcwd()}")
-        print(f"🔍 Looking for model in: {os.path.abspath(model_path)}")
-        
-        # Fallback to YOLOv8n-pose if YOLOv11x not found
-        print(f"⚠️ Falling back to YOLOv8n-pose...")
-        model = YOLO('yolov8n-pose.pt')
-        model_name = "YOLOv8n-pose (fallback)"
+
+    if getattr(args, 'no_pretrained', False):
+        # Initialize architecture from YAML (random init) if available, else fallback to a smaller YAML
+        try:
+            print("🔧 Initializing model from YAML (no pretrained weights): yolov11x-pose.yaml")
+            model = YOLO('yolov11x-pose.yaml')
+            model_name = "YOLOv11x-pose (random init from YAML)"
+        except Exception:
+            print("⚠ Could not initialize yolov11x YAML, falling back to yolov8n-pose.yaml (random init)")
+            model = YOLO('yolov8n-pose.yaml')
+            model_name = "YOLOv8n-pose (random init fallback)"
     else:
-        print(f"✅ Loading YOLOv11x-pose from: {os.path.abspath(model_path)}")
-        model = YOLO(model_path)
-        model_name = "YOLOv11x-pose"
+        # Load pretrained weights if available, otherwise fallback to pretrained YOLOv8n
+        if not os.path.exists(model_path):
+            print(f"❌ Error: Model file not found at {model_path}")
+            print(f"📁 Current directory: {os.getcwd()}")
+            print(f"🔍 Looking for model in: {os.path.abspath(model_path)}")
+
+            # Fallback to YOLOv8n-pose if YOLOv11x not found
+            print(f"⚠️ Falling back to YOLOv8n-pose... (pretrained)")
+            model = YOLO('yolov8n-pose.pt')
+            model_name = "YOLOv8n-pose (fallback)"
+        else:
+            print(f"✅ Loading YOLOv11x-pose from: {os.path.abspath(model_path)}")
+            model = YOLO(model_path)
+            model_name = "YOLOv11x-pose"
     
     print(f"Enhanced Training Configuration:")
     print(f"  Model: {model_name}")
@@ -1004,6 +1015,8 @@ def main():
                        help='Only train (assume dataset already converted)')
     parser.add_argument('--force-reprocess', action='store_true',
                        help='Force reprocessing even if dataset exists')
+    parser.add_argument('--no-pretrained', action='store_true',
+                       help='Initialize model with random weights (do not load pretrained weights)')
     
     args = parser.parse_args()
     
