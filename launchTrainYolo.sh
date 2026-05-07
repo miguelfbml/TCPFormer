@@ -21,5 +21,4 @@ python train.py \
     --patience 20 \
     --cache disk \
     --use-wandb \
-    --wandb-project YOLO_MPI_3DHP_Enhanced_Keypoints \
-    --train-only
+    --wandb-project YOLO_MPI_3DHP_Enhanced_Keypoints
