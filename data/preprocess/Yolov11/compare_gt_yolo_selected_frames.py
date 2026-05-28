@@ -81,7 +81,16 @@ def load_selected_frames(sequence_name, frame_indices):
     return frames, valid_indices
 
 
-def draw_pose_on_image(image, pose, title, line_color, point_color, missing_text):
+def draw_pose_on_image(
+    image,
+    pose,
+    title,
+    line_color,
+    point_color,
+    missing_text,
+    keypoint_confidences=None,
+    show_keypoint_confidence=False,
+):
     output = image.copy()
 
     cv2.putText(
@@ -139,10 +148,36 @@ def draw_pose_on_image(image, pose, title, line_color, point_color, missing_text
             cv2.LINE_AA,
         )
 
+        if (
+            show_keypoint_confidence
+            and keypoint_confidences is not None
+            and joint_idx < len(keypoint_confidences)
+        ):
+            confidence = float(keypoint_confidences[joint_idx])
+            cv2.putText(
+                output,
+                f'{confidence:.2f}',
+                (center[0] + 10, center[1] + 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
     return output
 
 
-def save_frame_comparison(image, gt_frame, yolo_frame, sequence_name, frame_idx, output_dir):
+def save_frame_comparison(
+    image,
+    gt_frame,
+    yolo_frame,
+    yolo_confidences,
+    sequence_name,
+    frame_idx,
+    output_dir,
+    show_yolo_confidence=False,
+):
     gt_image = draw_pose_on_image(
         image,
         gt_frame,
@@ -159,6 +194,8 @@ def save_frame_comparison(image, gt_frame, yolo_frame, sequence_name, frame_idx,
         line_color=(0, 180, 255),
         point_color=(0, 255, 255),
         missing_text='No YOLO Detection',
+        keypoint_confidences=yolo_confidences,
+        show_keypoint_confidence=show_yolo_confidence,
     )
 
     frame_err = float('nan')
@@ -225,7 +262,7 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
 
     print(f"✓ Processing {len(selected_frames)} selected frames for sequence {sequence_name}")
 
-    yolo_poses_2d, _, performance_metrics = estimate_yolo_poses(
+    yolo_poses_2d, yolo_confidences, performance_metrics = estimate_yolo_poses(
         model,
         selected_frames,
         args.img_size,
@@ -245,9 +282,11 @@ def process_selected_frames(model, sequence_name, frame_indices, args, device='c
             selected_frames[local_idx],
             gt_poses_2d_pixel[local_idx],
             yolo_poses_2d_pixel[local_idx],
+            yolo_confidences[local_idx],
             sequence_name,
             frame_idx,
             sequence_output_dir,
+            show_yolo_confidence=args.show_yolo_confidence,
         )
         saved_files.append(saved_path)
         print(f"✓ Saved comparison for frame {frame_idx} -> {saved_path}")
@@ -269,6 +308,11 @@ def main():
     parser.add_argument('--img-size', type=int, default=640, help='Input image size for YOLO inference')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size for YOLO inference (default: 32 on CUDA, 16 on CPU)')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (auto, cpu, cuda, cuda:0, etc.)')
+    parser.add_argument(
+        '--show-yolo-confidence',
+        action='store_true',
+        help='Show YOLO per-keypoint confidence values on the prediction image',
+    )
     args = parser.parse_args()
 
     if args.batch_size is not None and args.batch_size <= 0:
@@ -281,6 +325,7 @@ def main():
     print(f'Model: {args.model_path}')
     print(f'Output dir: {args.output_dir}')
     print(f'Input size: {args.img_size}')
+    print(f'Show YOLO keypoint confidence: {args.show_yolo_confidence}')
     if args.batch_size is not None:
         print(f'Inference batch size (override): {args.batch_size}')
     else:
